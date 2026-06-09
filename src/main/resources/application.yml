@@ -1,0 +1,86 @@
+app:
+  base-url: ${APP_BASE_URL:http://localhost:8081}
+
+server:
+  port: 8081
+
+spring:
+  application:
+    name: sandbox-agent
+
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+  datasource:
+    url: ${MYSQL_URL:jdbc:mysql://localhost:3306/sandbox_agent?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+
+agent:
+  sandbox:
+    domain: ${SANDBOX_DOMAIN:localhost:8080}
+    image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}
+    timeout: PT30M
+    ready-timeout: PT180S
+  storage:
+    type: ${STORAGE_TYPE:local}
+    local:
+      base-path: ${STORAGE_LOCAL_PATH:./uploads}
+    oss:
+      endpoint: ${OSS_ENDPOINT:}
+      bucket: ${OSS_BUCKET:}
+      access-key: ${OSS_ACCESS_KEY:}
+      secret-key: ${OSS_SECRET_KEY:}
+  skill:
+    directory: ${SKILL_DIR:.claude/skills}
+  llm:
+    planner:
+      api-url: ${PLANNER_LLM_URL:https://open.bigmodel.cn/api/paas/v4}
+      api-key: ${PLANNER_LLM_KEY:}
+      model: ${PLANNER_LLM_MODEL:glm-4.7}
+    executor:
+      api-url: ${EXECUTOR_LLM_URL:https://api.deepseek.com}
+      api-key: ${EXECUTOR_LLM_KEY:}
+      model: ${EXECUTOR_LLM_MODEL:deepseek-v4-flash}
+
+rag:
+  preview:
+    conversion:
+      enabled: ${RAG_PREVIEW_CONVERSION_ENABLED:true}
+      timeout-seconds: ${RAG_PREVIEW_CONVERSION_TIMEOUT_SECONDS:120}
+  embedding:
+    api-url: ${RAG_EMBEDDING_URL:https://open.bigmodel.cn/api/paas/v4/embeddings}
+    api-key: ${RAG_EMBEDDING_KEY:}
+    model: ${RAG_EMBEDDING_MODEL:embedding-3}
+    dimension: 2048
+    batch-size: 25
+  chunk:
+    size: 500
+    overlap: 50
+  milvus:
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+    collection: knowledge_chunks_v3
+  storage:
+    path: ${RAG_STORAGE_PATH:./uploads/knowledge}
+
+baidu:
+  ocr:
+    ak: ${BAIDU_OCR_AK:}
+    sk: ${BAIDU_OCR_SK:}
+
+logging:
+  level:
+    com.example.sandbox: DEBUG

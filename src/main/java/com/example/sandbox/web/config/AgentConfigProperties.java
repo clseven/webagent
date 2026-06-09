@@ -1,0 +1,91 @@
+package com.example.sandbox.web.config;
+
+import lombok.Getter;
+import lombok.Setter;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+/**
+ * Agent 配置属性
+ *
+ * @author example
+ * @date 2026/05/14
+ */
+@Setter
+@Getter
+@Component
+@ConfigurationProperties(prefix = "agent")
+public class AgentConfigProperties {
+
+    private Sandbox sandbox = new Sandbox();
+    private Skill skill = new Skill();
+    private Llm llm = new Llm();
+    private Storage storage = new Storage();
+
+    @Setter
+    @Getter
+    public static class Sandbox {
+        private String domain = "localhost:8080";
+        private String image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2";
+        private String timeout = "PT30M";
+        private String readyTimeout = "PT120S";
+
+    }
+
+    @Setter
+    @Getter
+    public static class Skill {
+        private String directory = ".claude/skills";
+
+    }
+
+    @Setter
+    @Getter
+    public static class Llm {
+        private Planner planner = new Planner();
+        private Executor executor = new Executor();
+
+        @Setter
+        @Getter
+        public static class Planner {
+            private String apiUrl = "https://open.bigmodel.cn/api/paas/v4";
+            private String apiKey = "";
+            private String model = "glm-4.7";
+
+        }
+
+        @Setter
+        @Getter
+        public static class Executor {
+            private String apiUrl = "https://api.deepseek.com";
+            private String apiKey = "";
+            private String model = "deepseek-v4-flash";
+
+        }
+    }
+
+    @Setter
+    @Getter
+    public static class Storage {
+        private String type = "local";
+        private Local local = new Local();
+        private Oss oss = new Oss();
+
+        @Setter
+        @Getter
+        public static class Local {
+            private String basePath = "./uploads";
+
+        }
+
+        @Setter
+        @Getter
+        public static class Oss {
+            private String endpoint = "";
+            private String bucket = "";
+            private String accessKey = "";
+            private String secretKey = "";
+
+        }
+    }
+}

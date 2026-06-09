@@ -1,0 +1,15 @@
+spring:
+  web:
+    resources:
+      static-locations:
+        - file:src/main/resources/static/
+        - classpath:/META-INF/resources/
+        - classpath:/resources/
+        - classpath:/static/
+        - classpath:/public/
+      cache:
+        period: 0
+        cachecontrol:
+          no-store: true
+      chain:
+        cache: false

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>通用智能体平台</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css">
+</head>
+<body>
+    <div id="app"></div>
+
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <!-- Vue Router 4 -->
+    <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
+    <!-- Markdown 渲染 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+    <!-- 代码高亮 -->
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <!-- API 封装 -->
+    <script src="/js/api.js"></script>
+    <!-- 工具模块 -->
+    <script src="/js/utils/duplicateHandler.js"></script>
+    <!-- 页面组件 -->
+    <script src="/js/pages/Login.js"></script>
+    <script src="/js/pages/AgentApps.js"></script>
+    <script src="/js/pages/Chat.js"></script>
+    <script src="/js/pages/Skills.js"></script>
+    <script src="/js/pages/Knowledge.js"></script>
+    <script src="/js/pages/Mcp.js"></script>
+    <script src="/js/pages/TokenStats.js"></script>
+    <!-- 组件 -->
+    <script src="/js/components/FilePreviewer.js"></script>
+    <script src="/js/components/WorkspaceBrowser.js"></script>
+    <!-- 布局组件 -->
+    <script src="/js/layouts/MainLayout.js"></script>
+    <!-- 应用入口 -->
+    <script src="/js/app.js"></script>
+</body>
+</html>

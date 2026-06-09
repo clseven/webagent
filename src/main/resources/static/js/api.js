@@ -1,0 +1,284 @@
+// API 请求封装
+const API_BASE = '';
+
+function normalizeSandboxPath(path) {
+    if (typeof path !== 'string') return path;
+
+    const unquote = (value) => {
+        if (value.length >= 2) {
+            const first = value[0];
+            const last = value[value.length - 1];
+            if ((first === "'" || first === '"') && first === last) {
+                return value.substring(1, value.length - 1);
+            }
+        }
+        return value;
+    };
+
+    return unquote(path.trim())
+        .split('/')
+        .map(unquote)
+        .join('/');
+}
+
+function createApiClient() {
+    async function request(method, url, body, options = {}) {
+        const token = localStorage.getItem('auth_token');
+        const headers = { ...options.headers };
+
+        if (token) {
+            headers['Authorization'] = 'Bearer ' + token;
+        }
+
+        if (body && !(body instanceof FormData)) {
+            headers['Content-Type'] = 'application/json';
+        }
+
+        const res = await fetch(API_BASE + url, {
+            method,
+            headers,
+            body: body instanceof FormData ? body : (body ? JSON.stringify(body) : undefined),
+        });
+
+        const data = await res.json();
+
+        if (data.code === 401) {
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('agent_session_id');
+            window.location.reload();
+            throw new Error('认证已过期');
+        }
+
+        if (data.code !== 200) {
+            // 创建错误对象，保留后端返回的 code 和 data
+            const err = new Error(data.message || '请求失败');
+            err.code = data.code;
+            err.data = data.data;  // 包含额外信息（如重复文件时的 existingDocId）
+            throw err;
+        }
+
+        return data.data;
+    }
+
+    return {
+        // 认证
+        login: (username, password) => request('POST', '/api/auth/login', { username, password }),
+        register: (username, password) => request('POST', '/api/auth/register', { username, password }),
+        me: () => request('GET', '/api/auth/me'),
+
+        // 会话
+        listSessions: () => request('GET', '/api/sessions'),
+        createSession: (appId) => request('POST', '/api/sessions', appId ? { appId } : undefined),
+        getSession: (id) => request('GET', `/api/sessions/${id}`),
+        deleteSession: (id) => request('DELETE', `/api/sessions/${id}`),
+
+        // 聊天
+        sendMessage: (sessionId, message) => request('POST', `/api/sessions/${sessionId}/chat`, { message }),
+        getHistory: (sessionId) => request('GET', `/api/sessions/${sessionId}/history`),
+
+        // 流式聊天（SSE）
+        // 返回 EventSource 和停止函数
+        createChatStream: (sessionId, message, onEvent) => {
+            const token = localStorage.getItem('auth_token');
+            const url = new URL(API_BASE + `/api/sessions/${sessionId}/chat/stream`, window.location.origin);
+            url.searchParams.set('message', message);
+
+            // 使用 fetch + ReadableStream 实现 SSE（支持 Authorization header）
+            let stopped = false;
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            const connect = async () => {
+                try {
+                    const response = await fetch(url, {
+                        headers: { 'Authorization': 'Bearer ' + token }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const reader = response.body.getReader();
+
+                    while (!stopped) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+
+                        // 解析 SSE 格式
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || ''; // 保留不完整的行
+
+                        let currentEvent = '';
+                        for (const line of lines) {
+                            if (line.startsWith('event:')) {
+                                currentEvent = line.substring(6).trim();
+                            } else if (line.startsWith('data:')) {
+                                const dataStr = line.substring(5).trim();
+                                if (dataStr) {
+                                    try {
+                                        const data = JSON.parse(dataStr);
+                                        onEvent({ type: currentEvent || data.type, data });
+                                    } catch (e) {
+                                        console.warn('SSE parse error:', e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (!stopped) {
+                        onEvent({ type: 'done', data: {} });
+                    }
+                } catch (e) {
+                    if (!stopped) {
+                        onEvent({ type: 'error', data: { message: e.message } });
+                    }
+                }
+            };
+
+            connect();
+
+            // 返回停止函数
+            return () => {
+                stopped = true;
+            };
+        },
+
+        // 技能（全局）
+        listSkills: () => request('GET', '/api/skills'),
+        getSkill: (id) => request('GET', `/api/skills/${id}`),
+        setSkillRoot: (directory) => request('POST', '/api/skills/set-root', { directory }),
+
+        // 技能（会话）
+        getEnabledSkills: (sessionId) => request('GET', `/api/sessions/${sessionId}/skills`),
+        enableSkill: (sessionId, skillId) => request('POST', `/api/sessions/${sessionId}/skills/${skillId}/enable`),
+        disableSkill: (sessionId, skillId) => request('POST', `/api/sessions/${sessionId}/skills/${skillId}/disable`),
+
+        // VNC
+        getAioEndpoint: (sessionId) => request('GET', `/api/sessions/${sessionId}/aio/endpoint`),
+
+        // 文件
+        uploadFile: (sessionId, file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('sessionId', sessionId);
+            return request('POST', '/api/files/upload', formData);
+        },
+        // 替换沙箱已有文件
+        replaceFile: (sessionId, file) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('sessionId', sessionId);
+            return request('PUT', '/api/files/upload/replace', formData);
+        },
+
+        // 沙箱文件操作
+        executeCommand: (sessionId, command) => request('POST', `/api/sessions/${sessionId}/execute`, { command }),
+        readFileInSandbox: (sessionId, path) => request('POST', `/api/sessions/${sessionId}/files/read`, { path }),
+
+        // 沙箱文件预览（返回 ArrayBuffer，inline 渲染用）
+        previewFileInSandbox: async (sessionId, path) => {
+            const token = localStorage.getItem('auth_token');
+            const cleanPath = normalizeSandboxPath(path);
+            const encoded = encodeURIComponent(cleanPath);
+            const res = await fetch(API_BASE + `/api/sessions/${sessionId}/files/preview?path=${encoded}`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (!res.ok) {
+                throw new Error('预览文件失败: HTTP ' + res.status);
+            }
+            return await res.arrayBuffer();
+        },
+
+        // 沙箱文件下载（attachment 触发浏览器原生下载）
+        downloadFileFromSandbox: (sessionId, path) => {
+            const token = localStorage.getItem('auth_token');
+            const cleanPath = normalizeSandboxPath(path);
+            const encoded = encodeURIComponent(cleanPath);
+            const url = API_BASE + `/api/sessions/${sessionId}/files/download?path=${encoded}`;
+            // 通过 fetch 拿到 blob 后用 <a download> 触发下载（带 Authorization）
+            fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+                .then(r => r.blob())
+                .then(blob => {
+                    const blobUrl = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = cleanPath.substring(cleanPath.lastIndexOf('/') + 1);
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+                });
+        },
+
+        // Token 统计
+        getTokenSummary: (days) => request('GET', `/api/token-stats/summary?days=${days}`),
+        getTokenDaily: (days) => request('GET', `/api/token-stats/daily?days=${days}`),
+        getTokenByModel: (days) => request('GET', `/api/token-stats/by-model?days=${days}`),
+
+        // Agent 应用
+        listApps: () => request('GET', '/api/apps'),
+        createApp: (name, description) => request('POST', '/api/apps', { name, description }),
+        getApp: (appId) => request('GET', `/api/apps/${appId}`),
+        updateApp: (appId, name, description) => request('PUT', `/api/apps/${appId}`, { name, description }),
+        deleteApp: (appId) => request('DELETE', `/api/apps/${appId}`),
+        updateAppKnowledgeBases: (appId, kbIds) => request('PUT', `/api/apps/${appId}/knowledge-bases`, { kbIds }),
+        updateAppSkills: (appId, skillIds) => request('PUT', `/api/apps/${appId}/skills`, { skillIds }),
+
+        // 知识库
+        createKnowledgeBase: (name, description) => request('POST', '/api/rag/bases', { name, description }),
+        listKnowledgeBases: () => request('GET', '/api/rag/bases'),
+        getKnowledgeBase: (kbId) => request('GET', `/api/rag/bases/${kbId}`),
+        updateKnowledgeBase: (kbId, name, description) => request('PUT', `/api/rag/bases/${kbId}`, { name, description }),
+        deleteKnowledgeBase: (kbId) => request('DELETE', `/api/rag/bases/${kbId}`),
+
+        // 知识库文档
+        uploadKnowledge: (kbId, file, splitMode = 'smart', chunkSize = null, overlap = null) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('splitMode', splitMode);
+            if (chunkSize !== null) formData.append('chunkSize', chunkSize);
+            if (overlap !== null) formData.append('overlap', overlap);
+            return request('POST', `/api/rag/bases/${kbId}/documents/upload`, formData);
+        },
+        // 替换已有文档（用于处理重复文件时选择"替换"）
+        replaceKnowledgeDoc: (docId, file, splitMode = 'smart', chunkSize = null, overlap = null) => {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('splitMode', splitMode);
+            if (chunkSize !== null) formData.append('chunkSize', chunkSize);
+            if (overlap !== null) formData.append('overlap', overlap);
+            return request('PUT', `/api/rag/document/${docId}/replace`, formData);
+        },
+        listKnowledgeDocs: (kbId) => request('GET', `/api/rag/bases/${kbId}/documents`),
+        getKnowledgeDoc: (docId) => request('GET', `/api/rag/document/${docId}`),
+        deleteKnowledgeDoc: (docId) => request('DELETE', `/api/rag/document/${docId}`),
+        searchKnowledge: (kbId, query, topK = 5) => request('POST', `/api/rag/bases/${kbId}/search`, { query, topK }),
+
+        // 知识库预览（返回 ArrayBuffer / JSON，不走 ApiResponse 包装）
+        getKnowledgeChunks: async (docId) => {
+            const token = localStorage.getItem('auth_token');
+            const res = await fetch(API_BASE + `/api/rag/document/${docId}/chunks`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            const json = await res.json();
+            if (json.code !== 200) throw new Error(json.message || '获取切片失败');
+            return json.data;
+        },
+        getKnowledgeFile: async (docId) => {
+            const token = localStorage.getItem('auth_token');
+            const res = await fetch(API_BASE + `/api/rag/document/${docId}/file`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error('文件读取失败: ' + text);
+            }
+            return await res.arrayBuffer();
+        },
+    };
+}
+
+const api = createApiClient();
