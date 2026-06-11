@@ -13,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.netty.http.client.HttpClient;
 
 import java.time.Duration;
@@ -232,6 +233,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             llmMessages.add(LlmMessage.builder()
                     .role(msg.getRole())
                     .content(msg.getContent())
+                    .reasoningContent(msg.getReasoning())
+                    .toolCalls(msg.getToolCalls())
                     .toolCallId(msg.getToolCallId())
                     .build());
         }
@@ -249,11 +252,25 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * <p>使用 WebClient 调用 OpenAI 兼容的 /chat/completions 端点。</p>
      */
     private String callLlm(LlmRequest request) {
+        Map<String, Object> requestBody = request.toApiFormat();
+        logRequestBody(requestBody);
+
         return webClient.post()
                 .uri("/chat/completions")
-                .bodyValue(request.toApiFormat())
-                .retrieve()
-                .bodyToMono(String.class)
+                .bodyValue(requestBody)
+                .exchangeToMono(response -> response.bodyToMono(String.class)
+                        .defaultIfEmpty("")
+                        .flatMap(responseBody -> {
+                            int status = response.statusCode().value();
+                            if (response.statusCode().is2xxSuccessful()) {
+                                logResponseSummary(status, responseBody);
+                                return Mono.just(responseBody);
+                            }
+
+                            log.error("【LLM 错误响应】status={} body={}", status, responseBody);
+                            return Mono.error(new IllegalStateException(
+                                    "LLM API returned HTTP " + status + ": " + responseBody));
+                        }))
                 .block();
     }
 
@@ -445,6 +462,53 @@ public abstract class BaseLlmServiceImpl implements LlmService {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private void logResponseSummary(int status, String responseBody) {
+        try {
+            Map<String, Object> response = objectMapper.readValue(responseBody, Map.class);
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+
+            String finishReason = "?";
+            String content = "";
+            String toolInfo = "";
+
+            if (choices != null && !choices.isEmpty()) {
+                Map<String, Object> choice = choices.get(0);
+                finishReason = (String) choice.getOrDefault("finish_reason", "?");
+
+                Map<String, Object> message = (Map<String, Object>) choice.get("message");
+                if (message != null) {
+                    String c = (String) message.get("content");
+                    if (c != null && !c.isEmpty()) {
+                        content = c.length() > 100 ? c.substring(0, 100) + "..." : c;
+                    }
+                    List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) message.get("tool_calls");
+                    if (toolCalls != null && !toolCalls.isEmpty()) {
+                        Map<String, Object> fn = (Map<String, Object>) toolCalls.get(0).get("function");
+                        if (fn != null) {
+                            toolInfo = " tool=" + fn.getOrDefault("name", "?");
+                        }
+                    }
+                }
+            }
+
+            Map<String, Object> usage = (Map<String, Object>) response.get("usage");
+            String usageInfo = "";
+            if (usage != null) {
+                usageInfo = String.format(" usage={prompt=%s,completion=%s,cacheHit=%s,total=%s}",
+                        getAsInt(usage, "prompt_tokens"), getAsInt(usage, "completion_tokens"),
+                        getAsInt(usage, "prompt_cache_hit_tokens"), getAsInt(usage, "total_tokens"));
+            }
+
+            log.info("【LLM 响应】status={} finish={}{}{}{}",
+                    status, finishReason, toolInfo,
+                    !content.isEmpty() ? " content=\"" + content + "\"" : "",
+                    usageInfo);
+        } catch (Exception e) {
+            log.debug("【LLM 响应】摘要解析失败, status={}", status);
+        }
+    }
+
     /**
      * 记录请求信息到日志
      */
@@ -453,6 +517,170 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             log.info("【LLM 请求】messages: {} tools: {}", messageCount, toolCount);
         } else {
             log.info("【LLM 请求】messages: {}", messageCount);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void logRequestBody(Map<String, Object> requestBody) {
+        try {
+            String model = (String) requestBody.getOrDefault("model", "?");
+            List<Map<String, Object>> messages = (List<Map<String, Object>>) requestBody.get("messages");
+            List<?> tools = (List<?>) requestBody.get("tools");
+            int msgCount = messages != null ? messages.size() : 0;
+            int toolCount = tools != null ? tools.size() : 0;
+
+            // 取最后一条消息的 role + 内容摘要
+            String latestInfo = "";
+            if (messages != null && !messages.isEmpty()) {
+                Map<String, Object> last = messages.get(messages.size() - 1);
+                String role = (String) last.getOrDefault("role", "?");
+                String content = (String) last.getOrDefault("content", "");
+                // tool_calls 消息没有 content，取 tool_calls 信息
+                if (content == null || content.isEmpty()) {
+                    List<Map<String, Object>> tcList = (List<Map<String, Object>>) last.get("tool_calls");
+                    if (tcList != null && !tcList.isEmpty()) {
+                        String tcName = "?";
+                        Map<String, Object> fn = (Map<String, Object>) tcList.get(0).get("function");
+                        if (fn != null) {
+                            tcName = (String) fn.getOrDefault("name", "?");
+                        }
+                        content = "[tool_call: " + tcName + "]";
+                    } else {
+                        content = "(empty)";
+                    }
+                }
+                // 截断过长内容
+                if (content.length() > 100) {
+                    content = content.substring(0, 100) + "...";
+                }
+                latestInfo = " latest=" + role + "(\"" + content + "\")";
+            }
+
+            log.info("【LLM 请求】model={} messages={} tools={}{}", model, msgCount, toolCount, latestInfo);
+        } catch (Exception e) {
+            log.warn("【LLM 请求】摘要生成失败", e);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Flux<String> callLlmStream(Map<String, Object> requestBody) {
+        logRequestBody(requestBody);
+
+        // 流式响应累积器：收集关键信息，完成后统一输出
+        StringBuilder accContent = new StringBuilder();
+        StringBuilder accReasoning = new StringBuilder();
+        String[] accToolName = {null};
+        StringBuilder accToolArgs = new StringBuilder();
+        int[] accUsage = {0, 0, 0, 0}; // prompt, completion, total, cacheHit
+        int[] chunkCount = {0};
+        String[] finishReason = {null};
+
+        return webClient.post()
+                .uri("/chat/completions")
+                .bodyValue(requestBody)
+                .exchangeToFlux(response -> {
+                    int status = response.statusCode().value();
+                    if (response.statusCode().is2xxSuccessful()) {
+                        return response.bodyToFlux(String.class)
+                                .doOnNext(chunk -> {
+                                    chunkCount[0]++;
+                                    parseStreamSummary(chunk, accContent, accReasoning,
+                                            accToolName, accToolArgs, accUsage, finishReason);
+                                })
+                                .doAfterTerminate(() -> {
+                                    String toolInfo = accToolName[0] != null
+                                            ? " tool=" + accToolName[0]
+                                              + (accToolArgs.length() > 0
+                                                 ? " args=" + accToolArgs : "")
+                                            : "";
+                                    log.info("【LLM 流式响应】status={} finish={} chunks={}{}{} usage={prompt={},completion={},cacheHit={},total={}}",
+                                            status,
+                                            finishReason[0] != null ? finishReason[0] : "unknown",
+                                            chunkCount[0],
+                                            accContent.length() > 0 ? " content=\"" + accContent + "\"" : "",
+                                            toolInfo,
+                                            accUsage[0], accUsage[1], accUsage[3], accUsage[2]);
+                                });
+                    }
+
+                    return response.bodyToMono(String.class)
+                            .defaultIfEmpty("")
+                            .flatMapMany(responseBody -> {
+                                log.error("【LLM 错误响应】status={} body={}", status, responseBody);
+                                return Flux.error(new IllegalStateException(
+                                        "LLM API returned HTTP " + status + ": " + responseBody));
+                            });
+                });
+    }
+
+    /**
+     * 轻量解析流式 chunk，累积关键信息（仅用于日志汇总，不影响下游解析）
+     */
+    @SuppressWarnings("unchecked")
+    private void parseStreamSummary(String chunk,
+                                    StringBuilder accContent, StringBuilder accReasoning,
+                                    String[] accToolName, StringBuilder accToolArgs,
+                                    int[] accUsage, String[] finishReason) {
+        String json = normalizeStreamJson(chunk);
+        if (json == null) return;
+
+        try {
+            Map<String, Object> response = objectMapper.readValue(json, Map.class);
+
+            // usage
+            Map<String, Object> usage = (Map<String, Object>) response.get("usage");
+            if (usage != null) {
+                accUsage[0] = getAsInt(usage, "prompt_tokens");
+                accUsage[1] = getAsInt(usage, "completion_tokens");
+                accUsage[2] = getAsInt(usage, "total_tokens");
+                accUsage[3] = getAsInt(usage, "prompt_cache_hit_tokens");
+            }
+
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+            if (choices == null || choices.isEmpty()) return;
+
+            Map<String, Object> choice = choices.get(0);
+            Map<String, Object> delta = (Map<String, Object>) choice.get("delta");
+            if (delta == null) return;
+
+            // content
+            String content = (String) delta.get("content");
+            if (content != null && !content.isEmpty()) {
+                accContent.append(content);
+            }
+
+            // reasoning_content
+            String reasoning = (String) delta.get("reasoning_content");
+            if (reasoning != null && !reasoning.isEmpty()) {
+                accReasoning.append(reasoning);
+            }
+
+            // tool_calls
+            List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) delta.get("tool_calls");
+            if (toolCalls != null && !toolCalls.isEmpty()) {
+                for (Map<String, Object> tc : toolCalls) {
+                    Map<String, Object> function = (Map<String, Object>) tc.get("function");
+                    if (function != null) {
+                        String name = (String) function.get("name");
+                        String args = (String) function.get("arguments");
+                        if (name != null && !name.isBlank()) {
+                            accToolName[0] = name;
+                        }
+                        if (args != null && !args.isBlank()) {
+                            accToolArgs.append(args);
+                        }
+                    }
+                }
+            }
+
+            // finish_reason
+            String fr = (String) choice.get("finish_reason");
+            if (fr != null) {
+                finishReason[0] = fr;
+            }
+
+        } catch (Exception e) {
+            // 仅日志汇总用，解析失败静默忽略
         }
     }
 
@@ -476,11 +704,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
                 logRequest(messages.size(), 0);
 
-                webClient.post()
-                    .uri("/chat/completions")
-                    .bodyValue(apiFormat)
-                    .retrieve()
-                    .bodyToFlux(String.class)
+                callLlmStream(apiFormat)
                     .subscribe(
                         chunk -> {
                             if (emitter.isCancelled()) return;
@@ -537,11 +761,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                 AtomicReference<LlmToolCall.Builder> toolCallBuilder = new AtomicReference<>();
                 AtomicReference<LlmUsage> usageRef = new AtomicReference<>();
 
-                webClient.post()
-                    .uri("/chat/completions")
-                    .bodyValue(apiFormat)
-                    .retrieve()
-                    .bodyToFlux(String.class)
+                callLlmStream(apiFormat)
                     .subscribe(
                         chunk -> {
                             if (emitter.isCancelled()) return;
@@ -582,11 +802,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * 解析流式响应中的 token
      */
     private String parseTokenFromStreamChunk(String chunk) {
-        if (chunk == null || chunk.isEmpty()) return null;
-        if (!chunk.startsWith("data:")) return null;
-
-        String json = chunk.substring(5).trim();
-        if ("[DONE]".equals(json)) return null;
+        String json = normalizeStreamJson(chunk);
+        if (json == null) return null;
 
         try {
             @SuppressWarnings("unchecked")
@@ -608,6 +825,22 @@ public abstract class BaseLlmServiceImpl implements LlmService {
         }
     }
 
+    private String normalizeStreamJson(String chunk) {
+        if (chunk == null || chunk.isBlank()) {
+            return null;
+        }
+
+        String text = chunk.trim();
+        if (text.startsWith("data:")) {
+            text = text.substring(5).trim();
+        }
+
+        if ("[DONE]".equals(text) || !text.startsWith("{")) {
+            return null;
+        }
+        return text;
+    }
+
     /**
      * 解析流式响应（带工具支持）
      *
@@ -624,14 +857,23 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                                                             AtomicReference<LlmUsage> usageRef) {
         List<LlmStreamChunk> result = new ArrayList<>();
 
-        if (chunk == null || chunk.isEmpty()) return result;
-        if (!chunk.startsWith("data:")) return result;
-
-        String json = chunk.substring(5).trim();
-        if ("[DONE]".equals(json)) return result;
+        String json = normalizeStreamJson(chunk);
+        if (json == null) return result;
 
         try {
             Map<String, Object> response = objectMapper.readValue(json, Map.class);
+
+            // usage 可能位于 choices 为空的最后一个 chunk，需优先处理
+            Map<String, Object> usage = (Map<String, Object>) response.get("usage");
+            if (usage != null) {
+                usageRef.set(LlmUsage.of(
+                    getAsInt(usage, "prompt_tokens"),
+                    getAsInt(usage, "completion_tokens"),
+                    getAsInt(usage, "total_tokens"),
+                    getAsInt(usage, "prompt_cache_hit_tokens")
+                ));
+            }
+
             List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
             if (choices == null || choices.isEmpty()) return result;
 
@@ -655,9 +897,6 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) delta.get("tool_calls");
             if (toolCalls != null && !toolCalls.isEmpty()) {
                 for (Map<String, Object> tc : toolCalls) {
-                    Map<String, Object> function = (Map<String, Object>) tc.get("function");
-                    if (function == null) continue;
-
                     // 初始化或获取 builder
                     LlmToolCall.Builder builder = toolCallBuilder.get();
                     if (builder == null) {
@@ -665,9 +904,17 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                         toolCallBuilder.set(builder);
                     }
 
+                    String id = (String) tc.get("id");
+                    if (id != null && !id.isBlank()) {
+                        builder.id(id);
+                    }
+
+                    Map<String, Object> function = (Map<String, Object>) tc.get("function");
+                    if (function == null) continue;
+
                     // 累积 name
                     String name = (String) function.get("name");
-                    if (name != null) {
+                    if (name != null && !name.isBlank()) {
                         builder.name(name);
                     }
 
@@ -679,18 +926,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                 }
             }
 
-            // 4. 处理 usage（最后一个 chunk 可能包含）
-            Map<String, Object> usage = (Map<String, Object>) response.get("usage");
-            if (usage != null) {
-                usageRef.set(LlmUsage.of(
-                    getAsInt(usage, "prompt_tokens"),
-                    getAsInt(usage, "completion_tokens"),
-                    getAsInt(usage, "total_tokens"),
-                    getAsInt(usage, "prompt_cache_hit_tokens")
-                ));
-            }
-
-            // 5. 检查 finish_reason
+            // 4. 检查 finish_reason
             String finishReason = (String) choice.get("finish_reason");
             if ("tool_calls".equals(finishReason)) {
                 // 工具调用完成，发出 tool_call 事件

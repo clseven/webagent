@@ -604,7 +604,7 @@ public class AgentServiceImpl implements AgentService {
                                         int promptTokens = ((Number) usageMap.get("promptTokens")).intValue();
                                         int completionTokens = ((Number) usageMap.get("completionTokens")).intValue();
                                         int totalTokens = ((Number) usageMap.get("totalTokens")).intValue();
-                                        int cacheHitTokens = ((Number) usageMap.get("cacheHitTokens")).intValue();
+                                        int cacheHitTokens = ((Number) usageMap.getOrDefault("cacheHitTokens", 0)).intValue();
                                         tokenUsageService.record(userId, sessionId, promptTokens, completionTokens,
                                                 cacheHitTokens, totalTokens, "executor", "chat");
                                         log.info("【Stream Token 用量】prompt={}, completion={}, cacheHit={}, total={}",

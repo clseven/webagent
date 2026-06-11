@@ -43,80 +43,121 @@ const ChatPage = {
                     <div class="chat-header">
                         <h3>💬 对话</h3>
                     </div>
-                    <div class="chat-messages" ref="messagesEl">
+                    <div class="chat-messages" ref="messagesEl" @click="handleMessageContentClick">
                         <div v-if="messages.length === 0" class="empty">开始对话</div>
 
                         <!-- 历史消息 -->
                         <template v-for="msg in messages" :key="msg.timestamp">
                             <div :class="['chat-message', msg.role]">
                                 <div class="role-label">{{ msg.role === 'user' ? '你' : '助手' }}</div>
-                                <div class="bubble" v-html="renderContent(msg)"></div>
-                            </div>
-
-                            <!-- 附加的事件块（工具调用、思考过程等） -->
-                            <template v-if="msg.events && msg.events.length > 0">
-                                <div v-for="(event, idx) in msg.events" :key="msg.timestamp + '-event-' + idx"
-                                     class="chat-event-block">
-                                    <!-- 规划结果（折叠） -->
-                                    <details v-if="event.type === 'plan'" class="event-plan">
-                                        <summary>📋 规划结果</summary>
-                                        <div class="event-content" v-html="renderMarkdown(event.content)"></div>
-                                    </details>
-
-                                    <!-- 思考过程（折叠） -->
-                                    <details v-if="event.type === 'thinking'" class="event-thinking">
-                                        <summary>💭 思考过程 (第 {{ event.stepIndex }} 轮)</summary>
-                                        <div class="event-content" v-html="renderMarkdown(event.content)"></div>
-                                    </details>
-
-                                    <!-- 思考链（折叠，推理模型） -->
-                                    <details v-if="event.type === 'reasoning'" class="event-reasoning">
-                                        <summary>🔗 思考链 (第 {{ event.stepIndex }} 轮)</summary>
-                                        <div class="event-content" v-html="renderMarkdown(event.content)"></div>
-                                    </details>
-
-                                    <!-- 工具调用结果（折叠） -->
-                                    <details v-if="event.type === 'toolResult'" class="event-tool">
-                                        <summary>🔧 {{ event.tool }} ({{ event.duration }}ms)</summary>
-                                        <div class="event-tool-args">参数: <code>{{ JSON.stringify(event.args, null, 2) }}</code></div>
-                                        <div class="event-content">结果: <pre>{{ event.result }}</pre></div>
-                                    </details>
+                                <div class="bubble">
+                                    <template v-if="msg.role === 'assistant'">
+                                        <details v-if="msg.events && msg.events.length > 0"
+                                                 class="process-disclosure">
+                                            <summary class="process-summary">
+                                                <span class="process-check">✓</span>
+                                                <span>已处理</span>
+                                                <span class="process-count">{{ msg.events.length }} 个步骤</span>
+                                            </summary>
+                                            <div class="process-timeline">
+                                                <details v-for="(event, idx) in msg.events"
+                                                         :key="msg.timestamp + '-event-' + idx"
+                                                         class="process-item">
+                                                    <summary>
+                                                        <span class="process-dot"></span>
+                                                        <span class="process-item-title">{{ processTitle(event) }}</span>
+                                                        <span class="process-preview">{{ processPreview(event) }}</span>
+                                                    </summary>
+                                                    <div class="process-detail">
+                                                        <div v-if="event.type === 'toolResult'" class="process-tool-args">
+                                                            参数
+                                                            <pre>{{ JSON.stringify(event.args, null, 2) }}</pre>
+                                                        </div>
+                                                        <div v-if="event.type === 'toolResult'">
+                                                            结果
+                                                            <pre>{{ event.result }}</pre>
+                                                        </div>
+                                                        <div v-else v-html="renderMarkdown(event.content || '')"></div>
+                                                    </div>
+                                                </details>
+                                            </div>
+                                        </details>
+                                        <div class="assistant-answer" v-html="renderMarkdown(msg.content || '')"></div>
+                                    </template>
+                                    <div v-else v-html="renderContent(msg)"></div>
                                 </div>
-                            </template>
+                            </div>
                         </template>
 
-                        <!-- 实时状态：正在思考 -->
-                        <div v-if="currentThinking" class="chat-message assistant streaming">
+                        <!-- 当前流式回复：发送后立即出现，并持续更新 -->
+                        <div v-if="streaming" class="chat-message assistant streaming">
                             <div class="role-label">助手</div>
-                            <div class="bubble streaming-content">
-                                <span class="streaming-label">💭 思考中...</span>
-                                <div v-html="renderMarkdown(currentThinking)"></div>
-                            </div>
-                        </div>
+                            <div class="bubble agent-stream-card">
+                                <details class="process-disclosure live-process" open>
+                                    <summary class="process-summary">
+                                        <span class="thinking-spinner small"></span>
+                                        <span>{{ streamingStatus }}</span>
+                                        <span v-if="currentEvents.length" class="process-count">
+                                            已完成 {{ currentEvents.length }} 个步骤
+                                        </span>
+                                    </summary>
+                                    <div class="process-timeline">
+                                        <details v-for="(event, idx) in currentEvents"
+                                                 :key="'live-event-' + idx"
+                                                 class="process-item">
+                                            <summary>
+                                                <span class="process-dot completed"></span>
+                                                <span class="process-item-title">{{ processTitle(event) }}</span>
+                                                <span class="process-preview">{{ processPreview(event) }}</span>
+                                            </summary>
+                                            <div class="process-detail">
+                                                <div v-if="event.type === 'toolResult'" class="process-tool-args">
+                                                    参数
+                                                    <pre>{{ JSON.stringify(event.args, null, 2) }}</pre>
+                                                </div>
+                                                <div v-if="event.type === 'toolResult'">
+                                                    结果
+                                                    <pre>{{ event.result }}</pre>
+                                                </div>
+                                                <div v-else v-html="renderMarkdown(event.content || '')"></div>
+                                            </div>
+                                        </details>
 
-                        <!-- 实时状态：推理中（DeepSeek R1 等） -->
-                        <div v-if="currentReasoning" class="chat-message assistant streaming reasoning">
-                            <div class="role-label">助手</div>
-                            <div class="bubble streaming-content">
-                                <span class="streaming-label">🔗 推理中...</span>
-                                <div v-html="renderMarkdown(currentReasoning)"></div>
-                            </div>
-                        </div>
+                                        <details v-if="currentReasoning" class="process-item active" open>
+                                            <summary>
+                                                <span class="process-dot active"></span>
+                                                <span class="process-item-title">正在推理</span>
+                                                <span class="process-preview">{{ previewText(currentReasoning, 80) }}</span>
+                                            </summary>
+                                            <div class="process-detail" v-html="renderMarkdown(currentReasoning)"></div>
+                                        </details>
 
-                        <!-- 实时状态：工具执行中 -->
-                        <div v-if="currentToolCall" class="chat-message assistant streaming tool-executing">
-                            <div class="role-label">助手</div>
-                            <div class="bubble">
-                                <span class="spinner">⏳</span>
-                                正在调用工具: <strong>{{ currentToolCall.tool }}</strong>
-                                <span v-if="currentToolCall.elapsed > 0">({{ currentToolCall.elapsed }}ms)</span>
-                            </div>
-                        </div>
+                                        <details v-if="currentToolCall" class="process-item active" open>
+                                            <summary>
+                                                <span class="process-dot active"></span>
+                                                <span class="process-item-title">调用工具 {{ currentToolCall.tool }}</span>
+                                                <span class="process-preview">
+                                                    {{ currentToolCall.elapsed > 0 ? currentToolCall.elapsed + 'ms' : '执行中' }}
+                                                </span>
+                                            </summary>
+                                            <div class="process-detail">
+                                                <pre>{{ JSON.stringify(currentToolCall.args, null, 2) }}</pre>
+                                            </div>
+                                        </details>
+                                    </div>
+                                </details>
 
-                        <!-- 最终答案（不折叠） -->
-                        <div v-if="finalAnswer && !finalAnswerSaved" class="chat-message assistant final-answer">
-                            <div class="role-label">助手</div>
-                            <div class="bubble" v-html="renderMarkdown(finalAnswer)"></div>
+                                <!-- 模型内容 token 实时输出 -->
+                                <div v-if="currentThinking" class="live-thinking">
+                                    <div v-html="renderMarkdown(currentThinking)"></div>
+                                    <span class="stream-cursor"></span>
+                                </div>
+
+                                <!-- 最终答案 -->
+                                <div v-if="finalAnswer && !finalAnswerSaved"
+                                     class="live-final-answer"
+                                     v-html="renderMarkdown(finalAnswer)"></div>
+                            </div>
                         </div>
                     </div>
 
@@ -202,9 +243,34 @@ const ChatPage = {
         const currentToolCall = Vue.ref(null);
         const finalAnswer = Vue.ref('');
         const finalAnswerSaved = Vue.ref(false);
+        const streamPhase = Vue.ref('idle');
 
         // 当前消息的事件收集
         const currentEvents = Vue.ref([]);
+        const streamingStatus = Vue.computed(() => {
+            switch (streamPhase.value) {
+                case 'planning':
+                    return '正在规划';
+                case 'plan_ready':
+                    return '规划完成';
+                case 'thinking':
+                    return '正在思考';
+                case 'generating':
+                    return '正在生成';
+                case 'processing':
+                    return '正在处理';
+                case 'tool':
+                    return currentToolCall.value
+                        ? `正在执行工具 ${currentToolCall.value.tool}`
+                        : '正在执行工具';
+                case 'tool_done':
+                    return '工具执行完成';
+                case 'answer':
+                    return '正在整理回答';
+                default:
+                    return '正在处理';
+            }
+        });
 
         // VNC 状态
         const vncOpen = Vue.ref(false);
@@ -305,6 +371,7 @@ const ChatPage = {
             sending.value = true;
             streaming.value = true;
             inputText.value = '';
+            scrollToBottom();
 
             // 重置流式状态
             currentThinking.value = '';
@@ -313,6 +380,7 @@ const ChatPage = {
             finalAnswer.value = '';
             finalAnswerSaved.value = false;
             currentEvents.value = [];
+            streamPhase.value = 'planning';
 
             // 先上传文件
             let uploadedFiles = [];
@@ -369,22 +437,28 @@ const ChatPage = {
             switch (type) {
                 case 'plan':
                     currentEvents.value.push({ type: 'plan', content: data.content });
+                    streamPhase.value = 'plan_ready';
                     scrollToBottom();
                     break;
 
                 case 'thinking_start':
                     currentThinking.value = '';
                     currentReasoning.value = '';
+                    streamPhase.value = 'thinking';
+                    scrollToBottom();
                     break;
 
                 case 'token':
                     currentThinking.value += data.content;
+                    streamPhase.value = 'generating';
                     scrollToBottom();
                     break;
 
                 case 'reasoning_token':
                     // 思考链 token（推理模型的思考过程），单独存
                     currentReasoning.value += data.content;
+                    streamPhase.value = 'thinking';
+                    scrollToBottom();
                     break;
 
                 case 'thinking_end':
@@ -405,10 +479,13 @@ const ChatPage = {
                     }
                     currentThinking.value = '';
                     currentReasoning.value = '';
+                    streamPhase.value = 'processing';
+                    scrollToBottom();
                     break;
 
                 case 'tool_call':
                     currentToolCall.value = { tool: data.tool, args: data.args, elapsed: 0 };
+                    streamPhase.value = 'tool';
                     scrollToBottom();
                     break;
 
@@ -416,6 +493,7 @@ const ChatPage = {
                     if (currentToolCall.value) {
                         currentToolCall.value.elapsed = data.elapsed;
                     }
+                    streamPhase.value = 'tool';
                     break;
 
                 case 'observation':
@@ -430,11 +508,20 @@ const ChatPage = {
                         });
                     }
                     currentToolCall.value = null;
+                    streamPhase.value = 'tool_done';
                     scrollToBottom();
                     break;
 
                 case 'answer':
-                    finalAnswer.value = data.content;
+                    finalAnswer.value = data.content || '';
+                    streamPhase.value = 'answer';
+                    const lastThinkingIndex = currentEvents.value
+                        .map(event => event.type === 'thinking' ? event.content : null)
+                        .lastIndexOf(finalAnswer.value);
+                    if (lastThinkingIndex >= 0) {
+                        currentEvents.value.splice(lastThinkingIndex, 1);
+                    }
+                    scrollToBottom();
                     break;
 
                 case 'done':
@@ -486,10 +573,8 @@ const ChatPage = {
             currentReasoning.value = '';
             currentToolCall.value = null;
             currentEvents.value = [];
+            streamPhase.value = 'idle';
             scrollToBottom();
-
-            // 刷新历史（确保与后端同步）
-            loadHistory();
         };
 
         // 停止流
@@ -501,9 +586,97 @@ const ChatPage = {
         };
 
         // 渲染内容
+        const parseSandboxFileUrl = (href) => {
+            if (!href) return null;
+            try {
+                const url = new URL(href, window.location.origin);
+                const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/files\/(?:download|preview)$/);
+                const filePath = url.searchParams.get('path');
+                if (!match || !filePath) return null;
+
+                const fileName = filePath.split('/').filter(Boolean).pop() || '文件';
+                const extension = fileName.includes('.')
+                    ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
+                    : '';
+                return {
+                    sessionId: decodeURIComponent(match[1]),
+                    filePath,
+                    fileName,
+                    fileType: extension
+                };
+            } catch (e) {
+                return null;
+            }
+        };
+
+        const escapeAttribute = (value) => escapeHtml(String(value || ''));
+        const chatMarkdownRenderer = new marked.Renderer();
+
+        chatMarkdownRenderer.image = (href, title, text) => {
+            const file = parseSandboxFileUrl(href);
+            if (!file) {
+                const titleAttr = title ? ` title="${escapeAttribute(title)}"` : '';
+                return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text)}"${titleAttr}>`;
+            }
+
+            return `
+                <button type="button"
+                        class="chat-file-preview-card chat-image-preview-card"
+                        data-sandbox-preview="true"
+                        data-session-id="${escapeAttribute(file.sessionId)}"
+                        data-file-path="${escapeAttribute(file.filePath)}"
+                        data-file-name="${escapeAttribute(file.fileName)}"
+                        data-file-type="${escapeAttribute(file.fileType)}">
+                    <span class="chat-file-preview-icon">▧</span>
+                    <span class="chat-file-preview-info">
+                        <strong>${escapeHtml(text || file.fileName)}</strong>
+                        <small>${escapeHtml(file.fileName)}</small>
+                    </span>
+                    <span class="chat-file-preview-action">点击预览</span>
+                </button>
+            `;
+        };
+
+        chatMarkdownRenderer.link = (href, title, text) => {
+            const file = parseSandboxFileUrl(href);
+            if (!file) {
+                const titleAttr = title ? ` title="${escapeAttribute(title)}"` : '';
+                return `<a href="${escapeAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+            }
+
+            return `
+                <a href="#"
+                   class="chat-sandbox-file-link"
+                   data-sandbox-preview="true"
+                   data-session-id="${escapeAttribute(file.sessionId)}"
+                   data-file-path="${escapeAttribute(file.filePath)}"
+                   data-file-name="${escapeAttribute(file.fileName)}"
+                   data-file-type="${escapeAttribute(file.fileType)}">${text}</a>
+            `;
+        };
+
+        const handleMessageContentClick = (event) => {
+            const target = event.target.closest('[data-sandbox-preview="true"]');
+            if (!target) return;
+
+            event.preventDefault();
+            if (typeof FilePreviewer === 'undefined') {
+                console.warn('FilePreviewer 尚未加载');
+                return;
+            }
+
+            FilePreviewer.preview({
+                source: 'workspace',
+                sessionId: target.dataset.sessionId || currentSessionId.value,
+                filePath: target.dataset.filePath,
+                fileName: target.dataset.fileName,
+                fileType: target.dataset.fileType
+            });
+        };
+
         const renderContent = (msg) => {
             if (msg.role === 'assistant') {
-                return marked.parse(msg.content || '');
+                return marked.parse(msg.content || '', { renderer: chatMarkdownRenderer });
             }
             return escapeHtml(msg.content || '');
         };
@@ -511,7 +684,35 @@ const ChatPage = {
         // 渲染 Markdown
         const renderMarkdown = (content) => {
             if (!content) return '';
-            return marked.parse(content);
+            return marked.parse(content, { renderer: chatMarkdownRenderer });
+        };
+
+        const previewText = (content, maxLength = 90) => {
+            if (!content) return '';
+            const text = String(content).replace(/\s+/g, ' ').trim();
+            return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+        };
+
+        const processTitle = (event) => {
+            switch (event.type) {
+                case 'plan':
+                    return '规划任务';
+                case 'thinking':
+                    return `思考过程 · 第 ${event.stepIndex || 1} 轮`;
+                case 'reasoning':
+                    return `推理过程 · 第 ${event.stepIndex || 1} 轮`;
+                case 'toolResult':
+                    return `调用工具 ${event.tool || ''}`;
+                default:
+                    return '处理步骤';
+            }
+        };
+
+        const processPreview = (event) => {
+            if (event.type === 'toolResult') {
+                return event.duration != null ? `${event.duration}ms` : '已完成';
+            }
+            return previewText(event.content, 90);
         };
 
         // 滚动到底部
@@ -675,9 +876,12 @@ const ChatPage = {
             apps, sessions, currentAppId, currentApp, filteredSessions,
             currentSessionId,
             messages, inputText, sending, pendingFiles, copied,
-            streaming, currentThinking, currentReasoning, currentToolCall, finalAnswer, finalAnswerSaved,
+            streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
+            finalAnswer, finalAnswerSaved, currentEvents,
             onAppChange, createSession, switchSession, send, stopStream,
-            renderContent, renderMarkdown, copyId, handleFileSelect, removeFile, getFileIcon,
+            renderContent, renderMarkdown, previewText, processTitle, processPreview,
+            handleMessageContentClick,
+            copyId, handleFileSelect, removeFile, getFileIcon,
             vncOpen, vncUrl, vncStatus, vncPlaceholder, vncWidth,
             toggleVnc, resizeVnc, startResize
         };

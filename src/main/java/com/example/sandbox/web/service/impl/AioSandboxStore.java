@@ -77,13 +77,14 @@ public class AioSandboxStore {
                     restored++;
                     log.debug("恢复沙箱: userId={}, sandboxId={}, endpoint={}", userSandbox.getUserId(), sandboxId, endpoint);
                 } else {
-                    // 沙箱不健康，清理数据库记录
-                    log.warn("沙箱不健康，清理记录: userId={}, sandboxId={}, endpoint={}", userSandbox.getUserId(), sandboxId, endpoint);
+                    // 沙箱不健康，软删除（保留记录，避免 Docker 容器还在但被误删）
+                    log.warn("沙箱不健康，软删除: userId={}, sandboxId={}, endpoint={}", userSandbox.getUserId(), sandboxId, endpoint);
                     try {
-                        userSandboxRepository.delete(userSandbox);
+                        userSandbox.setDeleted(true);
+                        userSandboxRepository.save(userSandbox);
                         cleaned++;
                     } catch (Exception e) {
-                        log.error("清理不健康沙箱记录失败: userId={}", userSandbox.getUserId(), e);
+                        log.error("软删除不健康沙箱记录失败: userId={}", userSandbox.getUserId(), e);
                     }
                 }
             }

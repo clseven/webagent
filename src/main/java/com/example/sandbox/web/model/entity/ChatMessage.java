@@ -1,8 +1,8 @@
 package com.example.sandbox.web.model.entity;
 
+import com.example.sandbox.web.model.llm.LlmToolCall;
+
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -43,56 +43,79 @@ public class ChatMessage {
      */
     private final String toolCallId;
 
+    /**
+     * 助手发起的工具调用（role=assistant 时使用）
+     */
+    private final List<LlmToolCall> toolCalls;
+
     private ChatMessage(String role, String content, String reasoning, Long timestamp,
-                        List<FileAttachment> files, String toolCallId) {
+                        List<FileAttachment> files, String toolCallId, List<LlmToolCall> toolCalls) {
         this.role = role;
         this.content = content;
         this.reasoning = reasoning;
         this.timestamp = timestamp;
         this.files = files != null ? List.copyOf(files) : List.of();
         this.toolCallId = toolCallId;
+        this.toolCalls = toolCalls != null ? List.copyOf(toolCalls) : List.of();
+    }
+
+    /**
+     * 从持久化数据恢复聊天消息。
+     *
+     * <p>当前数据库消息不保存附件和工具调用协议字段，因此恢复时使用空值。</p>
+     */
+    public static ChatMessage restore(String role, String content, String reasoning, Long timestamp) {
+        return new ChatMessage(role, content, reasoning, timestamp, null, null, null);
     }
 
     /**
      * 创建用户消息
      */
     public static ChatMessage userMessage(String content) {
-        return new ChatMessage("user", content, null, Instant.now().toEpochMilli(), null, null);
+        return new ChatMessage("user", content, null, Instant.now().toEpochMilli(), null, null, null);
     }
 
     /**
      * 创建助手消息
      */
     public static ChatMessage assistantMessage(String content) {
-        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), null, null);
+        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), null, null, null);
     }
 
     /**
      * 创建助手消息（带思考链）
      */
     public static ChatMessage assistantMessage(String content, String reasoning) {
-        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), null, null);
+        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), null, null, null);
     }
 
     /**
      * 创建助手消息（带文件附件）
      */
     public static ChatMessage assistantMessage(String content, List<FileAttachment> files) {
-        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), files, null);
+        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), files, null, null);
     }
 
     /**
      * 创建助手消息（带思考链和文件附件）
      */
     public static ChatMessage assistantMessage(String content, String reasoning, List<FileAttachment> files) {
-        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), files, null);
+        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), files, null, null);
+    }
+
+    /**
+     * 创建助手工具调用消息（原生 tool calling 协议）
+     */
+    public static ChatMessage assistantToolCallMessage(LlmToolCall toolCall) {
+        return new ChatMessage("assistant", null, null, Instant.now().toEpochMilli(),
+                null, null, List.of(toolCall));
     }
 
     /**
      * 创建系统消息
      */
     public static ChatMessage systemMessage(String content) {
-        return new ChatMessage("system", content, null, Instant.now().toEpochMilli(), null, null);
+        return new ChatMessage("system", content, null, Instant.now().toEpochMilli(), null, null, null);
     }
 
     /**
@@ -102,7 +125,7 @@ public class ChatMessage {
      * @param content    工具执行结果
      */
     public static ChatMessage toolMessage(String toolCallId, String content) {
-        return new ChatMessage("tool", content, null, Instant.now().toEpochMilli(), null, toolCallId);
+        return new ChatMessage("tool", content, null, Instant.now().toEpochMilli(), null, toolCallId, null);
     }
 
     public String getRole() {
@@ -129,6 +152,10 @@ public class ChatMessage {
         return toolCallId;
     }
 
+    public List<LlmToolCall> getToolCalls() {
+        return toolCalls;
+    }
+
     public boolean hasFiles() {
         return !files.isEmpty();
     }
@@ -142,6 +169,7 @@ public class ChatMessage {
                 ", timestamp=" + timestamp +
                 ", files=" + files.size() +
                 ", toolCallId='" + toolCallId + '\'' +
+                ", toolCalls=" + toolCalls.size() +
                 '}';
     }
 

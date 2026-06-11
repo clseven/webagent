@@ -148,7 +148,8 @@ public record SseEvent(
             ? Map.of("iterations", iterations, "tokenUsage", Map.of(
                 "promptTokens", usage.promptTokens(),
                 "completionTokens", usage.completionTokens(),
-                "totalTokens", usage.totalTokens()
+                "totalTokens", usage.totalTokens(),
+                "cacheHitTokens", usage.cacheHitTokens()
             ))
             : Map.of("iterations", iterations);
         return new SseEvent("done", data);

@@ -296,20 +296,18 @@ public class ReactAgent {
                 long durationMs = System.currentTimeMillis() - startTime;
                 log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
 
+                LlmToolCall historyToolCall = ensureToolCallId(toolCall);
+
                 // 记录本轮步骤
-                LlmToolResult toolResult = LlmToolResult.success(toolCall.id(), toolName, observation, durationMs);
+                LlmToolResult toolResult = LlmToolResult.success(
+                        historyToolCall.id(), toolName, observation, durationMs);
                 AgentStep step = new AgentStep(iteration, llmContent, response.getReasoningContent(),
-                        toolCall, toolResult, response.getTokenUsage());
+                        historyToolCall, toolResult, response.getTokenUsage());
                 steps.add(step);
 
                 // 追加到消息历史（原生 tool calling 协议）
-                // 如果 toolCall.id() 为空（ReAct 文本回退），生成伪 id
-                String toolCallId = toolCall.id();
-                if (toolCallId == null || toolCallId.isBlank()) {
-                    toolCallId = "fallback_" + System.currentTimeMillis();
-                }
-                messages.add(ChatMessage.assistantMessage(llmContent != null ? llmContent : ""));
-                messages.add(ChatMessage.toolMessage(toolCallId, observation));
+                messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
             } else {
                 String finalContent = response.getContent();
                 if (finalContent != null && !finalContent.isEmpty()) {
@@ -323,6 +321,16 @@ public class ReactAgent {
         return new AgentResponse(
                 "抱歉，我尝试了多次但仍未能完成任务。请尝试简化您的要求或提供更多信息。",
                 null, steps, totalUsage, iteration);
+    }
+
+    private LlmToolCall ensureToolCallId(LlmToolCall toolCall) {
+        if (toolCall.id() != null && !toolCall.id().isBlank()) {
+            return toolCall;
+        }
+        return new LlmToolCall(
+                "fallback_" + java.util.UUID.randomUUID(),
+                toolCall.name(),
+                toolCall.arguments());
     }
 
     /**
@@ -351,7 +359,7 @@ public class ReactAgent {
         int threshold = 0;
         int splitAt = 0;
         for (int i = 0; i < messages.size(); i++) {
-            threshold += messages.get(i).getContent().length() / TOKEN_CHARS_RATIO;
+            threshold += messageContentForContext(messages.get(i)).length() / TOKEN_CHARS_RATIO;
             if (threshold > totalTokens * 0.6) {
                 splitAt = i;
                 break;
@@ -378,9 +386,10 @@ public class ReactAgent {
     private String summarizeMessages(List<ChatMessage> oldMessages) {
         StringBuilder history = new StringBuilder();
         for (ChatMessage msg : oldMessages) {
-            String shortContent = msg.getContent().length() > 500
-                    ? msg.getContent().substring(0, 500) + "..."
-                    : msg.getContent();
+            String content = messageContentForContext(msg);
+            String shortContent = content.length() > 500
+                    ? content.substring(0, 500) + "..."
+                    : content;
             history.append(msg.getRole()).append(": ").append(shortContent).append("\n\n");
         }
 
@@ -405,9 +414,19 @@ public class ReactAgent {
     private int estimateTokens(List<ChatMessage> messages) {
         int total = 0;
         for (ChatMessage msg : messages) {
-            total += msg.getContent().length() / TOKEN_CHARS_RATIO;
+            total += messageContentForContext(msg).length() / TOKEN_CHARS_RATIO;
         }
         return total;
+    }
+
+    private String messageContentForContext(ChatMessage message) {
+        if (message.getContent() != null) {
+            return message.getContent();
+        }
+        if (!message.getToolCalls().isEmpty()) {
+            return "tool_calls: " + message.getToolCalls();
+        }
+        return "";
     }
 
     /**
@@ -697,19 +716,18 @@ public class ReactAgent {
                         // 发送工具执行结果事件
                         emitter.next(SseEvent.observation(toolName, observation, durationMs));
 
+                        LlmToolCall historyToolCall = ensureToolCallId(toolCall);
+
                         // 记录本轮步骤
-                        LlmToolResult toolResult = LlmToolResult.success(toolCall.id(), toolName, observation, durationMs);
+                        LlmToolResult toolResult = LlmToolResult.success(
+                                historyToolCall.id(), toolName, observation, durationMs);
                         AgentStep step = new AgentStep(currentStep, currentThinking.toString(),
-                                currentReasoning.toString(), toolCall, toolResult, usageRef.get());
+                                currentReasoning.toString(), historyToolCall, toolResult, usageRef.get());
                         steps.add(step);
 
                         // 追加到消息历史（原生 tool calling 协议）
-                        String toolCallId = toolCall.id();
-                        if (toolCallId == null || toolCallId.isBlank()) {
-                            toolCallId = "fallback_" + System.currentTimeMillis();
-                        }
-                        messages.add(ChatMessage.assistantMessage(currentThinking.toString()));
-                        messages.add(ChatMessage.toolMessage(toolCallId, observation));
+                        messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                        messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
 
                     } else {
                         // LLM 给出最终答案

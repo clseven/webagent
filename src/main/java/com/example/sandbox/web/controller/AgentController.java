@@ -10,11 +10,13 @@ import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.impl.ConversationServiceImpl;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
@@ -107,13 +109,31 @@ public class AgentController {
     @GetMapping(value = "/{id}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<SseEvent>> chatStream(
             @PathVariable String id,
-            @RequestParam String message) {
+            @RequestParam String message,
+            HttpServletResponse response) {
 
-        return agentService.chatStream(id, message)
-            .map(event -> ServerSentEvent.<SseEvent>builder()
-                .event(event.type())
-                .data(event)
-                .build());
+        Long userId = UserContext.getCurrentUserId();
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setHeader("Connection", "keep-alive");
+
+        Flux<ServerSentEvent<SseEvent>> eventStream = Flux.defer(() -> {
+                UserContext.setCurrentUserId(userId);
+                return agentService.chatStream(id, message)
+                    .map(event -> ServerSentEvent.<SseEvent>builder()
+                        .event(event.type())
+                        .data(event)
+                        .build())
+                    .doFinally(signalType -> UserContext.clear());
+            })
+            .subscribeOn(Schedulers.boundedElastic());
+
+        // Commit the SSE response immediately before planning/model/tool work starts.
+        return eventStream.startWith(
+            ServerSentEvent.<SseEvent>builder()
+                .comment("connected")
+                .build()
+        );
     }
 
     /**

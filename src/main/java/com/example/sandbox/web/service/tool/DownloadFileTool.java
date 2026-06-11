@@ -91,7 +91,7 @@ public class DownloadFileTool implements Tool {
             String encodedPath = java.net.URLEncoder.encode(path, java.nio.charset.StandardCharsets.UTF_8);
 
             log.info("下载文件成功: {} ({} bytes)", path, content.length);
-            String downloadUrl = baseUrl + "/api/sessions/" + sessionId + "/files/download?path=" + encodedPath;
+            String downloadUrl = "/api/sessions/" + sessionId + "/files/download?path=" + encodedPath;
 
             // 判断是否为图片
             boolean isImage = path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") || path.endsWith(".gif");

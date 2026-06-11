@@ -85,17 +85,115 @@ function createApiClient() {
 
             // 使用 fetch + ReadableStream 实现 SSE（支持 Authorization header）
             let stopped = false;
+            let terminalEventReceived = false;
             const decoder = new TextDecoder();
+            const abortController = new AbortController();
             let buffer = '';
+            const incrementalEvents = [];
+            let incrementalFrame = null;
+
+            const flushIncrementalEvents = () => {
+                if (incrementalFrame !== null) {
+                    window.cancelAnimationFrame(incrementalFrame);
+                    incrementalFrame = null;
+                }
+                while (!stopped && incrementalEvents.length > 0) {
+                    onEvent(incrementalEvents.shift());
+                }
+            };
+
+            const enqueueIncrementalEvent = (event) => {
+                const last = incrementalEvents[incrementalEvents.length - 1];
+                if (last && last.type === event.type) {
+                    last.data.content += event.data.content || '';
+                } else {
+                    incrementalEvents.push({
+                        type: event.type,
+                        data: { content: event.data.content || '' }
+                    });
+                }
+                if (incrementalFrame === null) {
+                    incrementalFrame = window.requestAnimationFrame(flushIncrementalEvents);
+                }
+            };
+
+            const dispatchFrame = (frame) => {
+                if (!frame.trim()) return;
+
+                let eventType = '';
+                const dataLines = [];
+
+                for (const rawLine of frame.split(/\r?\n/)) {
+                    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+                    if (!line || line.startsWith(':')) continue;
+
+                    if (line.startsWith('event:')) {
+                        eventType = line.substring(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        dataLines.push(line.substring(5).trimStart());
+                    }
+                }
+
+                if (dataLines.length === 0) return;
+
+                try {
+                    const payload = JSON.parse(dataLines.join('\n'));
+                    const type = eventType || payload.type;
+                    if (!type) return;
+
+                    if (['done', 'error', 'interrupted'].includes(type)) {
+                        terminalEventReceived = true;
+                    }
+
+                    const event = {
+                        type,
+                        data: payload.data || {}
+                    };
+                    if (type === 'token' || type === 'reasoning_token') {
+                        enqueueIncrementalEvent(event);
+                    } else {
+                        // 阶段事件必须紧跟后端进度，不能排在大量 token 后面。
+                        flushIncrementalEvents();
+                        onEvent(event);
+                    }
+                } catch (e) {
+                    console.warn('SSE parse error:', e, frame);
+                }
+            };
+
+            const drainFrames = (flush = false) => {
+                buffer = buffer.replace(/\r\n/g, '\n');
+
+                let boundary;
+                while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+                    const frame = buffer.substring(0, boundary);
+                    buffer = buffer.substring(boundary + 2);
+                    dispatchFrame(frame);
+                }
+
+                if (flush && buffer.trim()) {
+                    dispatchFrame(buffer);
+                    buffer = '';
+                }
+            };
 
             const connect = async () => {
                 try {
                     const response = await fetch(url, {
-                        headers: { 'Authorization': 'Bearer ' + token }
+                        headers: {
+                            'Authorization': 'Bearer ' + token,
+                            'Accept': 'text/event-stream',
+                            'Cache-Control': 'no-cache'
+                        },
+                        cache: 'no-store',
+                        signal: abortController.signal
                     });
 
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
+                    }
+                    if (!response.body) {
+                        throw new Error('浏览器不支持流式响应');
                     }
 
                     const reader = response.body.getReader();
@@ -105,34 +203,19 @@ function createApiClient() {
                         if (done) break;
 
                         buffer += decoder.decode(value, { stream: true });
-
-                        // 解析 SSE 格式
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop() || ''; // 保留不完整的行
-
-                        let currentEvent = '';
-                        for (const line of lines) {
-                            if (line.startsWith('event:')) {
-                                currentEvent = line.substring(6).trim();
-                            } else if (line.startsWith('data:')) {
-                                const dataStr = line.substring(5).trim();
-                                if (dataStr) {
-                                    try {
-                                        const data = JSON.parse(dataStr);
-                                        onEvent({ type: currentEvent || data.type, data });
-                                    } catch (e) {
-                                        console.warn('SSE parse error:', e);
-                                    }
-                                }
-                            }
-                        }
+                        drainFrames();
                     }
 
-                    if (!stopped) {
+                    buffer += decoder.decode();
+                    drainFrames(true);
+
+                    if (!stopped && !terminalEventReceived) {
+                        flushIncrementalEvents();
                         onEvent({ type: 'done', data: {} });
                     }
                 } catch (e) {
-                    if (!stopped) {
+                    if (!stopped && e.name !== 'AbortError') {
+                        flushIncrementalEvents();
                         onEvent({ type: 'error', data: { message: e.message } });
                     }
                 }
@@ -143,6 +226,12 @@ function createApiClient() {
             // 返回停止函数
             return () => {
                 stopped = true;
+                abortController.abort();
+                incrementalEvents.length = 0;
+                if (incrementalFrame !== null) {
+                    window.cancelAnimationFrame(incrementalFrame);
+                    incrementalFrame = null;
+                }
             };
         },
 

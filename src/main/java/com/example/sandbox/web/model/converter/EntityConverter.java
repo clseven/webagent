@@ -25,23 +25,11 @@ public class EntityConverter {
         if (entity == null) {
             return null;
         }
-        return createChatMessageViaReflection(entity.getRole(), entity.getContent(), entity.getReasoning(), entity.getTimestamp());
-    }
-
-    /**
-     * 通过反射创建 ChatMessage 实例（因为构造函数是私有的）
-     */
-    private static ChatMessage createChatMessageViaReflection(String role, String content, String reasoning, Long timestamp) {
-        try {
-            // 构造函数签名: (String role, String content, String reasoning, Long timestamp, List<FileAttachment> files, String toolCallId)
-            var constructor = ChatMessage.class.getDeclaredConstructor(
-                    String.class, String.class, String.class, Long.class,
-                    java.util.List.class, String.class);
-            constructor.setAccessible(true);
-            return constructor.newInstance(role, content, reasoning, timestamp, null, null);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to create ChatMessage via reflection", e);
-        }
+        return ChatMessage.restore(
+                entity.getRole(),
+                entity.getContent(),
+                entity.getReasoning(),
+                entity.getTimestamp());
     }
 
     public static ChatMessageEntity toChatMessageEntity(ConversationSessionEntity session, String role, String content) {
