@@ -1,7 +1,7 @@
 // 知识库页组件
 const KnowledgePage = {
     template: `
-        <div class="knowledge-page">
+        <div class="knowledge-page page-container">
             <h1>知识库</h1>
             <p class="page-desc">管理知识库和文档，让智能体更了解您的业务</p>
 
@@ -9,18 +9,21 @@ const KnowledgePage = {
             <div class="kb-section">
                 <div class="kb-header">
                     <h3>知识库列表</h3>
-                    <button class="btn-primary btn-sm" @click="showCreateKb = true" v-if="!showCreateKb">＋ 新建知识库</button>
+                    <button class="btn btn-primary btn-sm" @click="showCreateKb = true" v-if="!showCreateKb">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    新建知识库
+                </button>
                 </div>
 
                 <!-- 创建知识库表单 -->
                 <div class="create-kb-form" v-if="showCreateKb">
                     <div class="form-group">
                         <label>知识库名称</label>
-                        <input v-model="newKb.name" placeholder="如：毕业设计项目" maxlength="100">
+                        <input class="input" v-model="newKb.name" placeholder="如：毕业设计项目" maxlength="100">
                     </div>
                     <div class="form-group">
                         <label>知识库描述</label>
-                        <textarea v-model="newKb.description" placeholder="描述知识库包含的内容，Agent 会根据描述判断何时检索..." maxlength="500" rows="2"></textarea>
+                        <textarea class="input" v-model="newKb.description" placeholder="描述知识库包含的内容，Agent 会根据描述判断何时检索..." maxlength="500" rows="2"></textarea>
                     </div>
                     <div class="form-actions">
                         <button class="btn-primary btn-sm" @click="createKb" :disabled="!newKb.name.trim()">创建</button>
@@ -38,8 +41,12 @@ const KnowledgePage = {
                             <div class="kb-desc">{{ kb.description || '暂无描述' }}</div>
                         </div>
                         <div class="kb-actions">
-                            <button class="btn-icon" @click.stop="editKb(kb)" title="编辑">✏️</button>
-                            <button class="btn-icon" @click.stop="deleteKb(kb)" title="删除">🗑️</button>
+                            <button class="btn-icon" @click.stop="editKb(kb)" title="编辑">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                            <button class="btn-icon" @click.stop="deleteKb(kb)" title="删除">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -51,15 +58,17 @@ const KnowledgePage = {
                 <div class="modal-content modal-sm">
                     <div class="modal-header">
                         <h3>编辑知识库</h3>
-                        <button class="modal-close" @click="editingKb = null">✕</button>
+                        <button class="modal-close" @click="editingKb = null">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                     </div>
                     <div class="form-group">
                         <label>名称</label>
-                        <input v-model="editKbForm.name" maxlength="100">
+                        <input class="input" v-model="editKbForm.name" maxlength="100">
                     </div>
                     <div class="form-group">
                         <label>描述</label>
-                        <textarea v-model="editKbForm.description" maxlength="500" rows="3"></textarea>
+                        <textarea class="input" v-model="editKbForm.description" maxlength="500" rows="3"></textarea>
                     </div>
                     <div class="form-actions">
                         <button class="btn-primary btn-sm" @click="saveKb">保存</button>
@@ -71,7 +80,7 @@ const KnowledgePage = {
             <!-- 当前知识库的文档管理 -->
             <div class="doc-section" v-if="currentKb">
                 <div class="doc-header">
-                    <h3>📁 {{ currentKb.name }} - 文档管理</h3>
+                    <h3><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-3px;margin-right:6px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>{{ currentKb.name }} - 文档管理</h3>
                 </div>
 
                 <!-- 统计卡片 -->
@@ -97,7 +106,9 @@ const KnowledgePage = {
                          @dragover.prevent="isDragging = true"
                          @dragleave="isDragging = false"
                          @drop.prevent="handleDrop">
-                        <div class="upload-icon">📄</div>
+                        <div class="upload-icon">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+                    </div>
                         <div class="upload-text">
                             <span v-if="!isDragging">拖拽文件到此处，或</span>
                             <span v-else>释放文件</span>
@@ -136,7 +147,7 @@ const KnowledgePage = {
                                     切片大小（字符数）
                                     <span class="param-hint">推荐: 750</span>
                                 </label>
-                                <input type="number" v-model.number="chunkSize" min="100" max="10000" step="100">
+                                <input class="input" type="number" v-model.number="chunkSize" min="100" max="10000" step="100">
                                 <span class="param-preview">约 {{ Math.round(chunkSize * 0.8) }} tokens</span>
                             </div>
                             <div class="param-row">
@@ -144,7 +155,7 @@ const KnowledgePage = {
                                     重叠大小（字符数）
                                     <span class="param-hint">推荐: 75</span>
                                 </label>
-                                <input type="number" v-model.number="overlap" min="0" :max="chunkSize" step="50">
+                                <input class="input" type="number" v-model.number="overlap" min="0" :max="chunkSize" step="50">
                                 <span class="param-preview">占比 {{ chunkSize > 0 ? Math.round(overlap / chunkSize * 100) : 0 }}%</span>
                             </div>
                         </div>
@@ -170,9 +181,10 @@ const KnowledgePage = {
                 <div class="knowledge-search-box" v-if="documents.length > 0">
                     <h3>知识库检索</h3>
                     <div class="search-input-row">
-                        <input v-model="searchQuery" @keyup.enter="doSearch"
+                        <input class="input" v-model="searchQuery" @keyup.enter="doSearch"
                                placeholder="输入问题，测试知识库检索效果..." />
-                        <button @click="doSearch" :disabled="searching || !searchQuery.trim()">
+                        <button class="btn btn-primary" @click="doSearch" :disabled="searching || !searchQuery.trim()">
+                            <span v-if="searching" class="thinking-spinner small" style="border-color:rgba(255,255,255,0.3);border-top-color:#fff;margin-right:6px;"></span>
                             {{ searching ? '检索中...' : '检索' }}
                         </button>
                     </div>
@@ -226,7 +238,9 @@ const KnowledgePage = {
                                 <span class="status-badge" :class="doc.status">{{ statusText(doc.status) }}</span>
                             </div>
                             <div class="doc-actions">
-                                <button class="btn-delete" @click.stop="deleteDoc(doc)" title="删除">🗑️</button>
+                                <button class="btn-delete" @click.stop="deleteDoc(doc)" title="删除">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        </button>
                             </div>
                         </div>
                     </div>

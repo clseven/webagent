@@ -1,22 +1,25 @@
 // Agent 应用管理页组件
 const AgentAppsPage = {
     template: `
-        <div class="agent-apps-page">
+        <div class="agent-apps-page page-container">
             <h1>Agent 应用</h1>
             <p class="page-desc">创建和管理您的智能体应用，配置知识库和技能</p>
 
             <!-- 创建应用 -->
             <div class="create-app-section">
-                <button class="btn-primary" @click="showCreate = true" v-if="!showCreate">＋ 创建应用</button>
+                <button class="btn btn-primary" @click="showCreate = true" v-if="!showCreate">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        创建应用
+                    </button>
                 <div class="create-app-form" v-if="showCreate">
                     <h3>创建新应用</h3>
                     <div class="form-group">
                         <label>应用名称</label>
-                        <input v-model="newApp.name" placeholder="如：毕业设计助手" maxlength="100">
+                        <input class="input" v-model="newApp.name" placeholder="如：毕业设计助手" maxlength="100">
                     </div>
                     <div class="form-group">
                         <label>应用描述</label>
-                        <textarea v-model="newApp.description" placeholder="描述这个应用的用途..." maxlength="500" rows="3"></textarea>
+                        <textarea class="input" v-model="newApp.description" placeholder="描述这个应用的用途..." maxlength="500" rows="3"></textarea>
                     </div>
                     <div class="form-actions">
                         <button class="btn-primary" @click="createApp" :disabled="!newApp.name.trim()">创建</button>
@@ -56,7 +59,9 @@ const AgentAppsPage = {
                 <div class="modal-content">
                     <div class="modal-header">
                         <h3>配置应用: {{ editingApp.name }}</h3>
-                        <button class="modal-close" @click="editingApp = null">✕</button>
+                        <button class="modal-close" @click="editingApp = null">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                     </div>
 
                     <!-- 基本信息 -->
@@ -64,11 +69,11 @@ const AgentAppsPage = {
                         <h4>基本信息</h4>
                         <div class="form-group">
                             <label>应用名称</label>
-                            <input v-model="editForm.name" maxlength="100">
+                            <input class="input" v-model="editForm.name" maxlength="100">
                         </div>
                         <div class="form-group">
                             <label>应用描述</label>
-                            <textarea v-model="editForm.description" maxlength="500" rows="2"></textarea>
+                            <textarea class="input" v-model="editForm.description" maxlength="500" rows="2"></textarea>
                         </div>
                         <button class="btn-primary btn-sm" @click="saveAppInfo">保存信息</button>
                     </div>

@@ -1,95 +1,111 @@
 // 对话页组件
 const ChatPage = {
     template: `
-        <div class="chat-page" style="display: flex; gap: 0;">
-            <!-- 左侧：对话区域 -->
-            <div style="flex: 1; min-width: 0;">
-                <!-- 会话选择器 -->
-                <div class="session-selector">
-                    <label>Agent 应用：</label>
-                    <select v-model="currentAppId" @change="onAppChange">
-                        <option value="">-- 通用对话 --</option>
-                        <option v-for="app in apps" :key="app.id" :value="app.id">
-                            {{ app.name }}
-                        </option>
-                    </select>
-                    <label style="margin-left: 1rem;">会话：</label>
-                    <select v-model="currentSessionId" @change="switchSession">
-                        <option value="">-- 新建会话 --</option>
-                        <option v-for="s in filteredSessions" :key="s.sessionId" :value="s.sessionId">
-                            {{ s.sessionId ? s.sessionId.substring(0, 8) : '未知' }}... ({{ s.enabledSkillIds ? s.enabledSkillIds.length : 0 }} 技能)
-                        </option>
-                    </select>
-                    <button @click="createSession">＋ 新建</button>
-                    <button v-if="currentSessionId" @click="copyId" :style="{ background: copied ? '#4CAF50' : '#2196F3' }">
-                        {{ copied ? '已复制!' : '复制 ID' }}
-                    </button>
-                </div>
-
-                <!-- 当前应用信息 -->
-                <div class="app-info-bar" v-if="currentApp">
-                    <span class="app-badge">{{ currentApp.name }}</span>
-                    <span class="app-desc">{{ currentApp.description || '' }}</span>
-                    <span class="app-kb" v-if="currentApp.knowledgeBaseIds && currentApp.knowledgeBaseIds.length > 0">
-                        📚 {{ currentApp.knowledgeBaseIds.length }} 个知识库
-                    </span>
-                    <span class="app-skill" v-if="currentApp.skillIds && currentApp.skillIds.length > 0">
-                        ⚡ {{ currentApp.skillIds.length }} 个技能
-                    </span>
-                </div>
-
+        <div class="chat-workspace">
+            <!-- 中间：聊天主区 -->
+            <div class="chat-main">
                 <!-- 对话面板 -->
-                <div class="chat-panel" v-if="currentSessionId">
+                <div class="chat-panel" v-if="currentSessionId" style="position:relative;">
+                    <!-- 聊天头部（精简） -->
                     <div class="chat-header">
-                        <h3>💬 对话</h3>
+                        <div class="chat-header-left">
+                            <span class="chat-app-tag" v-if="currentApp">{{ currentApp.name }}</span>
+                            <span class="chat-app-tag chat-app-tag-default" v-else>通用对话</span>
+                            <span class="chat-session-id" v-if="currentSessionId">#{{ currentSessionId.substring(0, 8) }}</span>
+                        </div>
+                        <div class="chat-header-right">
+                            <button class="btn btn-ghost btn-sm" @click="copyId" v-if="currentSessionId">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                {{ copied ? '已复制' : '复制ID' }}
+                            </button>
+                            <button class="btn btn-ghost btn-sm" @click="toggleVnc" :class="{ 'btn-active': vncOpen }">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                                沙箱
+                            </button>
+                        </div>
                     </div>
+
+                    <!-- 消息区 -->
                     <div class="chat-messages" ref="messagesEl" @click="handleMessageContentClick">
-                        <div v-if="messages.length === 0" class="empty">开始对话</div>
+                        <!-- 加载骨架屏 -->
+                        <template v-if="loadingHistory">
+                            <div class="skeleton-message user">
+                                <div class="skeleton-content"><div class="skeleton skeleton-bubble user" style="width:60%; height:36px;"></div></div>
+                            </div>
+                            <div class="skeleton-message assistant">
+                                <div class="skeleton skeleton-avatar" style="width:32px;height:32px;"></div>
+                                <div class="skeleton-content">
+                                    <div class="skeleton skeleton-text" style="width:90%;"></div>
+                                    <div class="skeleton skeleton-text" style="width:75%;"></div>
+                                    <div class="skeleton skeleton-text" style="width:40%;"></div>
+                                </div>
+                            </div>
+                            <div class="skeleton-message user">
+                                <div class="skeleton-content"><div class="skeleton skeleton-bubble user" style="width:40%; height:36px;"></div></div>
+                            </div>
+                            <div class="skeleton-message assistant">
+                                <div class="skeleton skeleton-avatar" style="width:32px;height:32px;"></div>
+                                <div class="skeleton-content">
+                                    <div class="skeleton skeleton-text" style="width:80%;"></div>
+                                    <div class="skeleton skeleton-text" style="width:55%;"></div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <!-- 空状态 -->
+                        <div v-if="!loadingHistory && messages.length === 0" class="empty-state chat-empty">
+                            <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <rect x="20" y="30" width="80" height="55" rx="12" stroke="currentColor" stroke-width="2" opacity="0.2"/>
+                                <circle cx="45" cy="57" r="6" fill="currentColor" opacity="0.15"/>
+                                <circle cx="60" cy="57" r="6" fill="currentColor" opacity="0.15"/>
+                                <circle cx="75" cy="57" r="6" fill="currentColor" opacity="0.15"/>
+                                <path d="M30 80h60" stroke="currentColor" stroke-width="2" opacity="0.1"/>
+                            </svg>
+                            <h3>开始对话</h3>
+                            <p>输入消息，AI 助手将为你提供帮助</p>
+                        </div>
 
                         <!-- 历史消息 -->
                         <template v-for="msg in messages" :key="msg.timestamp">
-                            <div :class="['chat-message', msg.role]">
+                            <div :class="['chat-message', msg.role, msg.error ? 'has-error' : '']">
                                 <div class="role-label">{{ msg.role === 'user' ? '你' : '助手' }}</div>
                                 <div class="bubble">
                                     <template v-if="msg.role === 'assistant'">
-                                        <details v-if="msg.events && msg.events.length > 0"
-                                                 class="process-disclosure">
+                                        <details v-if="msg.events && msg.events.length > 0" class="process-disclosure">
                                             <summary class="process-summary">
                                                 <span class="process-check">✓</span>
                                                 <span>已处理</span>
                                                 <span class="process-count">{{ msg.events.length }} 个步骤</span>
                                             </summary>
                                             <div class="process-timeline">
-                                                <details v-for="(event, idx) in msg.events"
-                                                         :key="msg.timestamp + '-event-' + idx"
-                                                         class="process-item">
+                                                <details v-for="(event, idx) in msg.events" :key="msg.timestamp + '-event-' + idx" class="process-item">
                                                     <summary>
                                                         <span class="process-dot"></span>
                                                         <span class="process-item-title">{{ processTitle(event) }}</span>
                                                         <span class="process-preview">{{ processPreview(event) }}</span>
                                                     </summary>
                                                     <div class="process-detail">
-                                                        <div v-if="event.type === 'toolResult'" class="process-tool-args">
-                                                            参数
-                                                            <pre>{{ JSON.stringify(event.args, null, 2) }}</pre>
-                                                        </div>
-                                                        <div v-if="event.type === 'toolResult'">
-                                                            结果
-                                                            <pre>{{ event.result }}</pre>
-                                                        </div>
+                                                        <div v-if="event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
+                                                        <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
                                                         <div v-else v-html="renderMarkdown(event.content || '')"></div>
                                                     </div>
                                                 </details>
                                             </div>
                                         </details>
                                         <div class="assistant-answer" v-html="renderMarkdown(msg.content || '')"></div>
+                                        <div v-if="msg.error" class="error-retry">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                                            <span>{{ msg.error }}</span>
+                                            <button class="btn btn-sm btn-secondary" @click="retryMessage(msg)">重试</button>
+                                        </div>
                                     </template>
                                     <div v-else v-html="renderContent(msg)"></div>
                                 </div>
+                                <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
                             </div>
                         </template>
 
-                        <!-- 当前流式回复：发送后立即出现，并持续更新 -->
+                        <!-- 流式回复 -->
                         <div v-if="streaming" class="chat-message assistant streaming">
                             <div class="role-label">助手</div>
                             <div class="bubble agent-stream-card">
@@ -97,32 +113,21 @@ const ChatPage = {
                                     <summary class="process-summary">
                                         <span class="thinking-spinner small"></span>
                                         <span>{{ streamingStatus }}</span>
-                                        <span v-if="currentEvents.length" class="process-count">
-                                            已完成 {{ currentEvents.length }} 个步骤
-                                        </span>
+                                        <span v-if="currentEvents.length" class="process-count">已完成 {{ currentEvents.length }} 个步骤</span>
                                     </summary>
                                     <div class="process-timeline">
-                                        <details v-for="(event, idx) in currentEvents"
-                                                 :key="'live-event-' + idx"
-                                                 class="process-item">
+                                        <details v-for="(event, idx) in currentEvents" :key="'live-event-' + idx" class="process-item">
                                             <summary>
                                                 <span class="process-dot completed"></span>
                                                 <span class="process-item-title">{{ processTitle(event) }}</span>
                                                 <span class="process-preview">{{ processPreview(event) }}</span>
                                             </summary>
                                             <div class="process-detail">
-                                                <div v-if="event.type === 'toolResult'" class="process-tool-args">
-                                                    参数
-                                                    <pre>{{ JSON.stringify(event.args, null, 2) }}</pre>
-                                                </div>
-                                                <div v-if="event.type === 'toolResult'">
-                                                    结果
-                                                    <pre>{{ event.result }}</pre>
-                                                </div>
+                                                <div v-if="event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
+                                                <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
                                                 <div v-else v-html="renderMarkdown(event.content || '')"></div>
                                             </div>
                                         </details>
-
                                         <details v-if="currentReasoning" class="process-item active" open>
                                             <summary>
                                                 <span class="process-dot active"></span>
@@ -131,93 +136,179 @@ const ChatPage = {
                                             </summary>
                                             <div class="process-detail" v-html="renderMarkdown(currentReasoning)"></div>
                                         </details>
-
                                         <details v-if="currentToolCall" class="process-item active" open>
                                             <summary>
                                                 <span class="process-dot active"></span>
                                                 <span class="process-item-title">调用工具 {{ currentToolCall.tool }}</span>
-                                                <span class="process-preview">
-                                                    {{ currentToolCall.elapsed > 0 ? currentToolCall.elapsed + 'ms' : '执行中' }}
-                                                </span>
+                                                <span class="process-preview">{{ currentToolCall.elapsed > 0 ? currentToolCall.elapsed + 'ms' : '执行中' }}</span>
                                             </summary>
-                                            <div class="process-detail">
-                                                <pre>{{ JSON.stringify(currentToolCall.args, null, 2) }}</pre>
-                                            </div>
+                                            <div class="process-detail"><pre>{{ JSON.stringify(currentToolCall.args, null, 2) }}</pre></div>
                                         </details>
                                     </div>
                                 </details>
-
-                                <!-- 模型内容 token 实时输出 -->
                                 <div v-if="currentThinking" class="live-thinking">
                                     <div v-html="renderMarkdown(currentThinking)"></div>
                                     <span class="stream-cursor"></span>
                                 </div>
-
-                                <!-- 最终答案 -->
-                                <div v-if="finalAnswer && !finalAnswerSaved"
-                                     class="live-final-answer"
-                                     v-html="renderMarkdown(finalAnswer)"></div>
+                                <div v-if="finalAnswer && !finalAnswerSaved" class="live-final-answer" v-html="renderMarkdown(finalAnswer)"></div>
                             </div>
                         </div>
+
+                        <!-- 回到底部 -->
+                        <button v-if="showScrollBtn" class="scroll-to-bottom" @click="scrollToBottom" title="回到底部">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
                     </div>
 
-                    <!-- 上传区域 -->
+                    <!-- 上传区 -->
                     <div class="upload-area">
-                        <label class="upload-btn">
-                            <span>📎</span>
+                        <label class="upload-btn" title="添加文件">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                             <span>添加文件</span>
                             <input type="file" multiple @change="handleFileSelect">
                         </label>
                         <div class="upload-file-list" v-if="pendingFiles.length > 0">
                             <span class="upload-file-tag" v-for="(file, index) in pendingFiles" :key="index">
-                                <span>{{ getFileIcon(file.name) }}</span>
-                                <span>{{ file.name }}</span>
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                {{ file.name }}
                                 <span class="remove-btn" @click="removeFile(index)">×</span>
                             </span>
                         </div>
                     </div>
 
+                    <!-- 输入区 -->
                     <div class="chat-input-area">
                         <input
                             v-model="inputText"
-                            placeholder="输入消息..."
+                            placeholder="输入消息... (Enter 发送)"
                             @keyup.enter="send"
+                            :disabled="sending"
                         >
-                        <button v-if="streaming" @click="stopStream" class="stop-btn">
-                            停止
+                        <button v-if="streaming" @click="stopStream" class="btn-send stop-btn" title="停止生成">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
                         </button>
-                        <button v-else @click="send" :disabled="sending">
-                            {{ sending ? '处理中...' : '发送' }}
+                        <button v-else @click="send" :disabled="sending || !inputText.trim()" class="btn-send" title="发送">
+                            <svg v-if="!sending" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            <span v-else class="thinking-spinner small" style="border-color:rgba(255,255,255,0.3);border-top-color:#fff;"></span>
                         </button>
                     </div>
                 </div>
 
-                <div v-else class="empty" style="height: 60vh; display: flex; align-items: center; justify-content: center;">
-                    请先创建或选择会话
+                <!-- 无会话 -->
+                <div v-else class="empty-state chat-empty" style="flex:1; background: var(--color-surface); border-radius: var(--radius-lg); border:1px solid var(--color-border-light);">
+                    <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="60" cy="55" r="24" fill="currentColor" opacity="0.08"/>
+                        <path d="M48 62c4 6 20 6 24 0" stroke="currentColor" stroke-width="2" opacity="0.15"/>
+                        <circle cx="52" cy="50" r="3" fill="currentColor" opacity="0.2"/>
+                        <circle cx="68" cy="50" r="3" fill="currentColor" opacity="0.2"/>
+                    </svg>
+                    <h3>选择或创建会话</h3>
+                    <p>在右侧选择 Agent 和会话开始对话</p>
+                    <button class="btn btn-primary" @click="createSession">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        新建会话
+                    </button>
                 </div>
             </div>
 
-            <!-- 右侧：VNC 面板 -->
+            <!-- 右侧：Agent + 会话面板 -->
+            <aside class="chat-sidebar">
+                <!-- Agent 选择区 -->
+                <div class="sidebar-section">
+                    <div class="sidebar-section-header">
+                        <span class="sidebar-section-title">Agent</span>
+                        <span class="sidebar-section-count">{{ apps.length + 1 }}</span>
+                    </div>
+                    <div class="agent-list">
+                        <div class="agent-item" :class="{ active: currentAppId === '' }" @click="selectApp('')">
+                            <div class="agent-avatar agent-avatar-default">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                            </div>
+                            <div class="agent-info">
+                                <div class="agent-name">通用对话</div>
+                                <div class="agent-desc">无配置</div>
+                            </div>
+                        </div>
+                        <div v-for="app in apps" :key="app.id"
+                             class="agent-item"
+                             :class="{ active: currentAppId == app.id }"
+                             @click="selectApp(app.id)">
+                            <div class="agent-avatar">{{ app.name ? app.name.charAt(0).toUpperCase() : 'A' }}</div>
+                            <div class="agent-info">
+                                <div class="agent-name">{{ app.name }}</div>
+                                <div class="agent-desc">
+                                    <span v-if="app.knowledgeBaseIds && app.knowledgeBaseIds.length">{{ app.knowledgeBaseIds.length }} KB</span>
+                                    <span v-if="app.skillIds && app.skillIds.length">{{ app.skillIds.length }} Skill</span>
+                                    <span v-if="(!app.knowledgeBaseIds || !app.knowledgeBaseIds.length) && (!app.skillIds || !app.skillIds.length)">{{ app.description || '无配置' }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 会话列表 -->
+                <div class="sidebar-section sidebar-section-flex">
+                    <div class="sidebar-section-header">
+                        <span class="sidebar-section-title">会话</span>
+                        <button class="btn-icon btn-icon-sm" @click="createSession" title="新建会话">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
+                    </div>
+                    <div class="session-list" v-if="filteredSessions.length > 0">
+                        <div v-for="s in filteredSessions"
+                             :key="s.sessionId"
+                             class="session-item"
+                             :class="{ active: currentSessionId === s.sessionId }"
+                             @click="selectSession(s.sessionId)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                            <div class="session-info">
+                                <div class="session-title">会话 {{ s.sessionId.substring(0, 8) }}</div>
+                                <div class="session-meta">
+                                    <span v-if="s.enabledSkillIds && s.enabledSkillIds.length">{{ s.enabledSkillIds.length }} 技能</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else class="sidebar-empty">
+                        <p>暂无会话</p>
+                        <button class="btn btn-primary btn-sm" @click="createSession">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                            新建会话
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- VNC 面板 -->
             <div v-if="vncOpen" class="vnc-resize-handle" @mousedown="startResize"></div>
             <div class="vnc-panel" :class="{ open: vncOpen }" :style="{ width: vncOpen ? vncWidth + '%' : '0' }">
                 <div class="vnc-header">
-                    <h3>沙箱实时视图</h3>
+                    <h3>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        沙箱视图
+                    </h3>
                     <div class="vnc-actions">
                         <span class="vnc-status">{{ vncStatus }}</span>
-                        <button @click="resizeVnc(-10)" title="缩小">-</button>
+                        <button @click="resizeVnc(-10)" title="缩小">−</button>
                         <button @click="resizeVnc(10)" title="放大">+</button>
-                        <button @click="toggleVnc" title="关闭">✕</button>
+                        <button @click="toggleVnc" title="关闭">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>
                     </div>
                 </div>
                 <div class="vnc-container">
                     <iframe v-if="vncUrl" :src="vncUrl"></iframe>
-                    <div v-else class="vnc-placeholder">{{ vncPlaceholder }}</div>
+                    <div v-else class="vnc-placeholder">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        <span>{{ vncPlaceholder }}</span>
+                    </div>
                 </div>
             </div>
 
             <!-- VNC 浮动按钮 -->
-            <button class="vnc-float-btn" @click="toggleVnc" :style="{ background: vncOpen ? '#f44336' : '#4CAF50' }">
-                {{ vncOpen ? '✕' : '◀' }}
+            <button class="vnc-float-btn" @click="toggleVnc" :style="{ background: vncOpen ? '#EF4444' : '' }" :title="vncOpen ? '关闭' : '沙箱视图'">
+                <svg v-if="!vncOpen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
         </div>
     `,
@@ -234,8 +325,9 @@ const ChatPage = {
         const sending = Vue.ref(false);
         const pendingFiles = Vue.ref([]);
         const copied = Vue.ref(false);
+        const loadingHistory = Vue.ref(false);
+        const showScrollBtn = Vue.ref(false);
 
-        // 流式状态
         const streaming = Vue.ref(false);
         const stopStreamFn = Vue.ref(null);
         const currentThinking = Vue.ref('');
@@ -244,86 +336,69 @@ const ChatPage = {
         const finalAnswer = Vue.ref('');
         const finalAnswerSaved = Vue.ref(false);
         const streamPhase = Vue.ref('idle');
-
-        // 当前消息的事件收集
         const currentEvents = Vue.ref([]);
+
         const streamingStatus = Vue.computed(() => {
             switch (streamPhase.value) {
-                case 'planning':
-                    return '正在规划';
-                case 'plan_ready':
-                    return '规划完成';
-                case 'thinking':
-                    return '正在思考';
-                case 'generating':
-                    return '正在生成';
-                case 'processing':
-                    return '正在处理';
-                case 'tool':
-                    return currentToolCall.value
-                        ? `正在执行工具 ${currentToolCall.value.tool}`
-                        : '正在执行工具';
-                case 'tool_done':
-                    return '工具执行完成';
-                case 'answer':
-                    return '正在整理回答';
-                default:
-                    return '正在处理';
+                case 'planning': return '正在规划';
+                case 'plan_ready': return '规划完成';
+                case 'thinking': return '正在思考';
+                case 'generating': return '正在生成';
+                case 'processing': return '正在处理';
+                case 'tool': return currentToolCall.value ? `执行 ${currentToolCall.value.tool}` : '执行工具';
+                case 'tool_done': return '工具完成';
+                case 'answer': return '整理回答';
+                default: return '处理中';
             }
         });
 
-        // VNC 状态
         const vncOpen = Vue.ref(false);
         const vncUrl = Vue.ref('');
         const vncStatus = Vue.ref('未连接');
         const vncPlaceholder = Vue.ref('请先创建会话');
         const vncWidth = Vue.ref(70);
-        let isResizing = false;
-        let startX = 0;
+        let isResizing = false, startX = 0;
 
-        // 当前应用
         const currentApp = Vue.computed(() => {
             if (!currentAppId.value) return null;
             return apps.value.find(a => a.id == currentAppId.value) || null;
         });
 
-        // 按应用过滤会话
         const filteredSessions = Vue.computed(() => {
-            if (!currentAppId.value) {
-                return sessions.value.filter(s => !s.appId);
-            }
+            if (!currentAppId.value) return sessions.value.filter(s => !s.appId);
             return sessions.value.filter(s => s.appId == currentAppId.value);
         });
 
-        // 加载应用列表
         const loadApps = async () => {
-            try {
-                apps.value = await api.listApps();
-            } catch (e) {
-                console.error('加载应用列表失败:', e);
-                apps.value = [];
-            }
+            try { apps.value = await api.listApps(); } catch (e) { apps.value = []; }
         };
 
-        // 加载会话列表
         const loadSessions = async () => {
             try {
                 const result = await api.listSessions();
                 sessions.value = Array.isArray(result) ? result.filter(s => s && s.sessionId) : [];
-            } catch (e) {
-                console.error('加载会话列表失败:', e);
-                sessions.value = [];
-            }
+            } catch (e) { sessions.value = []; }
         };
 
-        // 应用切换
         const onAppChange = () => {
             currentSessionId.value = '';
             store.setSession('');
             messages.value = [];
         };
 
-        // 创建新会话
+        const selectApp = (appId) => {
+            currentAppId.value = appId || '';
+            currentSessionId.value = '';
+            store.setSession('');
+            messages.value = [];
+        };
+
+        const selectSession = async (sessionId) => {
+            currentSessionId.value = sessionId;
+            store.setSession(sessionId);
+            await loadHistory();
+        };
+
         const createSession = async () => {
             try {
                 const appId = currentAppId.value ? Number(currentAppId.value) : undefined;
@@ -332,39 +407,28 @@ const ChatPage = {
                 store.setSession(session.sessionId);
                 await loadSessions();
                 await loadHistory();
-            } catch (e) {
-                alert('创建会话失败: ' + e.message);
-            }
+            } catch (e) { alert('创建会话失败: ' + e.message); }
         };
 
-        // 切换会话
         const switchSession = async () => {
             store.setSession(currentSessionId.value);
-            if (currentSessionId.value) {
-                await loadHistory();
-            } else {
-                messages.value = [];
-            }
+            if (currentSessionId.value) await loadHistory();
+            else messages.value = [];
         };
 
-        // 加载历史消息
         const loadHistory = async () => {
             if (!currentSessionId.value) return;
+            loadingHistory.value = true;
             try {
                 const history = await api.getHistory(currentSessionId.value);
                 messages.value = history || [];
                 scrollToBottom();
-            } catch (e) {
-                console.error('加载历史消息失败:', e);
-            }
+            } catch (e) { console.error('加载历史失败:', e); }
+            finally { loadingHistory.value = false; }
         };
 
-        // 发送消息（流式）
         const send = async () => {
-            if (!currentSessionId.value) {
-                alert('请先创建会话');
-                return;
-            }
+            if (!currentSessionId.value) { alert('请先创建会话'); return; }
             const text = inputText.value.trim();
             if (!text && pendingFiles.value.length === 0) return;
 
@@ -372,8 +436,6 @@ const ChatPage = {
             streaming.value = true;
             inputText.value = '';
             scrollToBottom();
-
-            // 重置流式状态
             currentThinking.value = '';
             currentReasoning.value = '';
             currentToolCall.value = null;
@@ -382,7 +444,6 @@ const ChatPage = {
             currentEvents.value = [];
             streamPhase.value = 'planning';
 
-            // 先上传文件
             let uploadedFiles = [];
             if (pendingFiles.value.length > 0) {
                 for (const file of pendingFiles.value) {
@@ -390,202 +451,70 @@ const ChatPage = {
                         const result = await api.uploadFile(currentSessionId.value, file);
                         uploadedFiles.push({ name: file.name, path: result });
                     } catch (e) {
-                        // 检测到重复文件（409）：用 DuplicateHandler 通用处理
                         if (window.DuplicateHandler && window.DuplicateHandler.isDuplicateError(e)) {
                             const handleResult = await window.DuplicateHandler.handle({
-                                file: file,
-                                error: e,
+                                file, error: e,
                                 onReplace: () => api.replaceFile(currentSessionId.value, file),
                                 onKeepBoth: (newFile) => api.uploadFile(currentSessionId.value, newFile)
                             });
                             if (handleResult === 'replace-done' || handleResult === 'keep-both-done') {
-                                const uploadedName = handleResult === 'keep-both-done' ? newFile?.name || file.name : file.name;
-                                // 重新查询一下沙箱路径（这里简化处理，使用 /home/gem/uploads/{name}）
-                                const path = '/home/gem/uploads/' + uploadedName;
-                                uploadedFiles.push({ name: uploadedName, path: path });
-                            } else {
-                                console.warn('用户跳过文件:', file.name);
+                                const name = handleResult === 'keep-both-done' ? (newFile?.name || file.name) : file.name;
+                                uploadedFiles.push({ name, path: '/home/gem/uploads/' + name });
                             }
-                        } else {
-                            console.error('上传文件失败:', e);
                         }
                     }
                 }
                 pendingFiles.value = [];
             }
 
-            // 构造消息
             let fullMessage = text;
             if (uploadedFiles.length > 0) {
-                const fileList = uploadedFiles.map(f => `📎 ${f.name}`).join('\n');
-                fullMessage = (text ? text + '\n\n' : '') + '【上传的文件】\n' + fileList;
+                fullMessage = (text ? text + '\n\n' : '') + '【上传的文件】\n' + uploadedFiles.map(f => '📎 ' + f.name).join('\n');
             }
 
-            // 显示用户消息
             messages.value.push({ role: 'user', content: fullMessage, timestamp: Date.now() });
             scrollToBottom();
-
-            // 启动 SSE 流
             const stop = api.createChatStream(currentSessionId.value, fullMessage, handleStreamEvent);
             stopStreamFn.value = stop;
         };
 
-        // 处理 SSE 事件
         const handleStreamEvent = (event) => {
             const { type, data } = event;
-
             switch (type) {
-                case 'plan':
-                    currentEvents.value.push({ type: 'plan', content: data.content });
-                    streamPhase.value = 'plan_ready';
-                    scrollToBottom();
-                    break;
-
-                case 'thinking_start':
-                    currentThinking.value = '';
-                    currentReasoning.value = '';
-                    streamPhase.value = 'thinking';
-                    scrollToBottom();
-                    break;
-
-                case 'token':
-                    currentThinking.value += data.content;
-                    streamPhase.value = 'generating';
-                    scrollToBottom();
-                    break;
-
-                case 'reasoning_token':
-                    // 思考链 token（推理模型的思考过程），单独存
-                    currentReasoning.value += data.content;
-                    streamPhase.value = 'thinking';
-                    scrollToBottom();
-                    break;
-
+                case 'plan': currentEvents.value.push({ type: 'plan', content: data.content }); streamPhase.value = 'plan_ready'; scrollToBottom(); break;
+                case 'thinking_start': currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'thinking'; scrollToBottom(); break;
+                case 'token': currentThinking.value += data.content; streamPhase.value = 'generating'; scrollToBottom(); break;
+                case 'reasoning_token': currentReasoning.value += data.content; streamPhase.value = 'thinking'; scrollToBottom(); break;
                 case 'thinking_end':
-                    // 本轮思考结束，保存为事件
-                    if (currentThinking.value) {
-                        currentEvents.value.push({
-                            type: 'thinking',
-                            content: currentThinking.value,
-                            stepIndex: data.stepIndex || currentEvents.value.filter(e => e.type === 'thinking').length + 1
-                        });
-                    }
-                    if (currentReasoning.value) {
-                        currentEvents.value.push({
-                            type: 'reasoning',
-                            content: currentReasoning.value,
-                            stepIndex: data.stepIndex || currentEvents.value.filter(e => e.type === 'reasoning').length + 1
-                        });
-                    }
-                    currentThinking.value = '';
-                    currentReasoning.value = '';
-                    streamPhase.value = 'processing';
-                    scrollToBottom();
-                    break;
-
-                case 'tool_call':
-                    currentToolCall.value = { tool: data.tool, args: data.args, elapsed: 0 };
-                    streamPhase.value = 'tool';
-                    scrollToBottom();
-                    break;
-
-                case 'tool_executing':
-                    if (currentToolCall.value) {
-                        currentToolCall.value.elapsed = data.elapsed;
-                    }
-                    streamPhase.value = 'tool';
-                    break;
-
+                    if (currentThinking.value) currentEvents.value.push({ type: 'thinking', content: currentThinking.value, stepIndex: currentEvents.value.filter(e => e.type === 'thinking').length + 1 });
+                    if (currentReasoning.value) currentEvents.value.push({ type: 'reasoning', content: currentReasoning.value, stepIndex: currentEvents.value.filter(e => e.type === 'reasoning').length + 1 });
+                    currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'processing'; scrollToBottom(); break;
+                case 'tool_call': currentToolCall.value = { tool: data.tool, args: data.args, elapsed: 0 }; streamPhase.value = 'tool'; scrollToBottom(); break;
+                case 'tool_executing': if (currentToolCall.value) currentToolCall.value.elapsed = data.elapsed; streamPhase.value = 'tool'; break;
                 case 'observation':
-                    // 工具执行完成
-                    if (currentToolCall.value) {
-                        currentEvents.value.push({
-                            type: 'toolResult',
-                            tool: currentToolCall.value.tool,
-                            args: currentToolCall.value.args,
-                            result: data.result,
-                            duration: data.duration
-                        });
-                    }
-                    currentToolCall.value = null;
-                    streamPhase.value = 'tool_done';
-                    scrollToBottom();
-                    break;
-
+                    if (currentToolCall.value) currentEvents.value.push({ type: 'toolResult', tool: currentToolCall.value.tool, args: currentToolCall.value.args, result: data.result, duration: data.duration });
+                    currentToolCall.value = null; streamPhase.value = 'tool_done'; scrollToBottom(); break;
                 case 'answer':
-                    finalAnswer.value = data.content || '';
-                    streamPhase.value = 'answer';
-                    const lastThinkingIndex = currentEvents.value
-                        .map(event => event.type === 'thinking' ? event.content : null)
-                        .lastIndexOf(finalAnswer.value);
-                    if (lastThinkingIndex >= 0) {
-                        currentEvents.value.splice(lastThinkingIndex, 1);
-                    }
-                    scrollToBottom();
-                    break;
-
-                case 'done':
-                    finishStream();
-                    break;
-
-                case 'interrupted':
-                    finishStream();
-                    messages.value.push({
-                        role: 'assistant',
-                        content: '⚠️ 任务被中断: ' + data.reason,
-                        timestamp: Date.now()
-                    });
-                    break;
-
-                case 'error':
-                    finishStream();
-                    messages.value.push({
-                        role: 'assistant',
-                        content: '❌ 错误: ' + (data.message || '未知错误'),
-                        timestamp: Date.now()
-                    });
-                    break;
-
-                case 'heartbeat':
-                    // 心跳事件，保持 SSE 连接活跃，无需处理
-                    break;
+                    finalAnswer.value = data.content || ''; streamPhase.value = 'answer';
+                    const idx = currentEvents.value.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(finalAnswer.value);
+                    if (idx >= 0) currentEvents.value.splice(idx, 1);
+                    scrollToBottom(); break;
+                case 'done': finishStream(); break;
+                case 'interrupted': finishStream(); messages.value.push({ role: 'assistant', content: '⚠️ 中断: ' + data.reason, timestamp: Date.now(), error: '任务中断' }); break;
+                case 'error': finishStream(); messages.value.push({ role: 'assistant', content: '❌ 错误: ' + (data.message || '未知'), timestamp: Date.now(), error: data.message || '未知错误', _lastText: '' }); break;
+                case 'heartbeat': break;
             }
         };
 
-        // 完成流
         const finishStream = () => {
-            streaming.value = false;
-            sending.value = false;
-            stopStreamFn.value = null;
-
-            // 保存最终答案为消息
-            if (finalAnswer.value) {
-                messages.value.push({
-                    role: 'assistant',
-                    content: finalAnswer.value,
-                    events: [...currentEvents.value],
-                    timestamp: Date.now()
-                });
-                finalAnswerSaved.value = true;
-            }
-
-            currentThinking.value = '';
-            currentReasoning.value = '';
-            currentToolCall.value = null;
-            currentEvents.value = [];
-            streamPhase.value = 'idle';
-            scrollToBottom();
+            streaming.value = false; sending.value = false; stopStreamFn.value = null;
+            if (finalAnswer.value) { messages.value.push({ role: 'assistant', content: finalAnswer.value, events: [...currentEvents.value], timestamp: Date.now() }); finalAnswerSaved.value = true; }
+            currentThinking.value = ''; currentReasoning.value = ''; currentToolCall.value = null; currentEvents.value = []; streamPhase.value = 'idle'; scrollToBottom();
         };
 
-        // 停止流
-        const stopStream = () => {
-            if (stopStreamFn.value) {
-                stopStreamFn.value();
-                stopStreamFn.value = null;
-            }
-        };
+        const stopStream = () => { if (stopStreamFn.value) { stopStreamFn.value(); stopStreamFn.value = null; } };
+        const retryMessage = (msg) => { inputText.value = msg._lastText || ''; };
 
-        // 渲染内容
         const parseSandboxFileUrl = (href) => {
             if (!href) return null;
             try {
@@ -593,297 +522,81 @@ const ChatPage = {
                 const match = url.pathname.match(/^\/api\/sessions\/([^/]+)\/files\/(?:download|preview)$/);
                 const filePath = url.searchParams.get('path');
                 if (!match || !filePath) return null;
-
                 const fileName = filePath.split('/').filter(Boolean).pop() || '文件';
-                const extension = fileName.includes('.')
-                    ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
-                    : '';
-                return {
-                    sessionId: decodeURIComponent(match[1]),
-                    filePath,
-                    fileName,
-                    fileType: extension
-                };
-            } catch (e) {
-                return null;
-            }
+                return { sessionId: decodeURIComponent(match[1]), filePath, fileName, fileType: fileName.includes('.') ? fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase() : '' };
+            } catch (e) { return null; }
         };
 
-        const escapeAttribute = (value) => escapeHtml(String(value || ''));
+        const escapeAttribute = (v) => escapeHtml(String(v || ''));
         const chatMarkdownRenderer = new marked.Renderer();
 
         chatMarkdownRenderer.image = (href, title, text) => {
             const file = parseSandboxFileUrl(href);
-            if (!file) {
-                const titleAttr = title ? ` title="${escapeAttribute(title)}"` : '';
-                return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text)}"${titleAttr}>`;
-            }
-
-            return `
-                <button type="button"
-                        class="chat-file-preview-card chat-image-preview-card"
-                        data-sandbox-preview="true"
-                        data-session-id="${escapeAttribute(file.sessionId)}"
-                        data-file-path="${escapeAttribute(file.filePath)}"
-                        data-file-name="${escapeAttribute(file.fileName)}"
-                        data-file-type="${escapeAttribute(file.fileType)}">
-                    <span class="chat-file-preview-icon">▧</span>
-                    <span class="chat-file-preview-info">
-                        <strong>${escapeHtml(text || file.fileName)}</strong>
-                        <small>${escapeHtml(file.fileName)}</small>
-                    </span>
-                    <span class="chat-file-preview-action">点击预览</span>
-                </button>
-            `;
+            if (!file) return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text)}"${title ? ` title="${escapeAttribute(title)}"` : ''}>`;
+            return `<button type="button" class="chat-file-preview-card" data-sandbox-preview="true" data-session-id="${escapeAttribute(file.sessionId)}" data-file-path="${escapeAttribute(file.filePath)}" data-file-name="${escapeAttribute(file.fileName)}" data-file-type="${escapeAttribute(file.fileType)}"><span class="chat-file-preview-icon">▧</span><span class="chat-file-preview-info"><strong>${escapeHtml(text || file.fileName)}</strong><small>${escapeHtml(file.fileName)}</small></span><span class="chat-file-preview-action">点击预览</span></button>`;
         };
 
         chatMarkdownRenderer.link = (href, title, text) => {
             const file = parseSandboxFileUrl(href);
-            if (!file) {
-                const titleAttr = title ? ` title="${escapeAttribute(title)}"` : '';
-                return `<a href="${escapeAttribute(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
-            }
-
-            return `
-                <a href="#"
-                   class="chat-sandbox-file-link"
-                   data-sandbox-preview="true"
-                   data-session-id="${escapeAttribute(file.sessionId)}"
-                   data-file-path="${escapeAttribute(file.filePath)}"
-                   data-file-name="${escapeAttribute(file.fileName)}"
-                   data-file-type="${escapeAttribute(file.fileType)}">${text}</a>
-            `;
+            if (!file) return `<a href="${escapeAttribute(href)}"${title ? ` title="${escapeAttribute(title)}"` : ''} target="_blank" rel="noopener noreferrer">${text}</a>`;
+            return `<a href="#" class="chat-sandbox-file-link" data-sandbox-preview="true" data-session-id="${escapeAttribute(file.sessionId)}" data-file-path="${escapeAttribute(file.filePath)}" data-file-name="${escapeAttribute(file.fileName)}" data-file-type="${escapeAttribute(file.fileType)}">${text}</a>`;
         };
 
         const handleMessageContentClick = (event) => {
             const target = event.target.closest('[data-sandbox-preview="true"]');
             if (!target) return;
-
             event.preventDefault();
-            if (typeof FilePreviewer === 'undefined') {
-                console.warn('FilePreviewer 尚未加载');
-                return;
-            }
-
-            FilePreviewer.preview({
-                source: 'workspace',
-                sessionId: target.dataset.sessionId || currentSessionId.value,
-                filePath: target.dataset.filePath,
-                fileName: target.dataset.fileName,
-                fileType: target.dataset.fileType
-            });
+            if (typeof FilePreviewer !== 'undefined') FilePreviewer.preview({ source: 'workspace', sessionId: target.dataset.sessionId || currentSessionId.value, filePath: target.dataset.filePath, fileName: target.dataset.fileName, fileType: target.dataset.fileType });
         };
 
-        const renderContent = (msg) => {
-            if (msg.role === 'assistant') {
-                return marked.parse(msg.content || '', { renderer: chatMarkdownRenderer });
-            }
-            return escapeHtml(msg.content || '');
-        };
+        const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : escapeHtml(msg.content || '');
+        const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
+        const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
+        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolResult': return `工具 ${e.tool || ''}`; default: return '处理'; } };
+        const processPreview = (e) => e.type === 'toolResult' ? (e.duration != null ? `${e.duration}ms` : '已完成') : previewText(e.content, 90);
+        const formatTime = (ts) => { if (!ts) return ''; const d = new Date(ts); const now = new Date(); const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0'); return d.toDateString() === now.toDateString() ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`; };
 
-        // 渲染 Markdown
-        const renderMarkdown = (content) => {
-            if (!content) return '';
-            return marked.parse(content, { renderer: chatMarkdownRenderer });
-        };
+        const scrollToBottom = () => { Vue.nextTick(() => { if (messagesEl.value) { messagesEl.value.scrollTop = messagesEl.value.scrollHeight; checkScrollPosition(); } }); };
+        const checkScrollPosition = () => { if (!messagesEl.value) return; const { scrollTop, scrollHeight, clientHeight } = messagesEl.value; showScrollBtn.value = scrollHeight - scrollTop - clientHeight > 200; };
 
-        const previewText = (content, maxLength = 90) => {
-            if (!content) return '';
-            const text = String(content).replace(/\s+/g, ' ').trim();
-            return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
-        };
+        const copyId = () => { if (currentSessionId.value) { navigator.clipboard.writeText(currentSessionId.value); copied.value = true; setTimeout(() => copied.value = false, 1500); } };
+        const handleFileSelect = (e) => { Array.from(e.target.files).forEach(f => { if (!pendingFiles.value.some(p => p.name === f.name)) pendingFiles.value.push(f); }); e.target.value = ''; };
+        const removeFile = (i) => { pendingFiles.value.splice(i, 1); };
+        const escapeHtml = (s) => s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
 
-        const processTitle = (event) => {
-            switch (event.type) {
-                case 'plan':
-                    return '规划任务';
-                case 'thinking':
-                    return `思考过程 · 第 ${event.stepIndex || 1} 轮`;
-                case 'reasoning':
-                    return `推理过程 · 第 ${event.stepIndex || 1} 轮`;
-                case 'toolResult':
-                    return `调用工具 ${event.tool || ''}`;
-                default:
-                    return '处理步骤';
-            }
-        };
-
-        const processPreview = (event) => {
-            if (event.type === 'toolResult') {
-                return event.duration != null ? `${event.duration}ms` : '已完成';
-            }
-            return previewText(event.content, 90);
-        };
-
-        // 滚动到底部
-        const scrollToBottom = () => {
-            Vue.nextTick(() => {
-                if (messagesEl.value) {
-                    messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
-                }
-            });
-        };
-
-        // 复制会话 ID
-        const copyId = () => {
-            if (currentSessionId.value) {
-                navigator.clipboard.writeText(currentSessionId.value);
-                copied.value = true;
-                setTimeout(() => copied.value = false, 1500);
-            }
-        };
-
-        // 文件选择
-        const handleFileSelect = (event) => {
-            const files = Array.from(event.target.files);
-            files.forEach(file => {
-                if (!pendingFiles.value.some(f => f.name === file.name)) {
-                    pendingFiles.value.push(file);
-                }
-            });
-            event.target.value = '';
-        };
-
-        // 移除文件
-        const removeFile = (index) => {
-            pendingFiles.value.splice(index, 1);
-        };
-
-        // 获取文件图标
-        const getFileIcon = (filename) => {
-            const ext = filename.split('.').pop().toLowerCase();
-            const icons = {
-                pdf: '📄', xlsx: '📊', xls: '📊', csv: '📋',
-                doc: '📝', docx: '📝', txt: '📃', md: '📃',
-                zip: '📦', rar: '📦', '7z': '📦',
-                png: '🖼️', jpg: '🖼️', jpeg: '🖼️', gif: '🖼️',
-                html: '🌐', css: '🎨', js: '📜', py: '🐍'
-            };
-            return icons[ext] || '📁';
-        };
-
-        // HTML 转义
-        const escapeHtml = (str) => {
-            if (!str) return '';
-            return str.replace(/&/g, '&amp;')
-                      .replace(/</g, '&lt;')
-                      .replace(/>/g, '&gt;')
-                      .replace(/"/g, '&quot;');
-        };
-
-        // VNC 相关方法
-        const toggleVnc = () => {
-            vncOpen.value = !vncOpen.value;
-            if (vncOpen.value && currentSessionId.value && !vncUrl.value) {
-                loadVncView();
-            }
-        };
-
+        const toggleVnc = () => { vncOpen.value = !vncOpen.value; if (vncOpen.value && currentSessionId.value && !vncUrl.value) loadVncView(); };
         const loadVncView = async () => {
-            if (!currentSessionId.value) {
-                vncPlaceholder.value = '请先创建会话';
-                return;
-            }
-            vncStatus.value = '连接中...';
-            vncPlaceholder.value = '正在获取沙箱地址...';
-            try {
-                const endpoint = await api.getAioEndpoint(currentSessionId.value);
-                if (endpoint) {
-                    vncUrl.value = `http://${endpoint}/`;
-                    vncStatus.value = '已连接';
-                } else {
-                    vncPlaceholder.value = '无法获取沙箱地址';
-                    vncStatus.value = '连接失败';
-                }
-            } catch (e) {
-                vncPlaceholder.value = '连接错误: ' + e.message;
-                vncStatus.value = '连接失败';
-            }
+            if (!currentSessionId.value) { vncPlaceholder.value = '请先创建会话'; return; }
+            vncStatus.value = '连接中...'; vncPlaceholder.value = '获取沙箱地址...';
+            try { const ep = await api.getAioEndpoint(currentSessionId.value); if (ep) { vncUrl.value = `http://${ep}/`; vncStatus.value = '已连接'; } else { vncPlaceholder.value = '无法获取地址'; vncStatus.value = '失败'; } }
+            catch (e) { vncPlaceholder.value = '连接错误'; vncStatus.value = '失败'; }
         };
-
-        const resizeVnc = (delta) => {
-            vncWidth.value = Math.max(30, Math.min(90, vncWidth.value + delta));
-        };
-
+        const resizeVnc = (d) => { vncWidth.value = Math.max(30, Math.min(90, vncWidth.value + d)); };
         const startResize = (e) => {
-            isResizing = true;
-            startX = e.clientX;
-            document.body.style.cursor = 'col-resize';
-            document.body.style.userSelect = 'none';
-
-            const onMouseMove = (e) => {
-                if (!isResizing) return;
-                const wrapper = document.querySelector('.chat-page');
-                if (!wrapper) return;
-                const wrapperWidth = wrapper.offsetWidth;
-                const diff = startX - e.clientX;
-                const currentWidthPx = (vncWidth.value / 100) * wrapperWidth;
-                const newWidthPx = currentWidthPx + diff;
-                vncWidth.value = Math.max(20, Math.min(80, (newWidthPx / wrapperWidth) * 100));
-                startX = e.clientX;
-            };
-
-            const onMouseUp = () => {
-                isResizing = false;
-                document.body.style.cursor = '';
-                document.body.style.userSelect = '';
-                document.removeEventListener('mousemove', onMouseMove);
-                document.removeEventListener('mouseup', onMouseUp);
-            };
-
-            document.addEventListener('mousemove', onMouseMove);
-            document.addEventListener('mouseup', onMouseUp);
+            isResizing = true; startX = e.clientX; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
+            const m = (ev) => { if (!isResizing) return; const w = document.querySelector('.chat-page'); if (!w) return; const dw = startX - ev.clientX; vncWidth.value = Math.max(20, Math.min(80, (vncWidth.value / 100) * w.offsetWidth + dw) / w.offsetWidth * 100); startX = ev.clientX; };
+            const u = () => { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; document.removeEventListener('mousemove', m); document.removeEventListener('mouseup', u); };
+            document.addEventListener('mousemove', m); document.addEventListener('mouseup', u);
         };
 
-        // 监听会话变化，重置 VNC
-        Vue.watch(currentSessionId, () => {
-            vncUrl.value = '';
-            vncStatus.value = '未连接';
-            vncPlaceholder.value = '请先创建会话';
-        });
+        Vue.watch(currentSessionId, () => { vncUrl.value = ''; vncStatus.value = '未连接'; vncPlaceholder.value = '请先创建会话'; });
 
-        // 初始化
-        Vue.onMounted(async () => {
-            // 配置 marked
-            marked.setOptions({
-                highlight: function(code, lang) {
-                    if (lang && hljs.getLanguage(lang)) {
-                        return hljs.highlight(code, { language: lang }).value;
-                    }
-                    return hljs.highlightAuto(code).value;
-                },
-                breaks: true,
-                gfm: true
-            });
-
-            // 从 URL 参数中获取 appId
-            const urlParams = new URLSearchParams(window.location.hash.split('?')[1] || '');
-            const appIdFromUrl = urlParams.get('appId');
-            if (appIdFromUrl) {
-                currentAppId.value = appIdFromUrl;
-            }
-
-            await Promise.all([loadApps(), loadSessions()]);
-
-            if (currentSessionId.value) {
-                await loadHistory();
-            }
+        Vue.onMounted(() => {
+            marked.setOptions({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : hljs.highlightAuto(c).value, breaks: true, gfm: true });
+            const p = new URLSearchParams(window.location.hash.split('?')[1] || ''); const aid = p.get('appId'); if (aid) currentAppId.value = aid;
+            Promise.all([loadApps(), loadSessions()]).then(() => { if (currentSessionId.value) loadHistory(); });
+            Vue.nextTick(() => { if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition); });
         });
 
         return {
-            store,
-            messagesEl,
-            apps, sessions, currentAppId, currentApp, filteredSessions,
-            currentSessionId,
-            messages, inputText, sending, pendingFiles, copied,
+            store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
+            messages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
             streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
             finalAnswer, finalAnswerSaved, currentEvents,
-            onAppChange, createSession, switchSession, send, stopStream,
+            onAppChange, selectApp, selectSession, createSession, switchSession, send, stopStream, retryMessage,
             renderContent, renderMarkdown, previewText, processTitle, processPreview,
-            handleMessageContentClick,
-            copyId, handleFileSelect, removeFile, getFileIcon,
-            vncOpen, vncUrl, vncStatus, vncPlaceholder, vncWidth,
-            toggleVnc, resizeVnc, startResize
+            handleMessageContentClick, formatTime, copyId, handleFileSelect, removeFile,
+            vncOpen, vncUrl, vncStatus, vncPlaceholder, vncWidth, toggleVnc, resizeVnc, startResize, scrollToBottom
         };
     }
 };

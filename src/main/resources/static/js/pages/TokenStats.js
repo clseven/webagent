@@ -1,7 +1,7 @@
 // Token 用量统计页组件
 const TokenStatsPage = {
     template: `
-        <div class="token-stats-page">
+        <div class="token-stats-page page-container">
             <h1>Token 用量统计</h1>
 
             <!-- 时间范围选择 -->
