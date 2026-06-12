@@ -68,8 +68,8 @@ public class RagConfigProperties {
     @Setter
     @Getter
     public static class Conversion {
-        private boolean enabled = true;
-        private int timeoutSeconds = 120;
+        private boolean enabled;
+        private int timeoutSeconds;
     }
 
     /**
@@ -78,7 +78,7 @@ public class RagConfigProperties {
     @Setter
     @Getter
     public static class Enhancement {
-        private boolean enabled = true;
+        private boolean enabled;
         private Rewrite rewrite = new Rewrite();
         private Retrieve retrieve = new Retrieve();
         private Rerank rerank = new Rerank();
@@ -86,27 +86,33 @@ public class RagConfigProperties {
         @Setter
         @Getter
         public static class Rewrite {
-            private boolean enabled = true;
-            private int maxQueries = 3;
-            private String model = "glm-4-flash";
+            private boolean enabled;
+            private int maxQueries;
+            private String apiUrl;
+            private String model;
+            private double temperature;
+            private double topP;
+            private int numPredict;
+            private int numCtx;
+            private String keepAlive;
 
         }
 
         @Setter
         @Getter
         public static class Retrieve {
-            private int topN = 20;
-            private float minScore = 0.5f;
+            private int topN;
+            private float minScore;
 
         }
 
         @Setter
         @Getter
         public static class Rerank {
-            private boolean enabled = true;
-            private String apiUrl = "http://localhost:11434/api/chat";
-            private String model = "bge-reranker";
-            private int topK = 5;
+            private boolean enabled;
+            private String apiUrl;
+            private String model;
+            private int topK;
 
         }
     }

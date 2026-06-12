@@ -34,6 +34,7 @@ agent:
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}
     timeout: PT30M
     ready-timeout: PT180S
+    sandbox-timeout: ${SANDBOX_TIMEOUT:P7D}
   storage:
     type: ${STORAGE_TYPE:local}
     local:
@@ -75,6 +76,25 @@ rag:
     collection: knowledge_chunks_v3
   storage:
     path: ${RAG_STORAGE_PATH:./uploads/knowledge}
+  enhancement:
+    enabled: true
+    rewrite:
+      enabled: true
+      max-queries: 3
+      api-url: ${RAG_REWRITE_URL:http://localhost:11434/api/chat}
+      model: ${RAG_REWRITE_MODEL:qwen3:1.7b}
+      temperature: 0.1
+      top-p: 0.8
+      num-predict: 128
+      num-ctx: 4096
+      keep-alive: 30m
+    retrieve:
+      top-n: 20
+      min-score: 0.5
+    rerank:
+      enabled: true
+      api-url: ${RAG_RERANK_URL:http://127.0.0.1:8002/rerank}
+      top-k: 8
 
 baidu:
   ocr:

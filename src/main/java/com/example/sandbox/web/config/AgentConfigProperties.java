@@ -29,6 +29,7 @@ public class AgentConfigProperties {
         private String image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2";
         private String timeout = "PT30M";
         private String readyTimeout = "PT120S";
+        private String sandboxTimeout = "P7D";
 
     }
 

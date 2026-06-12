@@ -11,6 +11,10 @@ import com.example.sandbox.web.repository.KnowledgeBaseRepository;
 import com.example.sandbox.web.repository.KnowledgeChunkRepository;
 import com.example.sandbox.web.repository.KnowledgeDocumentRepository;
 import com.example.sandbox.web.service.*;
+import com.example.sandbox.web.service.enhance.QueryRewriteService;
+import com.example.sandbox.web.service.enhance.RankedChunk;
+import com.example.sandbox.web.service.enhance.RawChunk;
+import com.example.sandbox.web.service.enhance.RerankService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,6 +69,12 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
     @Autowired
     private KnowledgeFileMigrationService migrationService;
+
+    @Autowired
+    private QueryRewriteService queryRewriteService;
+
+    @Autowired
+    private RerankService rerankService;
 
     @Autowired
     private OfficePreviewService officePreviewService;
@@ -564,38 +574,73 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
     @Override
     public List<Map<String, Object>> search(Long userId, Long kbId, String query, int topK) {
-        // 1. 问题向量化
-        EmbeddingService.EmbeddingResult queryResult = embeddingService.embedBatch(List.of(query));
-        float[] queryEmbedding = queryResult.embeddings().get(0);
+        // 1. Query Rewrite（传空历史，只做语义扩展）
+        List<String> queries = queryRewriteService.rewrite(query, List.of());
+        log.info("Query Rewrite: {} -> {}", query, queries);
 
-        // 2. 向量检索（按知识库过滤）
-        List<Map<String, Object>> vectorResults = vectorStoreService.search(userId, kbId, queryEmbedding, topK);
+        // 2. 向量检索（多召回一些用于 rerank）
+        int retrieveTopK = Math.max(topK * 3, 20);
+        Map<Long, String> docNameMap = new HashMap<>();
+        List<Map<String, Object>> allVectorResults = new ArrayList<>();
 
-        // 3. 补充切片文本和文档信息
-        List<Map<String, Object>> results = new ArrayList<>();
+        for (String q : queries) {
+            EmbeddingService.EmbeddingResult queryResult = embeddingService.embedBatch(List.of(q));
+            float[] queryEmbedding = queryResult.embeddings().get(0);
+            List<Map<String, Object>> results = vectorStoreService.search(userId, kbId, queryEmbedding, retrieveTopK);
+            for (Map<String, Object> r : results) {
+                Long docId = ((Number) r.get("docId")).longValue();
+                docNameMap.putIfAbsent(docId, (String) r.get("docName"));
+            }
+            allVectorResults.addAll(results);
+        }
+
+        // 去重（按 docId + chunkIndex）
+        Map<String, Map<String, Object>> dedupMap = new LinkedHashMap<>();
+        for (Map<String, Object> r : allVectorResults) {
+            String key = r.get("docId") + ":" + r.get("chunkIndex");
+            dedupMap.putIfAbsent(key, r);
+        }
+        List<Map<String, Object>> vectorResults = new ArrayList<>(dedupMap.values());
+
+        // 3. 补充切片文本
         for (Map<String, Object> vr : vectorResults) {
             Long docId = ((Number) vr.get("docId")).longValue();
             int chunkIndex = ((Number) vr.get("chunkIndex")).intValue();
-            float score = ((Number) vr.get("score")).floatValue();
 
-            // 从 MySQL 获取切片文本
             KnowledgeChunkEntity chunk = chunkRepository.findByDocumentIdOrderByChunkIndex(docId)
                     .stream()
                     .filter(c -> c.getChunkIndex() == chunkIndex)
                     .findFirst()
                     .orElse(null);
 
-            KnowledgeDocumentEntity document = documentRepository.findById(docId).orElse(null);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("docId", docId);
-            result.put("docName", document != null ? document.getFileName() : "未知文档");
-            result.put("chunkIndex", chunkIndex);
-            result.put("content", chunk != null ? chunk.getContent() : "");
-            result.put("score", score);
-            results.add(result);
+            vr.put("content", chunk != null ? chunk.getContent() : "");
         }
 
+        // 4. Rerank
+        List<RawChunk> candidates = vectorResults.stream()
+                .map(r -> new RawChunk(
+                        ((Number) r.get("docId")).longValue(),
+                        ((Number) r.get("chunkIndex")).intValue(),
+                        (String) r.get("content"),
+                        ((Number) r.get("score")).floatValue()
+                ))
+                .toList();
+
+        List<RankedChunk> ranked = rerankService.rerank(query, candidates);
+
+        // 5. 构建最终结果
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (RankedChunk rc : ranked) {
+            Map<String, Object> m = new HashMap<>();
+            m.put("docId", rc.docId());
+            m.put("docName", docNameMap.getOrDefault(rc.docId(), "未知文档"));
+            m.put("chunkIndex", rc.chunkIndex());
+            m.put("content", rc.content());
+            m.put("score", rc.score());
+            results.add(m);
+        }
+
+        log.info("检索完成: Query {} 个, 向量召回 {} 个, Rerank 后 {} 个", queries.size(), vectorResults.size(), results.size());
         return results;
     }
 

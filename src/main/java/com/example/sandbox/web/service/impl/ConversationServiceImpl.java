@@ -314,6 +314,7 @@ public class ConversationServiceImpl implements ConversationService {
     /**
      * 获取会话（数据库）
      */
+    @Transactional(readOnly = true)
     public ConversationSession getSession(String sessionId) {
         ConversationSessionEntity entity = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new SessionNotFoundException(sessionId));

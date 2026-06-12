@@ -20,6 +20,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
@@ -209,7 +211,7 @@ public class RagController {
     }
 
     /**
-     * 向量检索（在指定知识库中检索）
+     * 向量检索（在指定知识库中检索，自动 Query Rewrite + Rerank）
      */
     @PostMapping("/bases/{kbId}/search")
     public ApiResponse<List<Map<String, Object>>> search(
@@ -217,11 +219,7 @@ public class RagController {
         Long userId = UserContext.getCurrentUserId();
         log.info("知识库检索: userId={}, kbId={}, query={}", userId, kbId, request.getQuery());
         List<Map<String, Object>> results = knowledgeService.search(
-                userId,
-                kbId,
-                request.getQuery(),
-                request.getTopK()
-        );
+                userId, kbId, request.getQuery(), request.getTopK());
         return ApiResponse.success(results);
     }
 }

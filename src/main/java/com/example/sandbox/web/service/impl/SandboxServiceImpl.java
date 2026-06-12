@@ -43,7 +43,6 @@ public class SandboxServiceImpl implements SandboxService {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxServiceImpl.class);
 
-    private static final Duration SANDBOX_TIMEOUT = Duration.ofHours(24);
     private static final Duration RENEW_INTERVAL = Duration.ofMinutes(30);
 
     /** sandboxId → SandboxAgent */
@@ -227,7 +226,7 @@ public class SandboxServiceImpl implements SandboxService {
                 // 创建新沙箱
                 SandboxAgent.Builder builder = SandboxAgent.builder()
                         .image(config.getSandbox().getImage())
-                        .timeout(SANDBOX_TIMEOUT)
+                        .timeout(Duration.parse(config.getSandbox().getSandboxTimeout()))
                         .readyTimeout(Duration.parse(config.getSandbox().getReadyTimeout()));
 
                 if (isCurrentImageAio()) {
