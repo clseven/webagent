@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -75,9 +74,9 @@ public class ListFilesTool implements Tool {
         boolean isRecursive = recursive != null && recursive;
 
         try {
-            AioSandboxClient client = factory.getAioClient(sessionId);
-            Map<String, Object> result = client.listFiles(
-                    path, isRecursive, true,
+            var client = factory.getAioClient(sessionId);
+            Map<String, Object> result = client.files().list(
+                    path, isRecursive, false,
                     null, true, "name", false
             );
 

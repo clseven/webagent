@@ -1,6 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.config.RagConfigProperties;
 import com.example.sandbox.web.model.entity.KnowledgeDocumentEntity;
 import com.example.sandbox.web.model.response.FilePreviewContent;
@@ -32,7 +32,7 @@ public class OfficePreviewService {
         return OFFICE_EXTENSIONS.contains(extension(fileName));
     }
 
-    public FilePreviewContent previewKnowledge(AioSandboxClient client,
+    public FilePreviewContent previewKnowledge(AioClient client,
                                                KnowledgeDocumentEntity document,
                                                String sandboxPath) {
         requireConvertible(sandboxPath);
@@ -42,7 +42,7 @@ public class OfficePreviewService {
         return preview(client, sandboxPath, cachePath, document.getFileName());
     }
 
-    public FilePreviewContent previewWorkspace(AioSandboxClient client, String sandboxPath) {
+    public FilePreviewContent previewWorkspace(AioClient client, String sandboxPath) {
         requireConvertible(sandboxPath);
         String sourceHash = sourceHash(client, sandboxPath);
         String pathHash = sha256(sandboxPath).substring(0, 24);
@@ -51,14 +51,14 @@ public class OfficePreviewService {
         return preview(client, sandboxPath, cachePath, fileName(sandboxPath));
     }
 
-    private FilePreviewContent preview(AioSandboxClient client,
+    private FilePreviewContent preview(AioClient client,
                                        String sourcePath,
                                        String cachePath,
                                        String originalFileName) {
-        if (!client.fileExists(cachePath)) {
+        if (!client.shell().fileExists(cachePath)) {
             convert(client, sourcePath, cachePath);
         }
-        byte[] content = client.downloadFile(cachePath);
+        byte[] content = client.files().download(cachePath);
         if (content == null || content.length == 0) {
             throw new RuntimeException("Office 预览文件为空: " + cachePath);
         }
@@ -66,7 +66,7 @@ public class OfficePreviewService {
                 content, "application/pdf", "pdf", originalFileName);
     }
 
-    private void convert(AioSandboxClient client, String sourcePath, String cachePath) {
+    private void convert(AioClient client, String sourcePath, String cachePath) {
         String conversionId = UUID.randomUUID().toString();
         String outputDir = "/home/gem/temp/previews/convert-" + conversionId;
         String profile = "file:///tmp/lo-profile-" + conversionId;
@@ -83,14 +83,14 @@ public class OfficePreviewService {
                 + " && mv " + quote(generatedPdf) + " " + quote(cachePath)
                 + " ; status=$?; rm -rf " + quote(outputDir)
                 + "; exit $status";
-        client.execCommand(command);
-        if (!client.fileExists(cachePath)) {
+        client.shell().exec(command);
+        if (!client.shell().fileExists(cachePath)) {
             throw new RuntimeException("LibreOffice 转换失败或超时: " + sourcePath);
         }
     }
 
-    private String sourceHash(AioSandboxClient client, String sourcePath) {
-        String output = client.execCommand("sha256sum -- " + quote(sourcePath));
+    private String sourceHash(AioClient client, String sourcePath) {
+        String output = client.shell().exec("sha256sum -- " + quote(sourcePath)).getOutput();
         if (output == null || output.isBlank()) {
             throw new RuntimeException("无法计算预览源文件版本: " + sourcePath);
         }

@@ -1,6 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.exception.DuplicateFileException;
 import com.example.sandbox.web.exception.UnauthorizedException;
 import com.example.sandbox.web.model.entity.KnowledgeBaseEntity;
@@ -78,6 +78,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
     @Autowired
     private OfficePreviewService officePreviewService;
+
+    @Autowired
+    private OfficePreviewAsyncService officePreviewAsyncService;
 
     // ========== 知识库 CRUD ==========
 
@@ -287,7 +290,15 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             // 6. 同步文件到沙箱（用于预览，不阻塞主流程）
             boolean sandboxSynced = syncToSandbox(document, filePath);
 
-            // 7. 更新状态
+            // 7. 异步预转换 Office 文件（不阻塞主流程）
+            if (sandboxSynced) {
+                String sandboxPath = workspaceStorage.knowledgeSandboxPath(
+                        document.getKbId(), document.getFileName());
+                officePreviewAsyncService.convertKnowledgeFileAsync(
+                        document.getUserId(), document.getKbId(), docId, sandboxPath);
+            }
+
+            // 8. 更新状态
             document.setChunkCount(chunks.size());
             document.setTotalTokens(totalTokens);
             document.setSandboxSynced(sandboxSynced);
@@ -317,7 +328,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
      */
     private boolean syncToSandbox(KnowledgeDocumentEntity document, String localFilePath) {
         try {
-            AioSandboxClient client = sandboxClientFactory.getAioClientByUserId(document.getUserId());
+            AioClient client = sandboxClientFactory.getAioClientByUserId(document.getUserId());
             if (client == null) {
                 log.warn("用户 {} 无沙箱，跳过沙箱同步: docId={}", document.getUserId(), document.getId());
                 return false;
@@ -329,7 +340,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
             // 读取本地文件并写入沙箱
             byte[] fileBytes = Files.readAllBytes(Paths.get(localFilePath));
-            boolean ok = client.writeFile(sandboxPath, fileBytes);
+            boolean ok = client.files().writeBytes(sandboxPath, fileBytes);
             if (ok) {
                 log.info("文件已同步到沙箱: docId={}, path={}", document.getId(), sandboxPath);
             } else {
@@ -379,7 +390,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     public FilePreviewContent getPreviewContent(Long userId, Long docId) {
         KnowledgeDocumentEntity document = requireOwnedDocument(userId, docId);
         Path localFile = migrationService.ensureCanonicalFile(document);
-        AioSandboxClient client = sandboxClientFactory.getAioClientByUserId(userId);
+        AioClient client = sandboxClientFactory.getAioClientByUserId(userId);
         if (client == null) {
             throw new RuntimeException("用户沙箱不可用，请稍后重试");
         }
@@ -389,7 +400,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (officePreviewService.isConvertible(document.getFileName())) {
             return officePreviewService.previewKnowledge(client, document, sandboxPath);
         }
-        byte[] content = client.downloadFile(sandboxPath);
+        byte[] content = client.files().download(sandboxPath);
         if (content == null || content.length == 0) {
             throw new RuntimeException("沙箱文件不存在或为空: " + sandboxPath);
         }
@@ -407,14 +418,14 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (!Objects.equals(document.getUserId(), userId)) {
             throw new RuntimeException("无权访问该文档");
         }
-        AioSandboxClient client = sandboxClientFactory.getAioClientByUserId(userId);
+        AioClient client = sandboxClientFactory.getAioClientByUserId(userId);
         if (client == null) {
             throw new RuntimeException("用户沙箱不可用，请稍后重试");
         }
         migrationService.ensureCanonicalFile(document);
         String sandboxPath = workspaceStorage.knowledgeSandboxPath(
                 document.getKbId(), document.getFileName());
-        byte[] content = client.downloadFile(sandboxPath);
+        byte[] content = client.files().download(sandboxPath);
         if (content == null || content.length == 0) {
             throw new RuntimeException("沙箱文件不存在或为空，请确认文件已成功同步: " + sandboxPath);
         }
@@ -520,7 +531,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
      */
     private void deleteFromSandbox(KnowledgeDocumentEntity document) {
         try {
-            AioSandboxClient client = sandboxClientFactory.getAioClientByUserId(document.getUserId());
+            AioClient client = sandboxClientFactory.getAioClientByUserId(document.getUserId());
             if (client == null) {
                 log.warn("用户 {} 无沙箱，跳过沙箱清理: docId={}", document.getUserId(), document.getId());
                 return;
@@ -684,12 +695,12 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         return document;
     }
 
-    private void ensureSandboxFile(AioSandboxClient client, Path localFile, String sandboxPath) {
-        if (client.fileExists(sandboxPath)) {
+    private void ensureSandboxFile(AioClient client, Path localFile, String sandboxPath) {
+        if (client.shell().fileExists(sandboxPath)) {
             return;
         }
         client.execCommand("mkdir -p " + quoteShell(parentPath(sandboxPath)));
-        if (!client.writeFile(sandboxPath, workspaceStorage.read(localFile))) {
+        if (!client.files().writeBytes(sandboxPath, workspaceStorage.read(localFile))) {
             throw new RuntimeException("恢复沙箱文件失败: " + sandboxPath);
         }
     }

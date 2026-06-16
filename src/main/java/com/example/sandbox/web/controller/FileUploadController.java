@@ -1,6 +1,6 @@
 package com.example.sandbox.web.controller;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.exception.DuplicateFileException;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.service.AgentService;
@@ -44,6 +44,9 @@ public class FileUploadController {
     @Autowired
     private UserWorkspaceStorageService workspaceStorage;
 
+    @Autowired
+    private OfficePreviewAsyncService officePreviewAsyncService;
+
     @PostMapping("/upload")
     public Object upload(
             @RequestParam("file") MultipartFile file,
@@ -64,6 +67,10 @@ public class FileUploadController {
             workspaceStorage.write(localPath, bytes);
             String sandboxPath = workspaceStorage.uploadSandboxPath(filename);
             syncUploadToSandbox(sessionId, sandboxPath, bytes);
+
+            // 异步预转换 Office 文件
+            officePreviewAsyncService.convertWorkspaceFileAsync(userId, sandboxPath);
+
             return ApiResponse.success(sandboxPath);
         } catch (DuplicateFileException e) {
             throw e;  // 让 GlobalExceptionHandler 统一处理
@@ -93,6 +100,10 @@ public class FileUploadController {
                     bytes);
             String sandboxPath = workspaceStorage.uploadSandboxPath(filename);
             syncUploadToSandbox(sessionId, sandboxPath, bytes);
+
+            // 异步预转换 Office 文件
+            officePreviewAsyncService.convertWorkspaceFileAsync(session.getUserId(), sandboxPath);
+
             return ApiResponse.success(sandboxPath);
         } catch (Exception e) {
             log.error("替换沙箱文件失败: {}", e.getMessage(), e);
@@ -146,8 +157,8 @@ public class FileUploadController {
 
     private void syncUploadToSandbox(String sessionId, String sandboxPath, byte[] bytes) {
         try {
-            AioSandboxClient client = sandboxService.getAioClient(sessionId);
-            if (client.uploadFile(sandboxPath, bytes)) {
+            AioClient client = sandboxService.getAioClient(sessionId);
+            if (client.files().upload(sandboxPath, bytes)) {
                 log.info("文件已同步到 AIO 沙箱: {}", sandboxPath);
             } else {
                 log.warn("文件已持久化，但同步到 AIO 沙箱失败: {}", sandboxPath);

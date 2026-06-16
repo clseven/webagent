@@ -1,6 +1,9 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
+import com.example.sandbox.aio.file.AioFileApi;
+import com.example.sandbox.aio.shell.AioShellApi;
+import com.example.sandbox.aio.shell.model.ShellExecResult;
 import com.example.sandbox.web.config.RagConfigProperties;
 import com.example.sandbox.web.model.entity.KnowledgeDocumentEntity;
 import com.example.sandbox.web.model.response.FilePreviewContent;
@@ -35,40 +38,52 @@ class OfficePreviewServiceTest {
     @Test
     void rejectsPathsOutsideHomeGem() {
         assertThatThrownBy(() -> service.previewWorkspace(
-                mock(AioSandboxClient.class), "/etc/passwd"))
+                mock(AioClient.class), "/etc/passwd"))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.previewWorkspace(
-                mock(AioSandboxClient.class), "/home/gem/../etc/passwd"))
+                mock(AioClient.class), "/home/gem/../etc/passwd"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void reusesKnowledgePreviewCache() {
-        AioSandboxClient client = mock(AioSandboxClient.class);
+        AioClient client = mock(AioClient.class);
+        AioShellApi shell = mock(AioShellApi.class);
+        AioFileApi files = mock(AioFileApi.class);
+        ShellExecResult hashResult = mock(ShellExecResult.class);
         KnowledgeDocumentEntity document = new KnowledgeDocumentEntity();
         document.setId(12L);
         document.setKbId(8L);
         document.setFileName("report.docx");
         String cached = "/home/gem/knowledge/8/.preview/12-abc123.pdf";
-        when(client.execCommand(startsWith("sha256sum"))).thenReturn("abc123  report.docx");
-        when(client.fileExists(cached)).thenReturn(true);
-        when(client.downloadFile(cached)).thenReturn(PDF_BYTES);
+        when(client.shell()).thenReturn(shell);
+        when(client.files()).thenReturn(files);
+        when(shell.exec(startsWith("sha256sum"))).thenReturn(hashResult);
+        when(hashResult.getOutput()).thenReturn("abc123  report.docx");
+        when(shell.fileExists(cached)).thenReturn(true);
+        when(files.download(cached)).thenReturn(PDF_BYTES);
 
         FilePreviewContent preview = service.previewKnowledge(
                 client, document, "/home/gem/knowledge/8/report.docx");
 
         assertThat(preview.content()).containsExactly(PDF_BYTES);
         assertThat(preview.previewType()).isEqualTo("pdf");
-        verify(client, never()).execCommand(contains("soffice"));
+        verify(shell, never()).exec(contains("soffice"));
     }
 
     @Test
     void invokesLibreOfficeWithIsolatedProfileWhenCacheIsMissing() {
-        AioSandboxClient client = mock(AioSandboxClient.class);
-        when(client.execCommand(startsWith("sha256sum"))).thenReturn("def456  sheet.xlsx");
-        when(client.fileExists(startsWith("/home/gem/temp/previews/")))
+        AioClient client = mock(AioClient.class);
+        AioShellApi shell = mock(AioShellApi.class);
+        AioFileApi files = mock(AioFileApi.class);
+        ShellExecResult hashResult = mock(ShellExecResult.class);
+        when(client.shell()).thenReturn(shell);
+        when(client.files()).thenReturn(files);
+        when(shell.exec(startsWith("sha256sum"))).thenReturn(hashResult);
+        when(hashResult.getOutput()).thenReturn("def456  sheet.xlsx");
+        when(shell.fileExists(startsWith("/home/gem/temp/previews/")))
                 .thenReturn(false, true);
-        when(client.downloadFile(startsWith("/home/gem/temp/previews/")))
+        when(files.download(startsWith("/home/gem/temp/previews/")))
                 .thenReturn(PDF_BYTES);
 
         FilePreviewContent preview =
@@ -76,7 +91,7 @@ class OfficePreviewServiceTest {
 
         assertThat(preview.mediaType()).isEqualTo("application/pdf");
         ArgumentCaptor<String> command = ArgumentCaptor.forClass(String.class);
-        verify(client, times(2)).execCommand(command.capture());
+        verify(shell, times(2)).exec(command.capture());
         String conversionCommand = command.getAllValues().stream()
                 .filter(value -> value.contains("soffice"))
                 .findFirst()

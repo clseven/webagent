@@ -17,14 +17,14 @@ import java.util.Map;
  * <h3>用途</h3>
  * <p>查询浏览器实例的状态信息，包括：</p>
  * <ul>
- *   <li>CDP URL — Chrome DevTools Protocol 地址（用于调试）</li>
- *   <li>VNC URL — 远程桌面地址（可视化观察浏览器）</li>
- *   <li>窗口大小、当前 URL 等</li>
+ *   <li>浏览器是否提供可用的 CDP 连接</li>
+ *   <li>User-Agent</li>
+ *   <li>窗口大小</li>
  * </ul>
  *
  * <h3>何时使用</h3>
- * <p>在执行浏览器操作前，先调用此工具确认浏览器已就绪。
- * 如果返回错误，说明浏览器未启动，需要先初始化。</p>
+ * <p>在浏览器工具持续返回连接错误时调用，用于判断浏览器运行时是否就绪。
+ * 普通页面操作直接从 browser_inspect 开始即可。</p>
  *
  * <h3>沙箱限制</h3>
  * <p>此工具仅 AIO 沙箱可用（sandboxType=AIO）。</p>
@@ -43,33 +43,56 @@ public class BrowserInfoTool implements Tool {
         Map<String, Object> parameters = Map.of(
                 "type", "object",
                 "properties", Map.of(),
-                "required", List.of()
+                "required", List.of(),
+                "additionalProperties", false
         );
 
         return new ToolDefinition(
                 NAME,
-                "查询浏览器当前状态信息，包括 CDP URL、VNC URL、窗口大小等。不需要截图即可了解浏览器状态。",
+                """
+                        查询 AIO 浏览器运行状态，返回是否可连接、User-Agent 和视口大小。
+                        此工具不读取网页 DOM、当前 URL 或页面内容，也不会返回内部 CDP 地址。
+                        通常不必在每次操作前调用；页面观察请使用 browser_inspect，
+                        视觉核对请使用 browser_screenshot。
+                        """,
                 parameters,
                 "AIO"
         );
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public String execute(String sessionId, Map<String, Object> arguments) {
         try {
             var client = factory.getAioClient(sessionId);
-            Map<String, Object> info = client.browserInfo();
+            var info = client.browser().getInfo();
 
             if (info == null) {
                 return "错误：无法获取浏览器信息，浏览器可能未启动";
             }
 
-            log.info("浏览器信息查询成功: {}", info);
-            return "浏览器信息: " + info;
+            var viewport = info.getViewport();
+            String viewportText = viewport != null
+                    ? viewport.getWidth() + "x" + viewport.getHeight()
+                    : "未知";
+            boolean cdpReady = info.getCdpUrl() != null && !info.getCdpUrl().isBlank();
+            log.info("浏览器信息查询成功: cdpReady={}, viewport={}", cdpReady, viewportText);
+            return "浏览器状态: {"
+                    + "\"ready\":" + cdpReady
+                    + ",\"userAgent\":\"" + escape(info.getUserAgent())
+                    + "\",\"viewport\":\"" + viewportText + "\"}";
         } catch (Exception e) {
             log.error("浏览器信息查询失败", e);
             return "错误：浏览器信息查询失败 - " + e.getMessage();
         }
+    }
+
+    /**
+     * 转义用于紧凑类 JSON 诊断响应的文本。
+     *
+     * @param value 原始值，允许为 null
+     * @return 不包含外围引号的转义后文本
+     */
+    private String escape(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 }

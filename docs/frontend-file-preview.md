@@ -489,8 +489,8 @@ public void previewFile(
         HttpServletResponse response) {
     try {
         agentService.getSession(sessionId);
-        AioSandboxClient client = sandboxClientFactory.getAioClient(sessionId);
-        byte[] fileContent = client.downloadFile(path);
+        AioClient client = sandboxClientFactory.getAioClient(sessionId);
+        byte[] fileContent = client.files().download(path);
 
         String filename = path.substring(path.lastIndexOf('/') + 1);
         String contentType = getContentType(filename);

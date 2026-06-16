@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -87,8 +86,8 @@ public class FileSearchTool implements Tool {
         if (regex == null || regex.isBlank()) return "错误：regex 不能为空";
 
         try {
-            AioSandboxClient client = factory.getAioClient(sessionId);
-            Map<String, Object> result = client.fileSearch(file, regex);
+            var client = factory.getAioClient(sessionId);
+            Map<String, Object> result = client.files().search(file, regex);
 
             if (result == null) {
                 return "错误：搜索失败，无响应";

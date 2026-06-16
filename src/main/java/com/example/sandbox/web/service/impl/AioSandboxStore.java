@@ -1,6 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.model.entity.ConversationSessionEntity;
 import com.example.sandbox.web.model.entity.UserSandboxEntity;
 import com.example.sandbox.web.repository.ConversationSessionRepository;
@@ -141,12 +141,12 @@ public class AioSandboxStore {
     /**
      * 获取 AIO 客户端
      */
-    public AioSandboxClient getClient(String sessionId) {
+    public AioClient getClient(String sessionId) {
         String endpoint = sessionEndpoints.get(sessionId);
         if (endpoint == null) {
             throw new RuntimeException("No AIO sandbox for session: " + sessionId);
         }
-        return new AioSandboxClient("http://" + endpoint);
+        return new AioClient("http://" + endpoint);
     }
 
     /**
@@ -154,7 +154,7 @@ public class AioSandboxStore {
      */
     private boolean checkHealth(String endpoint) {
         try {
-            AioSandboxClient client = new AioSandboxClient("http://" + endpoint);
+            AioClient client = new AioClient("http://" + endpoint);
             return client.isReady();
         } catch (Exception e) {
             log.debug("沙箱健康检查失败: endpoint={}, error={}", endpoint, e.getMessage());

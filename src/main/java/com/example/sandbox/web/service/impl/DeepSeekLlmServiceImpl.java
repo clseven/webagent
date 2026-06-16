@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
+
 /**
  * DeepSeek LLM 服务实现 — 用作执行器 LLM
  *
@@ -30,13 +32,36 @@ import org.springframework.stereotype.Service;
 @Service("executorLlm")
 public class DeepSeekLlmServiceImpl extends BaseLlmServiceImpl {
 
+    /** 是否在 DeepSeek 请求中启用思考模式。 */
+    private final boolean thinkingEnabled;
+
+    /**
+     * 使用执行器配置创建 DeepSeek 服务。
+     *
+     * @param configProperties Agent 配置属性
+     * @param objectMapper     JSON 序列化工具
+     */
     @Autowired
     public DeepSeekLlmServiceImpl(AgentConfigProperties configProperties, ObjectMapper objectMapper) {
         super(
                 configProperties.getLlm().getExecutor().getApiUrl(),
                 configProperties.getLlm().getExecutor().getApiKey(),
                 configProperties.getLlm().getExecutor().getModel(),
-                objectMapper
+                objectMapper,
+                new DeepSeekLlmErrorPolicy()
         );
+        this.thinkingEnabled = configProperties.getLlm().getExecutor().isThinkingEnabled();
+    }
+
+    /**
+     * 为 DeepSeek 请求显式设置思考模式，避免依赖服务端默认行为。
+     *
+     * @param requestBody 即将发送给 DeepSeek 的请求体
+     */
+    @Override
+    protected void customizeRequestBody(Map<String, Object> requestBody) {
+        requestBody.put("thinking", Map.of(
+                "type", thinkingEnabled ? "enabled" : "disabled"
+        ));
     }
 }

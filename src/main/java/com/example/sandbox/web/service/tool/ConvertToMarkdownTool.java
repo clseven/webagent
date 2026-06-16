@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -73,8 +72,8 @@ public class ConvertToMarkdownTool implements Tool {
         }
 
         try {
-            AioSandboxClient client = factory.getAioClient(sessionId);
-            String markdown = client.convertToMarkdown(uri);
+            var client = factory.getAioClient(sessionId);
+            String markdown = client.utility().convertToMarkdown(uri);
             return markdown;
         } catch (Exception e) {
             return "转换失败：" + e.getMessage();

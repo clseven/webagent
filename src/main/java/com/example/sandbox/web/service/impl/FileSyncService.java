@@ -1,6 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.service.FileStorageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +45,7 @@ public class FileSyncService {
         }
     }
 
-    public SyncResult syncUserWorkspace(Long userId, AioSandboxClient client) {
+    public SyncResult syncUserWorkspace(Long userId, AioClient client) {
         List<String> failed = new ArrayList<>();
         int success = 0;
         success += syncTree(storage.knowledgeRoot(userId), "/home/gem/knowledge", client, failed);
@@ -102,9 +102,9 @@ public class FileSyncService {
                 try {
                     String relativePath = sourceDir.relativize(file).toString().replace("\\", "/");
                     String containerPath = targetContainerPath + "/" + relativePath;
-                    AioSandboxClient client = sandboxClientFactory.getAioClient(sessionId);
+                    AioClient client = sandboxClientFactory.getAioClient(sessionId);
                     byte[] content = Files.readAllBytes(file);
-                    if (client.writeFile(containerPath, content)) {
+                    if (client.files().writeBytes(containerPath, content)) {
                         log.debug("已同步: {} -> {}", file.getFileName(), containerPath);
                     } else {
                         log.warn("同步文件失败: {} -> {}", file, containerPath);
@@ -121,7 +121,7 @@ public class FileSyncService {
 
     private int syncTree(Path sourceRoot,
                          String sandboxRoot,
-                         AioSandboxClient client,
+                         AioClient client,
                          List<String> failed) {
         if (!Files.exists(sourceRoot)) {
             return 0;
@@ -133,7 +133,7 @@ public class FileSyncService {
                 String target = sandboxRoot + "/" + relative;
                 try {
                     byte[] bytes = Files.readAllBytes(source);
-                    if (client.writeFile(target, bytes)) {
+                    if (client.files().writeBytes(target, bytes)) {
                         success++;
                     } else {
                         failed.add(target);

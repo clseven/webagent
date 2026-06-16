@@ -1,7 +1,7 @@
 package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.agent.SandboxAgent;
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.config.AgentConfigProperties;
 import com.example.sandbox.web.exception.SessionNotFoundException;
 import com.example.sandbox.web.model.entity.ConversationSessionEntity;
@@ -250,7 +250,7 @@ public class SandboxServiceImpl implements SandboxService {
                     restoreUserWorkspace(
                             userId,
                             sessionId,
-                            new AioSandboxClient("http://" + endpoint));
+                            new AioClient("http://" + endpoint));
                 }
                 syncAllEnabledSkills(sessionId);
 
@@ -407,11 +407,11 @@ public class SandboxServiceImpl implements SandboxService {
     }
 
     /**
-     * @deprecated 已废弃，AIO 模式下工具调用应通过 AioSandboxClient
+     * @deprecated 已废弃，AIO 模式下工具调用应通过 AioClient
      */
     @Deprecated
     public SandboxAgent getSandbox(String sessionId) {
-        throw new UnsupportedOperationException("已废弃：AIO 模式下请使用 AioSandboxClient");
+        throw new UnsupportedOperationException("已废弃：AIO 模式下请使用 AioClient");
     }
 
     /**
@@ -425,7 +425,7 @@ public class SandboxServiceImpl implements SandboxService {
 
     // ==================== AIO ====================
 
-    public AioSandboxClient getAioClient(String sessionId) {
+    public AioClient getAioClient(String sessionId) {
         // 1. 从 aioSandboxStore 获取
         if (aioSandboxStore.hasSandbox(sessionId)) {
             return aioSandboxStore.getClient(sessionId);
@@ -437,7 +437,7 @@ public class SandboxServiceImpl implements SandboxService {
             String endpoint = findEndpointForUser(userId, userSandboxMap.get(userId));
             if (endpoint != null) {
                 aioSandboxStore.register(sessionId, userSandboxMap.get(userId), endpoint);
-                return new AioSandboxClient("http://" + endpoint);
+                return new AioClient("http://" + endpoint);
             }
         }
 
@@ -473,7 +473,7 @@ public class SandboxServiceImpl implements SandboxService {
     private void initAioContext(String sessionId, SandboxAgent agent) {
         try {
             String endpoint = agent.getAioEndpoint();
-            AioSandboxClient client = new AioSandboxClient("http://" + endpoint);
+            AioClient client = new AioClient("http://" + endpoint);
 
             log.info("等待 AIO 服务就绪，会话: {}", sessionId);
             if (!client.waitForReady()) {
@@ -496,11 +496,11 @@ public class SandboxServiceImpl implements SandboxService {
     private void initAioDirectories(String sessionId, SandboxAgent agent) {
         try {
             String endpoint = agent.getAioEndpoint();
-            AioSandboxClient client = new AioSandboxClient("http://" + endpoint);
+            AioClient client = new AioClient("http://" + endpoint);
 
             // 创建目录结构
             String mkdirCmd = "mkdir -p /home/gem/{uploads,workspace,output,skills,temp,tools}";
-            client.shellExec(mkdirCmd);
+            client.shell().exec(mkdirCmd);
             log.info("AIO 沙箱目录已创建，会话: {}", sessionId);
 
             // 写入 README.md
@@ -530,18 +530,19 @@ public class SandboxServiceImpl implements SandboxService {
                     """;
             String encoded = java.util.Base64.getEncoder().encodeToString(readme.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String writeCmd = "echo '" + encoded + "' | base64 -d > /home/gem/README.md";
-            client.shellExec(writeCmd);
+            client.shell().exec(writeCmd);
             log.info("AIO 沙箱 README.md 已写入，会话: {}", sessionId);
 
             // 上传 file_parser.py 工具脚本
             uploadToolScript(client, "file_parser.py");
+            installBrowserAgentRuntime(client, sessionId);
             log.info("AIO 沙箱工具脚本已上传，会话: {}", sessionId);
         } catch (Exception e) {
             log.warn("初始化 AIO 沙箱目录失败（不影响使用），会话: {}, 原因: {}", sessionId, e.getMessage());
         }
     }
 
-    void restoreUserWorkspace(Long userId, String sessionId, AioSandboxClient client) {
+    void restoreUserWorkspace(Long userId, String sessionId, AioClient client) {
         migrationService.migrateUser(userId);
         FileSyncService.SyncResult result = fileSyncService.syncUserWorkspace(userId, client);
         if (!result.allSucceeded()) {
@@ -556,7 +557,7 @@ public class SandboxServiceImpl implements SandboxService {
     /**
      * 上传工具脚本到沙箱
      */
-    private void uploadToolScript(AioSandboxClient client, String scriptName) {
+    private void uploadToolScript(AioClient client, String scriptName) {
         try {
             // 从 resources/tools/ 读取脚本内容
             var inputStream = getClass().getResourceAsStream("/tools/" + scriptName);
@@ -564,18 +565,87 @@ public class SandboxServiceImpl implements SandboxService {
                 log.warn("工具脚本不存在: {}", scriptName);
                 return;
             }
-            String content = new String(inputStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            inputStream.close();
-
-            // 上传到沙箱
-            String encoded = java.util.Base64.getEncoder().encodeToString(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            String writeCmd = "echo '" + encoded + "' | base64 -d > /home/gem/tools/" + scriptName;
-            client.shellExec(writeCmd);
-
-            // 设置执行权限
-            client.shellExec("chmod +x /home/gem/tools/" + scriptName);
+            try (inputStream) {
+                String content = new String(inputStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+                String target = "/home/gem/tools/" + scriptName;
+                if (!client.files().writeText(target, content)) {
+                    throw new IllegalStateException("AIO 文件写入接口返回失败");
+                }
+                client.shell().exec("chmod +x '" + target + "'");
+            }
         } catch (Exception e) {
             log.warn("上传工具脚本失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 为新建 AIO Sandbox 安装隐藏的 Browser Agent 运行时。
+     *
+     * <p>安装包含固定 Browser Agent 脚本和 playwright-core 依赖。目录不属于用户工作空间，
+     * 不写入 README，也不参与用户文件恢复。目录创建、资源上传、npm 安装或验证失败均不重试，
+     * 因为这些错误通常由网络、registry 或镜像环境导致；失败只禁用后续语义浏览器能力，
+     * 不阻止 Shell、文件和知识库能力继续使用。</p>
+     *
+     * @param client    当前新建 Sandbox 的 AIO 客户端
+     * @param sessionId 用于日志关联的会话 ID
+     */
+    private void installBrowserAgentRuntime(AioClient client, String sessionId) {
+        String runtimeDir = "/home/gem/.runtime/browser-agent";
+        try {
+            client.shell().exec("mkdir -p '" + runtimeDir + "'");
+            uploadRuntimeResource(
+                    client,
+                    "/tools/browser-agent/browser-agent.mjs",
+                    runtimeDir + "/browser-agent.mjs");
+            uploadRuntimeResource(
+                    client,
+                    "/tools/browser-agent/package.json",
+                    runtimeDir + "/package.json");
+
+            var install = client.shell().exec(
+                    "cd '" + runtimeDir + "' && npm install --omit=dev --no-audit --no-fund");
+            if (!install.isSuccess() || install.getExitCode() != 0) {
+                log.warn("Browser Agent 依赖安装失败，会话: {}, output: {}",
+                        sessionId, install.getOutput());
+                return;
+            }
+
+            var verify = client.shell().exec(
+                    "cd '" + runtimeDir
+                            + "' && node -e \"Promise.all([import('playwright-core'), "
+                            + "import('./browser-agent.mjs')]).then(() => console.log('ok'))\"");
+            if (!verify.isSuccess() || verify.getExitCode() != 0) {
+                log.warn("Browser Agent 依赖验证失败，会话: {}, output: {}",
+                        sessionId, verify.getOutput());
+                return;
+            }
+            log.info("Browser Agent 运行时已安装，会话: {}, 目录: {}", sessionId, runtimeDir);
+        } catch (Exception e) {
+            log.warn("Browser Agent 运行时初始化失败（不影响其他 Sandbox 能力），会话: {}, 原因: {}",
+                    sessionId, e.getMessage());
+        }
+    }
+
+    /**
+     * 将应用资源上传到 Sandbox 隐藏运行时目录。
+     *
+     * @param client       当前 Sandbox 的 AIO 客户端
+     * @param resourcePath classpath 资源绝对路径
+     * @param targetPath   Sandbox 内目标绝对路径
+     * @throws IllegalStateException 当资源不存在或写入失败时抛出
+     */
+    private void uploadRuntimeResource(AioClient client, String resourcePath, String targetPath) {
+        var inputStream = getClass().getResourceAsStream(resourcePath);
+        if (inputStream == null) {
+            throw new IllegalStateException("运行时资源不存在: " + resourcePath);
+        }
+        try (inputStream) {
+            String content = new String(inputStream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            if (!client.files().writeText(targetPath, content)) {
+                throw new IllegalStateException("运行时资源写入失败: " + targetPath);
+            }
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("读取运行时资源失败: " + resourcePath, e);
         }
     }
 
@@ -621,8 +691,8 @@ public class SandboxServiceImpl implements SandboxService {
      */
     private boolean isSandboxHealthy(String endpoint) {
         try {
-            AioSandboxClient client = new AioSandboxClient("http://" + endpoint);
-            return client.quickHealthCheck();
+            AioClient client = new AioClient("http://" + endpoint);
+            return client.shell().quickHealthCheck();
         } catch (Exception e) {
             log.debug("沙箱健康检查失败: endpoint={}, error={}", endpoint, e.getMessage());
             return false;

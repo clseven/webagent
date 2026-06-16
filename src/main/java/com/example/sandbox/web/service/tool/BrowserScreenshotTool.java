@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -14,7 +13,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -59,18 +57,27 @@ public class BrowserScreenshotTool implements Tool {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("url", Map.of(
                 "type", "string",
-                "description", "可选。要截图的网页 URL。如果提供，工具会先导航到该 URL 再截图；如果不提供，则截取浏览器当前页面。"
+                "description", """
+                        可选。提供时先通过地址栏导航到该 URL，固定等待 1 秒后截图；
+                        不提供时直接截取当前页面。复杂导航优先使用 browser_execute 的 page.goto。
+                        """
         ));
 
         Map<String, Object> parameters = Map.of(
                 "type", "object",
                 "properties", properties,
-                "required", java.util.List.of()
+                "required", java.util.List.of(),
+                "additionalProperties", false
         );
 
         return new ToolDefinition(
                 NAME,
-                "截取网页截图。可指定 URL 导航后截图，或截取浏览器当前页面。截图保存到沙箱临时目录并返回查看链接。",
+                """
+                        截取当前浏览器视口并返回可查看的图片链接，用于视觉核对、验证码、
+                        Canvas 或 DOM 语义信息不足的页面。此工具不能理解图片内容或返回 DOM。
+                        需要页面文本和交互元素时使用 browser_inspect。
+                        坐标点击前先截图，页面变化后重新截图，避免使用过期坐标。
+                        """,
                 parameters,
                 "AIO"
         );
@@ -83,11 +90,15 @@ public class BrowserScreenshotTool implements Tool {
 
             // 等待 AIO 服务就绪
             if (!client.waitForReady()) {
-                return "错误：AIO 服务未就绪（等待 30 秒后仍无法连接），请稍后重试";
+                return "错误：AIO 服务未就绪（等待 120 秒后仍无法连接），请稍后重试";
             }
 
             // 获取 URL 参数
-            String url = arguments != null ? (String) arguments.get("url") : null;
+            Object urlValue = arguments != null ? arguments.get("url") : null;
+            if (urlValue != null && !(urlValue instanceof String)) {
+                return "错误：url 必须是字符串";
+            }
+            String url = urlValue instanceof String value ? value : null;
 
             // 如果提供了 URL，先导航
             if (url != null && !url.isBlank()) {
@@ -99,27 +110,26 @@ public class BrowserScreenshotTool implements Tool {
                     normalizedUrl = "https://" + url;
                 }
 
-                boolean navSuccess = client.browserAction(Map.of("action_type", "HOTKEY", "keys", List.of("ctrl", "l")))
-                        && client.browserAction(Map.of("action_type", "TYPING", "text", normalizedUrl, "use_clipboard", false))
-                        && client.browserAction(Map.of("action_type", "PRESS", "key", "enter"));
+                boolean navSuccess = client.browser().navigate(normalizedUrl);
 
                 if (!navSuccess) {
                     return "错误：导航到 " + url + " 失败";
                 }
 
                 // 等待页面加载（内部轮询，无详细日志）
-                client.waitForPageLoad(10);
+                client.browser().action(Map.of("action_type", "WAIT", "duration", 1));
             }
 
             // 截图
-            byte[] screenshot = client.screenshot();
+            byte[] screenshot = client.browser().screenshot();
             if (screenshot == null || screenshot.length == 0) {
                 return "错误：截图为空";
             }
 
             // 保存截图到沙箱文件
-            String filePath = "/tmp/screenshot_" + Instant.now().toEpochMilli() + ".png";
-            if (!client.writeFile(filePath, screenshot)) {
+            String filePath = "/home/gem/temp/browser_screenshot_"
+                    + Instant.now().toEpochMilli() + ".png";
+            if (!client.files().writeBytes(filePath, screenshot)) {
                 return "错误：截图保存失败";
             }
 

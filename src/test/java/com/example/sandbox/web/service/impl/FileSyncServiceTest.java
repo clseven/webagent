@@ -1,6 +1,7 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
+import com.example.sandbox.aio.file.AioFileApi;
 import com.example.sandbox.web.config.AgentConfigProperties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -30,16 +31,18 @@ class FileSyncServiceTest {
         Files.createDirectories(storage.uploadFile(3L, "b.png").getParent());
         Files.write(storage.uploadFile(3L, "b.png"), image);
 
-        AioSandboxClient client = mock(AioSandboxClient.class);
-        when(client.writeFile("/home/gem/knowledge/9/a.pdf", pdf)).thenReturn(true);
-        when(client.writeFile("/home/gem/uploads/b.png", image)).thenReturn(true);
+        AioClient client = mock(AioClient.class);
+        AioFileApi files = mock(AioFileApi.class);
+        when(client.files()).thenReturn(files);
+        when(files.writeBytes("/home/gem/knowledge/9/a.pdf", pdf)).thenReturn(true);
+        when(files.writeBytes("/home/gem/uploads/b.png", image)).thenReturn(true);
 
         FileSyncService service = new FileSyncService(storage);
         FileSyncService.SyncResult result = service.syncUserWorkspace(3L, client);
 
         assertThat(result.failedPaths()).isEmpty();
         assertThat(result.successCount()).isEqualTo(2);
-        verify(client).writeFile("/home/gem/knowledge/9/a.pdf", pdf);
-        verify(client).writeFile("/home/gem/uploads/b.png", image);
+        verify(files).writeBytes("/home/gem/knowledge/9/a.pdf", pdf);
+        verify(files).writeBytes("/home/gem/uploads/b.png", image);
     }
 }

@@ -1,6 +1,7 @@
 package com.example.sandbox.web.controller;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
+import com.example.sandbox.aio.file.AioFileApi;
 import com.example.sandbox.web.model.entity.ConversationSession;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.service.AgentService;
@@ -23,7 +24,8 @@ class FileUploadControllerTest {
     private final AgentService agentService = mock(AgentService.class);
     private final SandboxServiceImpl sandboxService = mock(SandboxServiceImpl.class);
     private final UserWorkspaceStorageService storage = mock(UserWorkspaceStorageService.class);
-    private final AioSandboxClient client = mock(AioSandboxClient.class);
+    private final AioClient client = mock(AioClient.class);
+    private final AioFileApi files = mock(AioFileApi.class);
     private final FileUploadController controller = new FileUploadController();
 
     @BeforeEach
@@ -35,6 +37,7 @@ class FileUploadControllerTest {
         when(session.getUserId()).thenReturn(7L);
         when(agentService.getSession("s1")).thenReturn(session);
         when(sandboxService.getAioClient("s1")).thenReturn(client);
+        when(client.files()).thenReturn(files);
     }
 
     @Test
@@ -45,7 +48,7 @@ class FileUploadControllerTest {
         when(storage.uploadFile(7L, "report.docx")).thenReturn(local);
         when(storage.uploadSandboxPath("report.docx"))
                 .thenReturn("/home/gem/uploads/report.docx");
-        when(client.uploadFile("/home/gem/uploads/report.docx", bytes)).thenReturn(true);
+        when(files.upload("/home/gem/uploads/report.docx", bytes)).thenReturn(true);
 
         Object result = controller.upload(
                 new MockMultipartFile("file", "report.docx",
@@ -55,8 +58,8 @@ class FileUploadControllerTest {
         assertThat(result).isInstanceOf(ApiResponse.class);
         assertThat(((ApiResponse<?>) result).getData())
                 .isEqualTo("/home/gem/uploads/report.docx");
-        var order = inOrder(storage, client);
+        var order = inOrder(storage, files);
         order.verify(storage).write(local, bytes);
-        order.verify(client).uploadFile("/home/gem/uploads/report.docx", bytes);
+        order.verify(files).upload("/home/gem/uploads/report.docx", bytes);
     }
 }

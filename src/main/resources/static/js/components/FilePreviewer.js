@@ -5,6 +5,7 @@ const FilePreviewer = {
     // 状态
     visible: false,
     loading: false,
+    converting: false,            // Office 文件转换中
     error: null,
     fileName: '',
     fileType: '',
@@ -96,6 +97,7 @@ const FilePreviewer = {
         if (!this._vm) return;
         this._vm.visible = this.visible;
         this._vm.loading = this.loading;
+        this._vm.converting = this.converting;
         this._vm.error = this.error;
         this._vm.fileName = this.fileName;
         this._vm.fileType = this.fileType;
@@ -120,6 +122,7 @@ const FilePreviewer = {
         this.fileContent = null;
         this.fileContentKind = '';
         this.previewType = '';
+        this.converting = false;
         this.chunks = [];
         this.chunkSearch = '';
         this.activeChunkId = null;
@@ -164,17 +167,29 @@ const FilePreviewer = {
     },
 
     async _loadWorkspaceFile(sessionId, filePath) {
-        // 通过沙箱 preview 接口拿字节（inline 行为，正确 Content-Type）
-        const buffer = await api.previewFileInSandbox(sessionId, filePath);
-        if (this._isTextType(this.previewType)) {
-            const decoder = new TextDecoder('utf-8');
-            this.fileContent = decoder.decode(buffer);
-            this.fileContentKind = 'text';
-        } else {
-            const mime = this._mimeOf(this.previewType);
-            const blob = new Blob([buffer], { type: mime });
-            this.fileBlobUrl = URL.createObjectURL(blob);
-            this.fileContentKind = 'binary';
+        // 检测是否是 Office 文件（可能需要转换）
+        const isOfficeFile = this._isOfficeType(this.fileType);
+        if (isOfficeFile) {
+            this.converting = true;
+            this._syncView();
+        }
+
+        try {
+            // 通过沙箱 preview 接口拿字节（inline 行为，正确 Content-Type）
+            const buffer = await api.previewFileInSandbox(sessionId, filePath);
+            if (this._isTextType(this.previewType)) {
+                const decoder = new TextDecoder('utf-8');
+                this.fileContent = decoder.decode(buffer);
+                this.fileContentKind = 'text';
+            } else {
+                const mime = this._mimeOf(this.previewType);
+                const blob = new Blob([buffer], { type: mime });
+                this.fileBlobUrl = URL.createObjectURL(blob);
+                this.fileContentKind = 'binary';
+            }
+        } finally {
+            this.converting = false;
+            this._syncView();
         }
     },
 
@@ -241,6 +256,12 @@ const FilePreviewer = {
 
     _isPdfType(ext) {
         return ext === 'pdf';
+    },
+
+    _isOfficeType(ext) {
+        return ['doc', 'docx', 'odt', 'rtf',
+                'xls', 'xlsx', 'ods',
+                'ppt', 'pptx', 'odp'].includes(ext);
     },
 
     _mimeOf(ext) {
@@ -443,6 +464,7 @@ const FilePreviewer = {
                 return {
                     visible: self.visible,
                     loading: self.loading,
+                    converting: self.converting,
                     error: self.error,
                     fileName: self.fileName,
                     fileType: self.fileType,
@@ -489,6 +511,7 @@ const FilePreviewer = {
             watch: {
                 visible(v) { self.visible = v; if (!v) self._reset(); },
                 loading(v) { self.loading = v; },
+                converting(v) { self.converting = v; },
                 error(v) { self.error = v; },
                 fileName(v) { self.fileName = v; },
                 previewType(v) { self.previewType = v; },
@@ -506,6 +529,7 @@ const FilePreviewer = {
                 // 同步初始状态
                 this.visible = self.visible;
                 this.loading = self.loading;
+                this.converting = self.converting;
                 this.error = self.error;
                 this.fileName = self.fileName;
                 this.fileType = self.fileType;
@@ -541,6 +565,11 @@ const FilePreviewer = {
 
                         <!-- 加载/错误 -->
                         <div v-if="loading" class="fp-loading">加载中...</div>
+                        <div v-else-if="converting" class="fp-converting">
+                            <div class="fp-converting-spinner"></div>
+                            <div class="fp-converting-text">正在转换文档，请稍候...</div>
+                            <div class="fp-converting-hint">首次预览 Office 文档需要转换为 PDF，可能需要 10-30 秒</div>
+                        </div>
                         <div v-else-if="error" class="fp-error">⚠ {{ error }}</div>
 
                         <!-- 主体 -->

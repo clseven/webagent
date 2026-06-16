@@ -3,7 +3,7 @@ package com.example.sandbox.web.service;
 /**
  * 沙盒操作服务接口
  *
- * <p>统一使用 AIO 模式，工具调用通过 AioSandboxClient 进行。</p>
+ * <p>统一使用 AIO 模式，工具调用通过分领域的 AioClient 进行。</p>
  *
  * @author example
  * @date 2026/05/14

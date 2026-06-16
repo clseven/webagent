@@ -62,6 +62,9 @@ public class AgentConfigProperties {
             private String apiKey = "";
             private String model = "deepseek-v4-flash";
 
+            /** 是否为执行器模型启用思考模式，默认关闭以兼容多轮工具调用。 */
+            private boolean thinkingEnabled = false;
+
         }
     }
 

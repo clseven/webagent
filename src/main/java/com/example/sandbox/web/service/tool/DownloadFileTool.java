@@ -6,10 +6,8 @@ import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -47,9 +45,6 @@ public class DownloadFileTool implements Tool {
     @Autowired
     private SandboxClientFactory factory;
 
-    @Value("${app.base-url:http://localhost:8081}")
-    private String baseUrl;
-
     @Override
     public ToolDefinition getDefinition() {
         Map<String, Object> properties = new LinkedHashMap<>();
@@ -81,13 +76,12 @@ public class DownloadFileTool implements Tool {
 
         try {
             var client = factory.getAioClient(sessionId);
-            byte[] content = client.downloadFile(path);
+            byte[] content = client.files().download(path);
 
             if (content == null || content.length == 0) {
                 return "错误：文件为空或不存在: " + path;
             }
 
-            String base64 = Base64.getEncoder().encodeToString(content);
             String encodedPath = java.net.URLEncoder.encode(path, java.nio.charset.StandardCharsets.UTF_8);
 
             log.info("下载文件成功: {} ({} bytes)", path, content.length);

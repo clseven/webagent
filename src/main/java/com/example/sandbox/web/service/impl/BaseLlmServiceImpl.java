@@ -15,11 +15,13 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.http.client.HttpClient;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -77,6 +79,9 @@ public abstract class BaseLlmServiceImpl implements LlmService {
     /** JSON 序列化工具 */
     private final ObjectMapper objectMapper;
 
+    /** 厂商错误策略；默认策略不改变现有 LLM 行为。 */
+    private final LlmErrorPolicy errorPolicy;
+
     /** 模型名称（如 deepseek-chat、glm-4） */
     private final String model;
 
@@ -89,8 +94,23 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * @param objectMapper JSON 序列化工具
      */
     protected BaseLlmServiceImpl(String apiUrl, String apiKey, String model, ObjectMapper objectMapper) {
+        this(apiUrl, apiKey, model, objectMapper, LlmErrorPolicy.DEFAULT);
+    }
+
+    /**
+     * 构造带厂商错误策略的 LLM 服务实例。
+     *
+     * @param apiUrl       LLM API 地址
+     * @param apiKey       API 密钥
+     * @param model        模型名称
+     * @param objectMapper JSON 序列化工具
+     * @param errorPolicy  厂商错误分类、重试和提示策略
+     */
+    protected BaseLlmServiceImpl(String apiUrl, String apiKey, String model, ObjectMapper objectMapper,
+                                 LlmErrorPolicy errorPolicy) {
         this.model = model;
         this.objectMapper = objectMapper;
+        this.errorPolicy = errorPolicy;
 
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, CONNECT_TIMEOUT_MILLIS)
@@ -127,6 +147,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
             String responseJson = callLlm(request);
             LlmCompletionResponse completion = LlmCompletionResponse.parse(objectMapper, responseJson);
+            validateFinishReason(completion);
             logTokenUsage(completion.getUsage());
 
             LlmMessage assistantMsg = completion.firstChoice() != null ? completion.firstChoice().message() : null;
@@ -134,6 +155,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
         } catch (Exception e) {
             log.error("LLM call failed", e);
+            propagateIfConfigured(e);
             return "抱歉，AI 服务暂时不可用，请稍后重试。";
         }
     }
@@ -149,6 +171,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
             String responseJson = callLlm(request);
             LlmCompletionResponse completion = LlmCompletionResponse.parse(objectMapper, responseJson);
+            validateFinishReason(completion);
             logTokenUsage(completion.getUsage());
 
             LlmMessage assistantMsg = completion.firstChoice() != null ? completion.firstChoice().message() : null;
@@ -158,6 +181,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
         } catch (Exception e) {
             log.error("LLM call failed", e);
+            propagateIfConfigured(e);
             return LlmResponse.text("抱歉，AI 服务暂时不可用，请稍后重试。");
         }
     }
@@ -186,6 +210,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
             String responseJson = callLlm(request);
             LlmCompletionResponse completion = LlmCompletionResponse.parse(objectMapper, responseJson);
+            validateFinishReason(completion);
             LlmUsage usage = completion.getUsage();
 
             LlmMessage assistantMsg = completion.firstChoice() != null ? completion.firstChoice().message() : null;
@@ -211,6 +236,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
         } catch (Exception e) {
             log.error("LLM call with tools failed", e);
+            propagateIfConfigured(e);
             return LlmResponse.text("抱歉，AI 服务暂时不可用，请稍后重试。");
         }
     }
@@ -253,9 +279,10 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      */
     private String callLlm(LlmRequest request) {
         Map<String, Object> requestBody = request.toApiFormat();
+        customizeRequestBody(requestBody);
         logRequestBody(requestBody);
 
-        return webClient.post()
+        Mono<String> requestMono = webClient.post()
                 .uri("/chat/completions")
                 .bodyValue(requestBody)
                 .exchangeToMono(response -> response.bodyToMono(String.class)
@@ -268,10 +295,79 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                             }
 
                             log.error("【LLM 错误响应】status={} body={}", status, responseBody);
-                            return Mono.error(new IllegalStateException(
-                                    "LLM API returned HTTP " + status + ": " + responseBody));
-                        }))
+                            return Mono.error(errorPolicy.httpError(status, responseBody));
+                        }));
+
+        if (errorPolicy.maxRetries() > 0) {
+            requestMono = requestMono.retryWhen(buildRetrySpec(() -> true));
+        }
+
+        return requestMono
+                .onErrorMap(errorPolicy::normalize)
                 .block();
+    }
+
+    /**
+     * 允许具体厂商在发送前扩展请求体。
+     *
+     * <p>默认实现不修改请求体，子类可添加仅由对应厂商支持的字段，
+     * 避免将专有协议参数传给其他 OpenAI 兼容服务。</p>
+     *
+     * @param requestBody 即将发送给模型服务的请求体，可原地修改
+     */
+    protected void customizeRequestBody(Map<String, Object> requestBody) {
+        // 默认不添加厂商专有参数。
+    }
+
+    /**
+     * 按厂商策略决定是否将同步调用异常继续抛给上层。
+     *
+     * <p>默认策略保持历史兜底文本；DeepSeek 策略则抛出明确错误，
+     * 由 Agent 的 SSE 错误事件展示给用户。</p>
+     *
+     * @param error 当前调用异常
+     */
+    private void propagateIfConfigured(Exception error) {
+        if (errorPolicy.propagateErrors()) {
+            throw errorPolicy.normalize(error);
+        }
+    }
+
+    /**
+     * 校验非流式响应的结束原因。
+     *
+     * @param completion 已解析的模型响应
+     */
+    private void validateFinishReason(LlmCompletionResponse completion) {
+        LlmChoice choice = completion.firstChoice();
+        if (choice == null) {
+            return;
+        }
+        RuntimeException error = errorPolicy.finishReasonError(choice.finishReason());
+        if (error != null) {
+            throw error;
+        }
+    }
+
+    /**
+     * 构建指数退避重试规则。
+     *
+     * <p>首次重试约等待 1 秒，第二次约等待 2 秒，并加入 20% 随机抖动。
+     * {@code retryAllowed} 用于流式调用：一旦已经输出内容，就禁止重试，
+     * 避免重复文字或重复工具调用。</p>
+     *
+     * @param retryAllowed 当前调用阶段是否仍允许重试
+     * @return Reactor 重试规则
+     */
+    private Retry buildRetrySpec(java.util.function.BooleanSupplier retryAllowed) {
+        return Retry.backoff(errorPolicy.maxRetries(), Duration.ofSeconds(1))
+                .maxBackoff(Duration.ofSeconds(2))
+                .jitter(0.2)
+                .filter(error -> retryAllowed.getAsBoolean() && errorPolicy.isRetryable(error))
+                .doBeforeRetry(signal -> log.warn(
+                        "LLM 临时故障，准备第 {} 次重试: {}",
+                        signal.totalRetries() + 1, signal.failure().getMessage()))
+                .onRetryExhaustedThrow((spec, signal) -> signal.failure());
     }
 
     // ==================== ReAct 文本解析（回退机制） ====================
@@ -564,7 +660,9 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
     @SuppressWarnings("unchecked")
     private Flux<String> callLlmStream(Map<String, Object> requestBody) {
+        customizeRequestBody(requestBody);
         logRequestBody(requestBody);
+        AtomicBoolean responseStarted = new AtomicBoolean(false);
 
         // 流式响应累积器：收集关键信息，完成后统一输出
         StringBuilder accContent = new StringBuilder();
@@ -575,7 +673,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
         int[] chunkCount = {0};
         String[] finishReason = {null};
 
-        return webClient.post()
+        Flux<String> responseFlux = webClient.post()
                 .uri("/chat/completions")
                 .bodyValue(requestBody)
                 .exchangeToFlux(response -> {
@@ -583,6 +681,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                     if (response.statusCode().is2xxSuccessful()) {
                         return response.bodyToFlux(String.class)
                                 .doOnNext(chunk -> {
+                                    responseStarted.set(true);
+                                    validateStreamFinishReason(chunk);
                                     chunkCount[0]++;
                                     parseStreamSummary(chunk, accContent, accReasoning,
                                             accToolName, accToolArgs, accUsage, finishReason);
@@ -607,10 +707,49 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                             .defaultIfEmpty("")
                             .flatMapMany(responseBody -> {
                                 log.error("【LLM 错误响应】status={} body={}", status, responseBody);
-                                return Flux.error(new IllegalStateException(
-                                        "LLM API returned HTTP " + status + ": " + responseBody));
+                                return Flux.error(errorPolicy.httpError(status, responseBody));
                             });
                 });
+
+        if (errorPolicy.maxRetries() > 0) {
+            responseFlux = responseFlux.retryWhen(buildRetrySpec(() -> !responseStarted.get()));
+        }
+
+        return responseFlux.onErrorMap(errorPolicy::normalize);
+    }
+
+    /**
+     * 校验单个流式响应块中的结束原因。
+     *
+     * <p>DeepSeek 返回 length、content_filter 或资源不足时立即终止流，
+     * 让上层发送明确的 SSE 错误事件。</p>
+     *
+     * @param chunk 上游 SSE 数据块
+     */
+    @SuppressWarnings("unchecked")
+    private void validateStreamFinishReason(String chunk) {
+        String json = normalizeStreamJson(chunk);
+        if (json == null) {
+            return;
+        }
+
+        try {
+            Map<String, Object> response = objectMapper.readValue(json, Map.class);
+            List<Map<String, Object>> choices = (List<Map<String, Object>>) response.get("choices");
+            if (choices == null || choices.isEmpty()) {
+                return;
+            }
+
+            String finishReason = (String) choices.get(0).get("finish_reason");
+            RuntimeException error = errorPolicy.finishReasonError(finishReason);
+            if (error != null) {
+                throw error;
+            }
+        } catch (LlmApiException e) {
+            throw e;
+        } catch (Exception e) {
+            log.debug("解析流式结束原因失败", e);
+        }
     }
 
     /**

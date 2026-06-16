@@ -1,0 +1,167 @@
+import { chromium } from "playwright-core";
+
+/** 沙箱内部 Chrome 版本信息接口。 */
+const INTERNAL_CDP_VERSION_URL = "http://127.0.0.1:9222/json/version";
+
+/**
+ * 从沙箱内部 Chrome 调试端口读取真实的 CDP WebSocket 地址。
+ *
+ * @returns {Promise<string>} 沙箱内部可访问的 CDP WebSocket 地址
+ * @throws {Error} 调试端口不可访问或响应缺少 WebSocket 地址时抛出
+ */
+export async function getInternalCdpUrl() {
+  const response = await fetch(INTERNAL_CDP_VERSION_URL);
+  if (!response.ok) {
+    throw new Error(`获取内部 CDP 地址失败: HTTP ${response.status}`);
+  }
+
+  const browserInfo = await response.json();
+  if (!browserInfo.webSocketDebuggerUrl) {
+    throw new Error("内部 CDP 响应缺少 webSocketDebuggerUrl");
+  }
+
+  // Chrome 可能返回 localhost，强制使用 IPv4 可避免 Node 将其解析为未监听的 ::1。
+  const cdpUrl = new URL(browserInfo.webSocketDebuggerUrl);
+  cdpUrl.hostname = "127.0.0.1";
+  return cdpUrl.toString();
+}
+
+/**
+ * 连接 AIO 管理的 Chrome 实例并返回当前活动页面。
+ *
+ * @returns {Promise<{browser: import("playwright-core").Browser, page: import("playwright-core").Page}>}
+ * @throws {Error} 内部 CDP 地址不可用、连接失败或浏览器中没有页面时抛出
+ */
+export async function connectActivePage() {
+  const cdpUrl = await getInternalCdpUrl();
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  const contexts = browser.contexts();
+  const pages = contexts.flatMap((context) => context.pages());
+  const page = pages.at(-1);
+  if (!page) {
+    await browser.close();
+    throw new Error("AIO browser has no active page");
+  }
+  return { browser, page };
+}
+
+/**
+ * 执行轻量级运行时和内部 CDP 连通性检查。
+ *
+ * @returns {Promise<{ok: true, url: string, title: string}>} 连通状态和当前页面信息
+ * @throws {Error} 内部 CDP 地址不可用或浏览器连接失败时抛出
+ */
+export async function health() {
+  const { browser, page } = await connectActivePage();
+  try {
+    return {
+      ok: true,
+      url: page.url(),
+      title: await page.title()
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * 返回当前活动页面的紧凑语义快照。
+ *
+ * @param {{maxElements?: number, maxTextChars?: number}} options 快照范围限制
+ * @returns {Promise<object>} 页面标识、可见文本、视口和交互元素
+ * @throws {Error} 内部 CDP 地址不可用、浏览器连接失败或页面读取失败时抛出
+ */
+export async function inspect(options = {}) {
+  const maxElements = Math.min(Math.max(Number(options.maxElements) || 80, 1), 200);
+  const maxTextChars = Math.min(Math.max(Number(options.maxTextChars) || 8000, 1000), 20000);
+  const { browser, page } = await connectActivePage();
+  try {
+    return await page.evaluate(({ elementLimit, textLimit }) => {
+      const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden"
+          && style.display !== "none"
+          && Number(style.opacity) !== 0
+          && rect.width > 0
+          && rect.height > 0;
+      };
+      const selectorFor = (element) => {
+        if (element.id) {
+          return `#${CSS.escape(element.id)}`;
+        }
+        const testId = element.getAttribute("data-testid");
+        if (testId) {
+          return `[data-testid="${CSS.escape(testId)}"]`;
+        }
+        const name = element.getAttribute("name");
+        if (name) {
+          return `${element.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+        }
+        const parts = [];
+        let current = element;
+        while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+          let part = current.tagName.toLowerCase();
+          const siblings = current.parentElement
+            ? [...current.parentElement.children].filter((item) => item.tagName === current.tagName)
+            : [];
+          if (siblings.length > 1) {
+            part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
+          }
+          parts.unshift(part);
+          current = current.parentElement;
+        }
+        return parts.join(" > ");
+      };
+
+      const allCandidates = [...document.querySelectorAll(
+        "a[href],button,input,textarea,select,[role='button'],[role='link'],"
+          + "[role='checkbox'],[role='radio'],[role='combobox'],[contenteditable='true'],"
+          + "[tabindex]:not([tabindex='-1'])"
+      )].filter(visible);
+      const candidates = allCandidates.slice(0, elementLimit);
+
+      const elements = candidates.map((element, index) => {
+        const type = element.getAttribute("type") || "";
+        const password = type.toLowerCase() === "password";
+        const rect = element.getBoundingClientRect();
+        return {
+          ref: `e${index + 1}`,
+          tag: element.tagName.toLowerCase(),
+          role: element.getAttribute("role") || "",
+          type,
+          text: normalize(element.innerText || element.textContent).slice(0, 300),
+          ariaLabel: normalize(element.getAttribute("aria-label")).slice(0, 300),
+          placeholder: normalize(element.getAttribute("placeholder")).slice(0, 300),
+          name: element.getAttribute("name") || "",
+          value: password ? "[password]" : normalize(element.value).slice(0, 300),
+          href: element.href || "",
+          disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
+          checked: typeof element.checked === "boolean" ? element.checked : undefined,
+          selector: selectorFor(element),
+          box: {
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          }
+        };
+      });
+
+      return {
+        url: location.href,
+        title: document.title,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight
+        },
+        text: normalize(document.body?.innerText).slice(0, textLimit),
+        elements,
+        truncated: allCandidates.length > elementLimit
+      };
+    }, { elementLimit: maxElements, textLimit: maxTextChars });
+  } finally {
+    await browser.close();
+  }
+}

@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -98,7 +97,7 @@ public class StrReplaceEditorTool implements Tool {
         if (path == null || path.isBlank()) return "错误：path 不能为空";
 
         try {
-            AioSandboxClient client = factory.getAioClient(sessionId);
+            var client = factory.getAioClient(sessionId);
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("command", command);
@@ -110,7 +109,7 @@ public class StrReplaceEditorTool implements Tool {
             if (arguments.get("insert_line") != null) body.put("insert_line", arguments.get("insert_line"));
             if (arguments.get("view_range") != null) body.put("view_range", arguments.get("view_range"));
 
-            Map<String, Object> result = client.strReplaceEditor(body);
+            Map<String, Object> result = client.files().edit(body);
 
             if (result == null) {
                 return "错误：操作失败，无响应";

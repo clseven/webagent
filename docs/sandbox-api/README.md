@@ -7,7 +7,7 @@ This directory records the REST API exposed by the AIO sandbox image.
 - `openapi.json`: authoritative OpenAPI 3.1 specification exported by the
   running sandbox. Do not edit it manually.
 - `integration-map.md`: mapping between the API and this project's
-  `AioSandboxClient`.
+  domain-oriented AIO clients.
 
 ## Snapshot
 
@@ -41,7 +41,8 @@ this port.
 
 ## How AI Assistants Should Use This
 
-1. Read `integration-map.md` before changing `AioSandboxClient`.
+1. Read `integration-map.md` before changing code under
+   `src/main/java/com/example/sandbox/aio`.
 2. Search `openapi.json` for the exact path, such as `/v1/file/list`.
 3. Follow the operation's `requestBody` or `parameters` reference.
 4. Resolve `$ref` values under `components.schemas`.

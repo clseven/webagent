@@ -1,6 +1,6 @@
 package com.example.sandbox.web.controller;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.context.UserContext;
 import com.example.sandbox.web.exception.UnauthorizedException;
 import com.example.sandbox.web.model.entity.ConversationSession;
@@ -57,7 +57,7 @@ class PreviewControllerTest {
         SandboxClientFactory clientFactory = mock(SandboxClientFactory.class);
         OfficePreviewService officePreviewService = mock(OfficePreviewService.class);
         KnowledgeService knowledgeService = mock(KnowledgeService.class);
-        AioSandboxClient client = mock(AioSandboxClient.class);
+        AioClient client = mock(AioClient.class);
         when(agentService.getSession("s1")).thenReturn(mock(ConversationSession.class));
         when(clientFactory.getAioClient("s1")).thenReturn(client);
         when(officePreviewService.isConvertible("/home/gem/uploads/a.docx")).thenReturn(true);

@@ -12,7 +12,7 @@ import com.example.sandbox.web.model.entity.ConversationSessionEntity;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.repository.ChatMessageRepository;
 import com.example.sandbox.web.repository.ConversationSessionRepository;
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.SkillService;
@@ -198,7 +198,7 @@ public class ConversationServiceImpl implements ConversationService {
 
         if (sandboxService != null && sandboxService.hasSandbox(sessionId)) {
             try {
-                AioSandboxClient client = sandboxClientFactory.getAioClient(sessionId);
+                AioClient client = sandboxClientFactory.getAioClient(sessionId);
                 client.execCommand("rm -rf /home/gem/skills/" + skillId);
                 log.info("已从沙箱移除技能文件: {}", skillId);
             } catch (Exception e) {

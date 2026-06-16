@@ -1,6 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.model.entity.UserSandboxEntity;
 import com.example.sandbox.web.repository.UserSandboxRepository;
 import com.example.sandbox.web.service.SandboxClient;
@@ -41,7 +41,7 @@ public class SandboxClientFactory {
     /**
      * 获取 AIO 沙箱客户端
      */
-    public AioSandboxClient getAioClient(String sessionId) {
+    public AioClient getAioClient(String sessionId) {
         return sandboxService.getAioClient(sessionId);
     }
 
@@ -52,7 +52,7 @@ public class SandboxClientFactory {
      * @param userId 用户 ID
      * @return AIO 沙箱客户端，若用户无沙箱则返回 null
      */
-    public AioSandboxClient getAioClientByUserId(Long userId) {
+    public AioClient getAioClientByUserId(Long userId) {
         if (userId == null) return null;
         try {
             UserSandboxEntity entity = userSandboxRepository.findByUserIdAndDeletedFalse(userId).orElse(null);
@@ -65,7 +65,7 @@ public class SandboxClientFactory {
                 log.warn("用户 {} 沙箱 endpoint 为空", userId);
                 return null;
             }
-            return new AioSandboxClient("http://" + endpoint);
+            return new AioClient("http://" + endpoint);
         } catch (Exception e) {
             log.error("根据 userId 获取 AIO 客户端失败: userId={}", userId, e);
             return null;

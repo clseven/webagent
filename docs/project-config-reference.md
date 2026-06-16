@@ -214,18 +214,21 @@ Token 用量记录字段：`promptTokens`、`completionTokens`、`cacheHitTokens
 | 文件权限 | `644` | 默认文件写入权限 |
 | 脚本权限 | `755` | 脚本文件权限 |
 
-### 5.3 AioSandboxClient — AIO 客户端
+### 5.3 AioClient — AIO 聚合客户端
 
-**文件**: `src/main/java/com/example/sandbox/aio/AioSandboxClient.java`
+**文件**: `src/main/java/com/example/sandbox/aio/AioClient.java`
+
+底层 HTTP 调用集中在 `aio/core/AioHttpClient.java`，业务调用按
+`sandbox`、`shell`、`file`、`browser`、`node`、`utility` 领域拆分。
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `DEFAULT_TIMEOUT` | `120 秒` | HTTP 响应超时 |
-| 页面加载初始等待 | `1 秒` | 导航后首次等待 |
-| 页面加载轮询间隔 | `1 秒` | 轮询浏览器状态间隔 |
+| `AioHttpClient.DEFAULT_TIMEOUT` | `120 秒` | HTTP 响应超时 |
+| `AioHttpClient.MAX_IN_MEMORY_SIZE` | `16 MB` | 单次响应内存缓冲上限 |
 | 健康检查超时 | `5 秒` | 首次健康检查超时 |
-| `waitForReady` 默认超时 | `30 秒` | 等待就绪超时 |
+| `AioClient.waitForReady` | `120 秒` | 新建沙箱等待就绪超时 |
 | 首次失败重试等待 | `60 秒` | 检测失败后的重试等待 |
+| Browser Agent 运行时 | `/home/gem/.runtime/browser-agent` | 新沙箱创建时安装，不展示在用户工作空间 |
 
 ### 5.4 PlaywrightBaiduTest — 测试参数
 

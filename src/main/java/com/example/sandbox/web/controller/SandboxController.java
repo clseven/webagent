@@ -1,6 +1,6 @@
 package com.example.sandbox.web.controller;
 
-import com.example.sandbox.aio.AioSandboxClient;
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.model.entity.ExecutionResult;
 import com.example.sandbox.web.model.request.ExecuteRequest;
 import com.example.sandbox.web.model.request.FileWriteRequest;
@@ -58,7 +58,7 @@ public class SandboxController {
             @RequestBody ExecuteRequest request) {
         agentService.getSession(id);
         Instant start = Instant.now();
-        AioSandboxClient client = sandboxClientFactory.getAioClient(id);
+        AioClient client = sandboxClientFactory.getAioClient(id);
         String output = client.execCommand(request.getCommand());
         Duration duration = Duration.between(start, Instant.now());
         return ApiResponse.success(ExecutionResult.success(output, duration));
@@ -73,7 +73,7 @@ public class SandboxController {
             @RequestBody FileWriteRequest request) {
         agentService.getSession(id);
         Instant start = Instant.now();
-        AioSandboxClient client = sandboxClientFactory.getAioClient(id);
+        AioClient client = sandboxClientFactory.getAioClient(id);
         String content = client.readFile(request.getPath());
         Duration duration = Duration.between(start, Instant.now());
         return ApiResponse.success(ExecutionResult.success(content, duration));
@@ -85,7 +85,7 @@ public class SandboxController {
             @RequestBody FileWriteRequest request) {
         agentService.getSession(id);
         Instant start = Instant.now();
-        AioSandboxClient client = sandboxClientFactory.getAioClient(id);
+        AioClient client = sandboxClientFactory.getAioClient(id);
         client.writeFile(request.getPath(), request.getContent());
         Duration duration = Duration.between(start, Instant.now());
         return ApiResponse.success(ExecutionResult.success("File written: " + request.getPath(), duration));
@@ -108,14 +108,16 @@ public class SandboxController {
         try {
             agentService.getSession(id);
             requireHomeGemPath(path);
-            AioSandboxClient client = sandboxClientFactory.getAioClient(id);
+            AioClient client = sandboxClientFactory.getAioClient(id);
             FilePreviewContent preview = officePreviewService.isConvertible(path)
                     ? officePreviewService.previewWorkspace(client, path)
                     : nativePreview(client, path);
             byte[] fileContent = preview.content();
 
             if (fileContent == null || fileContent.length == 0) {
-                response.setStatus(404);
+                response.setContentType(preview.mediaType());
+                setContentDisposition(response, preview.originalFileName(), "inline");
+                response.setContentLength(0);
                 return;
             }
 
@@ -138,8 +140,8 @@ public class SandboxController {
         try {
             agentService.getSession(id);
             requireHomeGemPath(path);
-            AioSandboxClient client = sandboxClientFactory.getAioClient(id);
-            byte[] fileContent = client.downloadFile(path);
+            AioClient client = sandboxClientFactory.getAioClient(id);
+            byte[] fileContent = client.files().download(path);
 
             if (fileContent == null || fileContent.length == 0) {
                 response.setStatus(404);
@@ -207,8 +209,8 @@ public class SandboxController {
         return mimeMap.getOrDefault(ext, MediaType.APPLICATION_OCTET_STREAM_VALUE);
     }
 
-    private FilePreviewContent nativePreview(AioSandboxClient client, String path) {
-        byte[] content = client.downloadFile(path);
+    private FilePreviewContent nativePreview(AioClient client, String path) {
+        byte[] content = client.files().download(path);
         String filename = path.substring(path.lastIndexOf('/') + 1);
         String extension = "";
         int dot = filename.lastIndexOf('.');

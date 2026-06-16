@@ -1,6 +1,5 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.aio.AioSandboxClient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
@@ -84,8 +83,8 @@ public class ShellWaitTool implements Tool {
         int seconds = secondsNum != null ? secondsNum.intValue() : 30;
 
         try {
-            AioSandboxClient client = factory.getAioClient(sessionId);
-            Map<String, Object> result = client.shellWait(shellSessionId, seconds);
+            var client = factory.getAioClient(sessionId);
+            Map<String, Object> result = client.shell().waitFor(shellSessionId, seconds);
 
             if (result == null) {
                 return "错误：等待进程失败，无响应";

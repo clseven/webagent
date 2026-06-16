@@ -34,7 +34,7 @@ agent:
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}
     timeout: PT30M
     ready-timeout: PT180S
-    sandbox-timeout: ${SANDBOX_TIMEOUT:P7D}
+    sandbox-timeout: ${SANDBOX_TIMEOUT:P1D}
   storage:
     type: ${STORAGE_TYPE:local}
     local:
@@ -55,6 +55,7 @@ agent:
       api-url: ${EXECUTOR_LLM_URL:https://api.deepseek.com}
       api-key: ${EXECUTOR_LLM_KEY:}
       model: ${EXECUTOR_LLM_MODEL:deepseek-v4-flash}
+      thinking-enabled: ${EXECUTOR_LLM_THINKING_ENABLED:false}
 
 rag:
   preview:

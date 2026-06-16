@@ -9,7 +9,7 @@ package com.example.sandbox.web.service.impl;
 //import java.time.Instant;
 
 /**
- * @deprecated 已废弃，统一使用 AioSandboxClient
+ * @deprecated 已废弃，统一使用 AioClient
  *
  * <p>Opensandbox 沙箱客户端实现</p>
  * <p>封装 opensandbox SDK 的操作，统一 API 接口。</p>
