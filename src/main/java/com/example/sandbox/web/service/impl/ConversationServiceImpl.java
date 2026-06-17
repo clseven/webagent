@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -83,11 +84,25 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional
     public void addAssistantMessage(String sessionId, String content, String reasoning) {
+        addAssistantMessage(sessionId, content, reasoning, List.of());
+    }
+
+    /**
+     * 保存助手消息及其过程展示事件。
+     *
+     * @param sessionId 会话 ID
+     * @param content   助手回复正文
+     * @param reasoning 思考链内容，可为 null
+     * @param events    前端历史恢复所需的过程事件，可为空
+     */
+    @Override
+    @Transactional
+    public void addAssistantMessage(String sessionId, String content, String reasoning, List<Map<String, Object>> events) {
         ConversationSessionEntity session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new SessionNotFoundException(sessionId));
 
-        ChatMessageEntity message = EntityConverter.toChatMessageEntity(session, "assistant", content);
-        message.setReasoning(reasoning);
+        ChatMessageEntity message = EntityConverter.toChatMessageEntity(
+                session, "assistant", content, reasoning, events);
         messageRepository.save(message);
     }
 

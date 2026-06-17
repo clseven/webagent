@@ -13,14 +13,13 @@ import com.example.sandbox.web.service.impl.ConversationServiceImpl;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
-import reactor.core.scheduler.Schedulers;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 会话及对话 API
@@ -107,7 +106,7 @@ public class AgentController {
      * @return SSE 事件流
      */
     @GetMapping(value = "/{id}/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<SseEvent>> chatStream(
+    public SseEmitter chatStream(
             @PathVariable String id,
             @RequestParam String message,
             HttpServletResponse response) {
@@ -117,23 +116,54 @@ public class AgentController {
         response.setHeader("X-Accel-Buffering", "no");
         response.setHeader("Connection", "keep-alive");
 
-        Flux<ServerSentEvent<SseEvent>> eventStream = Flux.defer(() -> {
-                UserContext.setCurrentUserId(userId);
-                return agentService.chatStream(id, message)
-                    .map(event -> ServerSentEvent.<SseEvent>builder()
-                        .event(event.type())
-                        .data(event)
-                        .build())
-                    .doFinally(signalType -> UserContext.clear());
-            })
-            .subscribeOn(Schedulers.boundedElastic());
+        SseEmitter emitter = new SseEmitter(0L);
+        try {
+            // 先提交一个注释帧，确保浏览器立即进入 SSE 读取状态。
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (Exception e) {
+            emitter.completeWithError(e);
+            return emitter;
+        }
 
-        // Commit the SSE response immediately before planning/model/tool work starts.
-        return eventStream.startWith(
-            ServerSentEvent.<SseEvent>builder()
-                .comment("connected")
-                .build()
-        );
+        CompletableFuture.runAsync(() -> {
+            try {
+                UserContext.setCurrentUserId(userId);
+                agentService.chatStream(id, message)
+                        .doFinally(signalType -> UserContext.clear())
+                        .subscribe(
+                                event -> sendSseEvent(emitter, event),
+                                emitter::completeWithError,
+                                emitter::complete
+                        );
+            } catch (Exception e) {
+                UserContext.clear();
+                emitter.completeWithError(e);
+            }
+        });
+
+        return emitter;
+    }
+
+    /**
+     * 逐条发送 SSE 事件。
+     *
+     * <p>Servlet 环境下直接返回 Flux 可能被容器或过滤链缓冲，导致前端只能在任务结束后看到整批步骤。
+     * 这里使用 SseEmitter 每收到一个 Agent 事件就写出一个具名 SSE 帧，让工具调用步骤可以实时显示。</p>
+     *
+     * @param emitter 当前 HTTP 连接对应的 SSE 发射器
+     * @param event   后端执行阶段产生的单个流式事件
+     * @throws IllegalStateException 当连接已断开或写出失败时抛出，交由订阅错误分支结束流
+     */
+    private void sendSseEvent(SseEmitter emitter, SseEvent event) {
+        try {
+            synchronized (emitter) {
+                emitter.send(SseEmitter.event()
+                        .name(event.type())
+                        .data(event));
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("发送 SSE 事件失败: " + event.type(), e);
+        }
     }
 
     /**

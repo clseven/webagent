@@ -3,6 +3,7 @@ package com.example.sandbox.web.service.impl;
 import com.example.sandbox.web.context.UserContext;
 import com.example.sandbox.web.exception.UnauthorizedException;
 import com.example.sandbox.web.model.entity.*;
+import com.example.sandbox.web.model.llm.AgentEventMapper;
 import com.example.sandbox.web.model.llm.AgentResponse;
 import com.example.sandbox.web.model.llm.LlmUsage;
 import com.example.sandbox.web.model.sse.SseEvent;
@@ -24,6 +25,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -343,6 +345,7 @@ public class AgentServiceImpl implements AgentService {
         AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
         String response = agentResponse.getFinalAnswer();
         String reasoning = agentResponse.getFinalReasoning();
+        List<Map<String, Object>> events = AgentEventMapper.fromPlanAndSteps(plan, agentResponse.getSteps());
 
         // 保存执行阶段的 token 用量
         LlmUsage execUsage = agentResponse.getTotalUsage();
@@ -350,8 +353,8 @@ public class AgentServiceImpl implements AgentService {
                 execUsage.completionTokens(), execUsage.cacheHitTokens(),
                 execUsage.totalTokens(), "executor", "chat");
 
-        // 7. 存储助手响应（带思考链）
-        conversationService.addAssistantMessage(sessionId, response, reasoning);
+        // 7. 存储助手响应，并保存本轮可恢复展示的执行过程事件
+        conversationService.addAssistantMessage(sessionId, response, reasoning, events);
         log.info("【助手输出】会话: {} 内容长度: {}, 思考链长度: {}",
                 sessionId, response != null ? response.length() : 0, reasoning != null ? reasoning.length() : 0);
 
@@ -361,7 +364,7 @@ public class AgentServiceImpl implements AgentService {
             knowledgeSearchTool.clearDynamicDescription();
         }
 
-        return ChatMessage.assistantMessage(response, reasoning);
+        return ChatMessage.restore("assistant", response, reasoning, System.currentTimeMillis(), events);
     }
 
     /**
@@ -447,6 +450,7 @@ public class AgentServiceImpl implements AgentService {
     @Override
     public Flux<SseEvent> chatStream(String sessionId, String userMessage) {
         return Flux.create(emitter -> {
+            var sink = emitter;
             AtomicReference<KnowledgeSearchTool> knowledgeSearchToolRef = new AtomicReference<>();
 
             try {
@@ -553,7 +557,7 @@ public class AgentServiceImpl implements AgentService {
                 String plan = planResult.getPlan();
 
                 // 发送规划事件
-                emitter.next(SseEvent.plan(plan));
+                sink.next(SseEvent.plan(plan));
                 log.info("【Stream 规划结果】{}", plan.length() > 200 ? plan.substring(0, 200) + "..." : plan);
 
                 // 记录规划 token
@@ -565,9 +569,9 @@ public class AgentServiceImpl implements AgentService {
                 }
 
                 // 检查是否中断
-                if (emitter.isCancelled()) {
-                    emitter.next(SseEvent.interrupted("用户在规划后中断"));
-                    emitter.complete();
+                if (sink.isCancelled()) {
+                    sink.next(SseEvent.interrupted("用户在规划后中断"));
+                    sink.complete();
                     return;
                 }
 
@@ -591,8 +595,8 @@ public class AgentServiceImpl implements AgentService {
 
                 reactAgent.runStream(sessionId, userMessage, history)
                     .doOnNext(event -> {
-                        if (!emitter.isCancelled()) {
-                            emitter.next(event);
+                        if (!sink.isCancelled()) {
+                            sink.next(event);
 
                             // 解析 token 用量并记录
                             if ("done".equals(event.type())) {
@@ -618,9 +622,9 @@ public class AgentServiceImpl implements AgentService {
                     })
                     .doOnError(e -> {
                         log.error("ReactAgent Stream 失败", e);
-                        if (!emitter.isCancelled()) {
-                            emitter.next(SseEvent.error(e.getMessage()));
-                            emitter.complete();
+                        if (!sink.isCancelled()) {
+                            sink.next(SseEvent.error(e.getMessage()));
+                            sink.complete();
                         }
                     })
                     .doOnComplete(() -> {
@@ -631,17 +635,17 @@ public class AgentServiceImpl implements AgentService {
                             kst.clearDynamicDescription();
                         }
 
-                        if (!emitter.isCancelled()) {
-                            emitter.complete();
+                        if (!sink.isCancelled()) {
+                            sink.complete();
                         }
                     })
                     .subscribe();
 
             } catch (Exception e) {
                 log.error("chatStream 失败", e);
-                if (!emitter.isCancelled()) {
-                    emitter.next(SseEvent.error(e.getMessage()));
-                    emitter.complete();
+                if (!sink.isCancelled()) {
+                    sink.next(SseEvent.error(e.getMessage()));
+                    sink.complete();
                 }
 
                 // 清理

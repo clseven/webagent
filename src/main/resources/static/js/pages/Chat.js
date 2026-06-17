@@ -80,14 +80,15 @@ const ChatPage = {
                                             <div class="process-timeline">
                                                 <details v-for="(event, idx) in msg.events" :key="msg.timestamp + '-event-' + idx" class="process-item">
                                                     <summary>
-                                                        <span class="process-dot"></span>
+                                                        <span :class="['process-dot', event.status === 'running' ? 'active' : 'completed']"></span>
                                                         <span class="process-item-title">{{ processTitle(event) }}</span>
                                                         <span class="process-preview">{{ processPreview(event) }}</span>
                                                     </summary>
                                                     <div class="process-detail">
-                                                        <div v-if="event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
+                                                        <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
                                                         <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
-                                                        <div v-else v-html="renderMarkdown(event.content || '')"></div>
+                                                        <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
+                                                        <div v-else>执行中...</div>
                                                     </div>
                                                 </details>
                                             </div>
@@ -118,14 +119,15 @@ const ChatPage = {
                                     <div class="process-timeline">
                                         <details v-for="(event, idx) in currentEvents" :key="'live-event-' + idx" class="process-item">
                                             <summary>
-                                                <span class="process-dot completed"></span>
+                                                <span :class="['process-dot', event.status === 'running' ? 'active' : 'completed']"></span>
                                                 <span class="process-item-title">{{ processTitle(event) }}</span>
                                                 <span class="process-preview">{{ processPreview(event) }}</span>
                                             </summary>
                                             <div class="process-detail">
-                                                <div v-if="event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
+                                                <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
                                                 <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
-                                                <div v-else v-html="renderMarkdown(event.content || '')"></div>
+                                                <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
+                                                <div v-else>执行中...</div>
                                             </div>
                                         </details>
                                         <details v-if="currentReasoning" class="process-item active" open>
@@ -135,14 +137,6 @@ const ChatPage = {
                                                 <span class="process-preview">{{ previewText(currentReasoning, 80) }}</span>
                                             </summary>
                                             <div class="process-detail" v-html="renderMarkdown(currentReasoning)"></div>
-                                        </details>
-                                        <details v-if="currentToolCall" class="process-item active" open>
-                                            <summary>
-                                                <span class="process-dot active"></span>
-                                                <span class="process-item-title">调用工具 {{ currentToolCall.tool }}</span>
-                                                <span class="process-preview">{{ currentToolCall.elapsed > 0 ? currentToolCall.elapsed + 'ms' : '执行中' }}</span>
-                                            </summary>
-                                            <div class="process-detail"><pre>{{ JSON.stringify(currentToolCall.args, null, 2) }}</pre></div>
                                         </details>
                                     </div>
                                 </details>
@@ -337,6 +331,12 @@ const ChatPage = {
         const finalAnswerSaved = Vue.ref(false);
         const streamPhase = Vue.ref('idle');
         const currentEvents = Vue.ref([]);
+        // 记录最终回答后的兜底收尾计时器，避免 done 事件异常缺失时界面一直转圈。
+        let autoFinishTimer = null;
+        // 记录执行阶段兜底同步计时器，用于 SSE 后续事件未进入页面时自动恢复显示。
+        let streamSyncTimer = null;
+        // 记录本次发送前后的消息长度，用于判断历史里是否已经出现新的助手回复。
+        let streamBaselineLength = 0;
 
         const streamingStatus = Vue.computed(() => {
             switch (streamPhase.value) {
@@ -443,6 +443,7 @@ const ChatPage = {
             finalAnswerSaved.value = false;
             currentEvents.value = [];
             streamPhase.value = 'planning';
+            clearStreamTimers();
 
             let uploadedFiles = [];
             if (pendingFiles.value.length > 0) {
@@ -473,46 +474,165 @@ const ChatPage = {
             }
 
             messages.value.push({ role: 'user', content: fullMessage, timestamp: Date.now() });
+            streamBaselineLength = messages.value.length;
             scrollToBottom();
             const stop = api.createChatStream(currentSessionId.value, fullMessage, handleStreamEvent);
             stopStreamFn.value = stop;
+            startStreamHistorySync();
+        };
+
+        // 清理兜底收尾计时器，新的流或主动停止时不能沿用旧计时。
+        const clearAutoFinishTimer = () => {
+            if (autoFinishTimer) {
+                clearTimeout(autoFinishTimer);
+                autoFinishTimer = null;
+            }
+        };
+
+        // 清理所有流式兜底计时器，避免旧请求影响新的对话。
+        const clearStreamTimers = () => {
+            clearAutoFinishTimer();
+            if (streamSyncTimer) {
+                clearInterval(streamSyncTimer);
+                streamSyncTimer = null;
+            }
+        };
+
+        // 后端已保存最终助手消息但 SSE 终止事件未到达时，通过历史接口自动收尾。
+        const startStreamHistorySync = () => {
+            if (streamSyncTimer) clearInterval(streamSyncTimer);
+            streamSyncTimer = setInterval(syncStreamHistory, 2500);
+        };
+
+        // 静默拉取历史，只在检测到新的助手回复时替换界面并停止转圈。
+        const syncStreamHistory = async () => {
+            if (!streaming.value || !currentSessionId.value) return;
+            try {
+                const history = await api.getHistory(currentSessionId.value);
+                if (!Array.isArray(history) || history.length <= streamBaselineLength) return;
+                const newMessages = history.slice(streamBaselineLength);
+                const hasAssistantReply = newMessages.some(msg => msg && msg.role === 'assistant' && msg.content);
+                if (!hasAssistantReply) return;
+                const stop = stopStreamFn.value;
+                stopStreamFn.value = null;
+                clearStreamTimers();
+                if (stop) stop();
+                streaming.value = false;
+                sending.value = false;
+                finalAnswerSaved.value = true;
+                currentThinking.value = '';
+                currentReasoning.value = '';
+                currentToolCall.value = null;
+                currentEvents.value = [];
+                streamPhase.value = 'idle';
+                messages.value = history;
+                scrollToBottom();
+            } catch (e) {
+                console.warn('流式历史同步失败:', e);
+            }
+        };
+
+        // 在收到最终回答后短暂等待 done；若没有等到，就用已有回答直接完成前端状态。
+        const scheduleAutoFinish = () => {
+            clearAutoFinishTimer();
+            // answer 是后端最终回答事件；done 偶发丢失时，前端也要及时收尾。
+            autoFinishTimer = setTimeout(() => {
+                if (streaming.value && finalAnswer.value) finishStream();
+            }, 1200);
+        };
+
+        // 计算同类步骤的展示序号，支持 toolCall 被替换成 toolResult 后仍连续编号。
+        const nextStepIndex = (type) => currentEvents.value.filter(e => e.type === type || e.originalType === type).length + 1;
+
+        // 将工具调用开始事件立即加入时间线，让用户能实时看到正在执行的工具和参数。
+        const appendToolCallEvent = (data) => {
+            const event = {
+                type: 'toolCall',
+                tool: data.tool,
+                args: data.args || {},
+                elapsed: data.elapsed || 0,
+                status: 'running',
+                stepIndex: data.stepIndex || nextStepIndex('toolCall')
+            };
+            currentEvents.value.push(event);
+            currentToolCall.value = { ...event, eventIndex: currentEvents.value.length - 1 };
+        };
+
+        // 将工具结果合并回对应的运行中步骤；如果开始事件丢失，则补一条完整结果。
+        const completeToolCallEvent = (data) => {
+            let eventIndex = currentToolCall.value && currentToolCall.value.eventIndex != null
+                ? currentToolCall.value.eventIndex
+                : -1;
+            if (eventIndex < 0) {
+                for (let i = currentEvents.value.length - 1; i >= 0; i--) {
+                    const event = currentEvents.value[i];
+                    if (event.type === 'toolCall' && event.status === 'running' && (!data.tool || event.tool === data.tool)) {
+                        eventIndex = i;
+                        break;
+                    }
+                }
+            }
+            const previous = eventIndex >= 0 ? currentEvents.value[eventIndex] : null;
+            const completed = {
+                type: 'toolResult',
+                originalType: 'toolCall',
+                tool: data.tool || previous?.tool || currentToolCall.value?.tool || '',
+                args: previous?.args || currentToolCall.value?.args || {},
+                result: data.result || '',
+                duration: data.duration,
+                elapsed: data.duration || previous?.elapsed || 0,
+                status: 'completed',
+                stepIndex: previous?.stepIndex || nextStepIndex('toolCall')
+            };
+            if (eventIndex >= 0) currentEvents.value.splice(eventIndex, 1, completed);
+            else currentEvents.value.push(completed);
+            currentToolCall.value = null;
         };
 
         const handleStreamEvent = (event) => {
-            const { type, data } = event;
+            const { type, data = {} } = event || {};
             switch (type) {
                 case 'plan': currentEvents.value.push({ type: 'plan', content: data.content }); streamPhase.value = 'plan_ready'; scrollToBottom(); break;
                 case 'thinking_start': currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'thinking'; scrollToBottom(); break;
-                case 'token': currentThinking.value += data.content; streamPhase.value = 'generating'; scrollToBottom(); break;
-                case 'reasoning_token': currentReasoning.value += data.content; streamPhase.value = 'thinking'; scrollToBottom(); break;
+                case 'token': currentThinking.value += data.content || ''; streamPhase.value = 'generating'; scrollToBottom(); break;
+                case 'reasoning_token': currentReasoning.value += data.content || ''; streamPhase.value = 'thinking'; scrollToBottom(); break;
                 case 'thinking_end':
-                    if (currentThinking.value) currentEvents.value.push({ type: 'thinking', content: currentThinking.value, stepIndex: currentEvents.value.filter(e => e.type === 'thinking').length + 1 });
-                    if (currentReasoning.value) currentEvents.value.push({ type: 'reasoning', content: currentReasoning.value, stepIndex: currentEvents.value.filter(e => e.type === 'reasoning').length + 1 });
+                    if (currentThinking.value) currentEvents.value.push({ type: 'thinking', content: currentThinking.value, stepIndex: nextStepIndex('thinking') });
+                    if (currentReasoning.value) currentEvents.value.push({ type: 'reasoning', content: currentReasoning.value, stepIndex: nextStepIndex('reasoning') });
                     currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'processing'; scrollToBottom(); break;
-                case 'tool_call': currentToolCall.value = { tool: data.tool, args: data.args, elapsed: 0 }; streamPhase.value = 'tool'; scrollToBottom(); break;
-                case 'tool_executing': if (currentToolCall.value) currentToolCall.value.elapsed = data.elapsed; streamPhase.value = 'tool'; break;
+                case 'tool_call': appendToolCallEvent(data); streamPhase.value = 'tool'; scrollToBottom(); break;
+                case 'tool_executing':
+                    if (currentToolCall.value) {
+                        currentToolCall.value.elapsed = data.elapsed || 0;
+                        const eventIndex = currentToolCall.value.eventIndex;
+                        if (eventIndex != null && currentEvents.value[eventIndex]) currentEvents.value[eventIndex].elapsed = currentToolCall.value.elapsed;
+                    }
+                    streamPhase.value = 'tool'; break;
                 case 'observation':
-                    if (currentToolCall.value) currentEvents.value.push({ type: 'toolResult', tool: currentToolCall.value.tool, args: currentToolCall.value.args, result: data.result, duration: data.duration });
-                    currentToolCall.value = null; streamPhase.value = 'tool_done'; scrollToBottom(); break;
+                    completeToolCallEvent(data); streamPhase.value = 'tool_done'; scrollToBottom(); break;
                 case 'answer':
                     finalAnswer.value = data.content || ''; streamPhase.value = 'answer';
                     const idx = currentEvents.value.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(finalAnswer.value);
                     if (idx >= 0) currentEvents.value.splice(idx, 1);
+                    scheduleAutoFinish();
                     scrollToBottom(); break;
-                case 'done': finishStream(); break;
+                case 'done': finishStream({ refreshIfEmpty: true }); break;
                 case 'interrupted': finishStream(); messages.value.push({ role: 'assistant', content: '⚠️ 中断: ' + data.reason, timestamp: Date.now(), error: '任务中断' }); break;
                 case 'error': finishStream(); messages.value.push({ role: 'assistant', content: '❌ 错误: ' + (data.message || '未知'), timestamp: Date.now(), error: data.message || '未知错误', _lastText: '' }); break;
                 case 'heartbeat': break;
             }
         };
 
-        const finishStream = () => {
+        const finishStream = (options = {}) => {
+            clearStreamTimers();
             streaming.value = false; sending.value = false; stopStreamFn.value = null;
-            if (finalAnswer.value) { messages.value.push({ role: 'assistant', content: finalAnswer.value, events: [...currentEvents.value], timestamp: Date.now() }); finalAnswerSaved.value = true; }
+            if (!finalAnswer.value && currentThinking.value) finalAnswer.value = currentThinking.value;
+            if (finalAnswer.value && !finalAnswerSaved.value) { messages.value.push({ role: 'assistant', content: finalAnswer.value, events: [...currentEvents.value], timestamp: Date.now() }); finalAnswerSaved.value = true; }
+            if (!finalAnswer.value && options.refreshIfEmpty) loadHistory();
             currentThinking.value = ''; currentReasoning.value = ''; currentToolCall.value = null; currentEvents.value = []; streamPhase.value = 'idle'; scrollToBottom();
         };
 
-        const stopStream = () => { if (stopStreamFn.value) { stopStreamFn.value(); stopStreamFn.value = null; } };
+        const stopStream = () => { clearStreamTimers(); if (stopStreamFn.value) { stopStreamFn.value(); stopStreamFn.value = null; } };
         const retryMessage = (msg) => { inputText.value = msg._lastText || ''; };
 
         const parseSandboxFileUrl = (href) => {
@@ -552,8 +672,12 @@ const ChatPage = {
         const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : escapeHtml(msg.content || '');
         const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
         const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
-        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolResult': return `工具 ${e.tool || ''}`; default: return '处理'; } };
-        const processPreview = (e) => e.type === 'toolResult' ? (e.duration != null ? `${e.duration}ms` : '已完成') : previewText(e.content, 90);
+        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolCall': return `工具 ${e.tool || ''}`; case 'toolResult': return `工具 ${e.tool || ''}`; default: return '处理'; } };
+        const processPreview = (e) => {
+            if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
+            if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
+            return previewText(e.content, 90);
+        };
         const formatTime = (ts) => { if (!ts) return ''; const d = new Date(ts); const now = new Date(); const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0'); return d.toDateString() === now.toDateString() ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`; };
 
         const scrollToBottom = () => { Vue.nextTick(() => { if (messagesEl.value) { messagesEl.value.scrollTop = messagesEl.value.scrollHeight; checkScrollPosition(); } }); };

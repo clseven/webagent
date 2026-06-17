@@ -2,6 +2,7 @@ package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ToolDefinition;
+import com.example.sandbox.web.model.llm.AgentEventMapper;
 import com.example.sandbox.web.model.llm.AgentResponse;
 import com.example.sandbox.web.model.llm.AgentStep;
 import com.example.sandbox.web.model.llm.LlmResponse;
@@ -610,6 +611,7 @@ public class ReactAgent {
      */
     public Flux<SseEvent> runStream(String sessionId, String userMessage, List<ChatMessage> history) {
         return Flux.create(emitter -> {
+            FluxSink<SseEvent> sink = emitter;
             try {
                 List<ChatMessage> messages = new ArrayList<>();
                 messages.addAll(trimHistory(history));
@@ -624,13 +626,18 @@ public class ReactAgent {
                 AtomicInteger iteration = new AtomicInteger(0);
 
                 List<AgentStep> steps = new ArrayList<>();
+                List<Map<String, Object>> persistedEvents = new ArrayList<>();
+                Map<String, Object> planEvent = AgentEventMapper.planEvent(plan);
+                if (planEvent != null) {
+                    persistedEvents.add(planEvent);
+                }
 
                 // 循环执行
-                while (!emitter.isCancelled() && iteration.get() < MAX_ITERATIONS) {
+                while (!sink.isCancelled() && iteration.get() < MAX_ITERATIONS) {
                     iteration.incrementAndGet();
 
                     // 发送思考开始事件
-                    emitter.next(SseEvent.thinkingStart(iteration.get()));
+                    sink.next(SseEvent.thinkingStart(iteration.get()));
 
                     // 压缩历史消息（如果需要）
                     compressIfNeeded(messages);
@@ -649,16 +656,16 @@ public class ReactAgent {
                     try {
                         llmService.chatWithToolsStream(prompt, messages, toolDefinitions)
                             .doOnNext(chunk -> {
-                                if (emitter.isCancelled()) return;
+                                if (sink.isCancelled()) return;
 
                                 switch (chunk.type()) {
                                     case "token":
                                         currentThinking.append(chunk.content());
-                                        emitter.next(SseEvent.token(chunk.content()));
+                                        sink.next(SseEvent.token(chunk.content()));
                                         break;
                                     case "reasoning":
                                         currentReasoning.append(chunk.reasoning());
-                                        emitter.next(SseEvent.reasoningToken(chunk.reasoning()));
+                                        sink.next(SseEvent.reasoningToken(chunk.reasoning()));
                                         break;
                                     case "tool_call":
                                         toolCallRef.set(chunk.toolCall());
@@ -671,8 +678,8 @@ public class ReactAgent {
                             .blockLast(); // 阻塞等待本轮 LLM 完成
                     } catch (Exception e) {
                         log.error("LLM 流式调用失败", e);
-                        emitter.next(SseEvent.error("LLM 调用失败: " + e.getMessage()));
-                        emitter.complete();
+                        sink.next(SseEvent.error("LLM 调用失败: " + e.getMessage()));
+                        sink.complete();
                         return;
                     }
 
@@ -686,14 +693,14 @@ public class ReactAgent {
                     }
 
                     // 发送思考结束事件
-                    emitter.next(SseEvent.thinkingEnd());
+                    sink.next(SseEvent.thinkingEnd());
 
                     // 检查是否被中断
-                    if (emitter.isCancelled()) {
+                    if (sink.isCancelled()) {
                         // 保存中断时的 partial 内容
                         saveInterruptedMessages(currentThinking.toString(), currentReasoning.toString());
-                        emitter.next(SseEvent.interrupted("用户手动暂停"));
-                        emitter.complete();
+                        sink.next(SseEvent.interrupted("用户手动暂停"));
+                        sink.complete();
                         return;
                     }
 
@@ -706,15 +713,15 @@ public class ReactAgent {
                         log.info("执行工具: {} 参数: {}", toolName, arguments);
 
                         // 发送工具调用事件
-                        emitter.next(SseEvent.toolCall(toolName, arguments, currentStep));
+                        sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
 
                         // 执行工具并发送心跳
                         long startTime = System.currentTimeMillis();
-                        String observation = executeToolWithHeartbeat(sessionId, toolName, arguments, emitter);
+                        String observation = executeToolWithHeartbeat(sessionId, toolName, arguments, sink);
                         long durationMs = System.currentTimeMillis() - startTime;
 
                         // 发送工具执行结果事件
-                        emitter.next(SseEvent.observation(toolName, observation, durationMs));
+                        sink.next(SseEvent.observation(toolName, observation, durationMs));
 
                         LlmToolCall historyToolCall = ensureToolCallId(toolCall);
 
@@ -724,6 +731,7 @@ public class ReactAgent {
                         AgentStep step = new AgentStep(currentStep, currentThinking.toString(),
                                 currentReasoning.toString(), historyToolCall, toolResult, usageRef.get());
                         steps.add(step);
+                        persistedEvents.addAll(AgentEventMapper.fromStep(step));
 
                         // 追加到消息历史（原生 tool calling 协议）
                         messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
@@ -737,9 +745,9 @@ public class ReactAgent {
                         String finalReasoning = currentReasoning.toString();
 
                         // 保存完成的助手消息
-                        saveAssistantMessage(finalContent, finalReasoning);
+                        saveAssistantMessage(finalContent, finalReasoning, persistedEvents);
 
-                        emitter.next(SseEvent.answer(finalContent, finalReasoning));
+                        sink.next(SseEvent.answer(finalContent, finalReasoning));
 
                         LlmUsage totalUsage = new LlmUsage(
                                 totalPromptTokens.get(),
@@ -747,24 +755,24 @@ public class ReactAgent {
                                 totalTokens.get(),
                                 totalCacheHitTokens.get());
 
-                        emitter.next(SseEvent.done(currentStep, totalUsage));
-                        emitter.complete();
+                        sink.next(SseEvent.done(currentStep, totalUsage));
+                        sink.complete();
                         return;
                     }
                 }
 
                 // 达到最大迭代次数
-                if (!emitter.isCancelled()) {
+                if (!sink.isCancelled()) {
                     log.warn("ReAct Stream 达到最大迭代次数 ({})", MAX_ITERATIONS);
-                    emitter.next(SseEvent.error("达到最大迭代次数，任务未完成"));
-                    emitter.complete();
+                    sink.next(SseEvent.error("达到最大迭代次数，任务未完成"));
+                    sink.complete();
                 }
 
             } catch (Exception e) {
                 log.error("ReAct Stream 执行失败", e);
-                if (!emitter.isCancelled()) {
-                    emitter.next(SseEvent.error("执行失败: " + e.getMessage()));
-                    emitter.complete();
+                if (!sink.isCancelled()) {
+                    sink.next(SseEvent.error("执行失败: " + e.getMessage()));
+                    sink.complete();
                 }
             }
         });
@@ -776,12 +784,24 @@ public class ReactAgent {
      * 保存助手消息（带思考链）
      */
     private void saveAssistantMessage(String content, String reasoning) {
+        saveAssistantMessage(content, reasoning, List.of());
+    }
+
+    /**
+     * 保存助手消息、思考链和可恢复展示的执行过程事件。
+     *
+     * @param content   助手回复正文
+     * @param reasoning 思考链内容，可为空
+     * @param events    前端历史恢复所需的 plan、thinking、toolResult 等事件
+     */
+    private void saveAssistantMessage(String content, String reasoning, List<Map<String, Object>> events) {
         if (conversationService == null || sessionId == null) {
             return;
         }
         if (content != null && !content.isEmpty()) {
             conversationService.addAssistantMessage(sessionId, content,
-                    reasoning != null && !reasoning.isEmpty() ? reasoning : null);
+                    reasoning != null && !reasoning.isEmpty() ? reasoning : null,
+                    events != null ? events : List.of());
             log.info("【Stream 保存】助手消息: {} 字符, 思考链: {} 字符",
                     content.length(),
                     reasoning != null ? reasoning.length() : 0);

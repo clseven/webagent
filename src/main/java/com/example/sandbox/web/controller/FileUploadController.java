@@ -5,6 +5,7 @@ import com.example.sandbox.web.exception.DuplicateFileException;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.FileStorageService;
+import com.example.sandbox.web.service.impl.OfficePreviewAsyncService;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.UserWorkspaceStorageService;
 import org.slf4j.Logger;

@@ -4,6 +4,7 @@ import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.Skill;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -38,6 +39,16 @@ public interface ConversationService {
      * @param reasoning 思考链内容（可为 null）
      */
     void addAssistantMessage(String sessionId, String content, String reasoning);
+
+    /**
+     * 添加助手消息，并保存用于前端恢复展示的执行过程事件。
+     *
+     * @param sessionId 会话 ID
+     * @param content   消息内容
+     * @param reasoning 思考链内容，可为 null
+     * @param events    assistant 消息对应的 plan、thinking、toolResult 等展示事件，可为空
+     */
+    void addAssistantMessage(String sessionId, String content, String reasoning, List<Map<String, Object>> events);
 
     /**
      * 获取消息历史

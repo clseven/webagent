@@ -1,6 +1,9 @@
 package com.example.sandbox.web.model.entity;
 
 import jakarta.persistence.*;
+import lombok.Getter;
+import lombok.Setter;
+
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.Set;
@@ -15,24 +18,44 @@ import java.util.Set;
 @Table(name = "agent_app", indexes = {
         @Index(name = "idx_app_user", columnList = "user_id")
 })
+@Getter
+@Setter
 public class AgentAppEntity {
 
+    /**
+     * 应用主键 ID。
+     */
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * 应用所属用户 ID。
+     */
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    /**
+     * 应用名称。
+     */
     @Column(name = "name", nullable = false, length = 100)
     private String name;
 
+    /**
+     * 应用描述。
+     */
     @Column(name = "description", length = 500)
     private String description;
 
+    /**
+     * 应用创建时间。
+     */
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
+    /**
+     * 应用最后更新时间。
+     */
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
@@ -52,32 +75,11 @@ public class AgentAppEntity {
     @Column(name = "skill_id", length = 64)
     private Set<String> skillIds = new HashSet<>();
 
+    /**
+     * 创建应用实体并初始化创建、更新时间。
+     */
     public AgentAppEntity() {
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
     }
-
-    public Long getId() { return id; }
-    public void setId(Long id) { this.id = id; }
-
-    public Long getUserId() { return userId; }
-    public void setUserId(Long userId) { this.userId = userId; }
-
-    public String getName() { return name; }
-    public void setName(String name) { this.name = name; }
-
-    public String getDescription() { return description; }
-    public void setDescription(String description) { this.description = description; }
-
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
-
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
-
-    public Set<Long> getKnowledgeBaseIds() { return knowledgeBaseIds; }
-    public void setKnowledgeBaseIds(Set<Long> knowledgeBaseIds) { this.knowledgeBaseIds = knowledgeBaseIds; }
-
-    public Set<String> getSkillIds() { return skillIds; }
-    public void setSkillIds(Set<String> skillIds) { this.skillIds = skillIds; }
 }

@@ -1,6 +1,9 @@
 package com.example.sandbox.web.model.entity;
 
 import jakarta.persistence.*;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 
 import java.time.LocalDateTime;
 
@@ -15,27 +18,50 @@ import java.time.LocalDateTime;
         @Index(name = "idx_kc_document", columnList = "document_id"),
         @Index(name = "idx_kc_user", columnList = "user_id")
 })
+@Getter
+@Setter
 public class KnowledgeChunkEntity {
 
+    /**
+     * 切片主键 ID。
+     */
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    /**
+     * 切片所属文档 ID。
+     */
     @Column(name = "document_id", nullable = false)
     private Long documentId;
 
+    /**
+     * 切片所属用户 ID。
+     */
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    /**
+     * 切片所属知识库 ID。
+     */
     @Column(name = "kb_id")
     private Long kbId;
 
+    /**
+     * 切片在文档中的序号。
+     */
     @Column(name = "chunk_index", nullable = false)
     private int chunkIndex;
 
+    /**
+     * 切片文本内容。
+     */
     @Column(name = "content", nullable = false, columnDefinition = "TEXT")
     private String content;
 
+    /**
+     * 切片估算 token 数。
+     */
     @Column(name = "token_count")
     private int tokenCount;
 
@@ -51,86 +77,17 @@ public class KnowledgeChunkEntity {
     @Column(name = "end_offset")
     private Integer endOffset;
 
+    /**
+     * 切片创建时间。
+     */
+    @Setter(AccessLevel.NONE)
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
+    /**
+     * 创建知识切片实体并初始化创建时间。
+     */
     public KnowledgeChunkEntity() {
         this.createdAt = LocalDateTime.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
-
-    public Long getDocumentId() {
-        return documentId;
-    }
-
-    public void setDocumentId(Long documentId) {
-        this.documentId = documentId;
-    }
-
-    public Long getUserId() {
-        return userId;
-    }
-
-    public void setUserId(Long userId) {
-        this.userId = userId;
-    }
-
-    public Long getKbId() {
-        return kbId;
-    }
-
-    public void setKbId(Long kbId) {
-        this.kbId = kbId;
-    }
-
-    public int getChunkIndex() {
-        return chunkIndex;
-    }
-
-    public void setChunkIndex(int chunkIndex) {
-        this.chunkIndex = chunkIndex;
-    }
-
-    public String getContent() {
-        return content;
-    }
-
-    public void setContent(String content) {
-        this.content = content;
-    }
-
-    public int getTokenCount() {
-        return tokenCount;
-    }
-
-    public void setTokenCount(int tokenCount) {
-        this.tokenCount = tokenCount;
-    }
-
-    public Integer getStartOffset() {
-        return startOffset;
-    }
-
-    public void setStartOffset(Integer startOffset) {
-        this.startOffset = startOffset;
-    }
-
-    public Integer getEndOffset() {
-        return endOffset;
-    }
-
-    public void setEndOffset(Integer endOffset) {
-        this.endOffset = endOffset;
-    }
-
-    public LocalDateTime getCreatedAt() {
-        return createdAt;
     }
 }

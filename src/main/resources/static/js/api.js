@@ -117,6 +117,18 @@ function createApiClient() {
                 }
             };
 
+            // 兼容后端返回 {type,data} 或将数据直接放在顶层的 SSE 载荷。
+            const normalizeEventData = (payload) => {
+                if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+                    return payload.data || {};
+                }
+                if (payload && typeof payload === 'object') {
+                    const { type, ...rest } = payload;
+                    return rest;
+                }
+                return {};
+            };
+
             const dispatchFrame = (frame) => {
                 if (!frame.trim()) return;
 
@@ -147,7 +159,7 @@ function createApiClient() {
 
                     const event = {
                         type,
-                        data: payload.data || {}
+                        data: normalizeEventData(payload)
                     };
                     if (type === 'token' || type === 'reasoning_token') {
                         enqueueIncrementalEvent(event);

@@ -4,6 +4,9 @@ target/
 !**/src/test/**/target/
 .kotlin
 
+### Local tests ###
+/src/test/
+
 ### Runtime data and user uploads ###
 /uploads/
 /logs/
