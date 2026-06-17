@@ -60,12 +60,26 @@ public class AioHttpClient {
      * @return 完整响应对象
      */
     public Map<String, Object> getMap(String path) {
-        return webClient.get()
+        return getMap(path, null);
+    }
+
+    /**
+     * 对 JSON endpoint 发起 GET，并返回通用 Map 响应。
+     *
+     * @param path    REST 路径
+     * @param timeout 单次调用超时；为空时使用传输层默认超时
+     * @return 完整响应对象
+     */
+    public Map<String, Object> getMap(String path, Duration timeout) {
+        var response = webClient.get()
                 .uri(path)
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
-                })
-                .block();
+                });
+        if (timeout != null) {
+            response = response.timeout(timeout);
+        }
+        return response.block();
     }
 
     /**
@@ -76,14 +90,29 @@ public class AioHttpClient {
      * @return 完整响应对象
      */
     public Map<String, Object> postMap(String path, Object body) {
-        return webClient.post()
+        return postMap(path, body, null);
+    }
+
+    /**
+     * 对 JSON endpoint 发起 POST，并返回通用 Map 响应。
+     *
+     * @param path    REST 路径
+     * @param body    请求体
+     * @param timeout 单次调用超时；为空时使用传输层默认超时
+     * @return 完整响应对象
+     */
+    public Map<String, Object> postMap(String path, Object body, Duration timeout) {
+        var response = webClient.post()
                 .uri(path)
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
-                })
-                .block();
+                });
+        if (timeout != null) {
+            response = response.timeout(timeout);
+        }
+        return response.block();
     }
 
     /**

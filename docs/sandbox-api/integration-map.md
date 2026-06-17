@@ -34,6 +34,9 @@ Java clients under:
 | `AioNodeApi.execute` | `POST /v1/nodejs/execute` | Executes JavaScript in the AIO Node.js runtime |
 | `AioNodeApi.getInfo` | `GET /v1/nodejs/info` | Returns runtime information |
 | `AioUtilityApi.convertToMarkdown` | `POST /v1/util/convert_to_markdown` | Required `uri` |
+| `AioMcpApi.listServers` | `GET /v1/mcp/servers` | Returns configured MCP Server names |
+| `AioMcpApi.listTools` | `GET /v1/mcp/{server_name}/tools` | Reads MCP tool metadata and input JSON Schema |
+| `AioMcpApi.callTool` | `POST /v1/mcp/{server_name}/tools/{tool_name}` | Sends raw MCP tool arguments as the JSON request body |
 
 ## Browser Agent Tools
 
@@ -76,7 +79,6 @@ by the domain clients, including:
 - `/v1/shell/write` and explicit shell session creation/cleanup
 - `/v1/jupyter/*`
 - `/v1/code/*`
-- `/v1/mcp/*`
 - `/v1/skills/*`
 
 When adding one of these capabilities, use the OpenAPI operation and referenced

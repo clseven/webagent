@@ -15,6 +15,7 @@ import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.TokenUsageService;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
+import com.example.sandbox.web.service.mcp.McpToolProvider;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -83,6 +84,10 @@ public class AgentServiceImpl implements AgentService {
     /** 所有可用工具（Spring 自动注入 Tool 接口的所有实现） */
     @Autowired
     private List<Tool> tools;
+
+    /** MCP 动态工具提供器（从当前沙箱发现第三方 MCP 能力） */
+    @Autowired
+    private McpToolProvider mcpToolProvider;
 
     /** Agent 应用服务（加载应用配置：知识库、技能过滤等） */
     @Autowired
@@ -245,12 +250,15 @@ public class AgentServiceImpl implements AgentService {
         // 根据沙箱类型过滤工具
         boolean isAio = sandboxService.isAioSandbox(sessionId);
         String targetType = isAio ? "AIO" : "COMMON";
-        List<Tool> filteredTools = tools.stream()
+        List<Tool> filteredTools = new ArrayList<>(tools.stream()
                 .filter(t -> {
                     String type = t.getDefinition().getSandboxType();
                     return "ALL".equals(type) || targetType.equals(type);
                 })
-                .toList();
+                .toList());
+        if (isAio) {
+            filteredTools.addAll(mcpToolProvider.getTools(sessionId));
+        }
 
         // 知识库描述注入：如果应用关联了知识库，动态修改 knowledge_search 工具的描述
         KnowledgeSearchTool knowledgeSearchTool = null;
@@ -492,12 +500,15 @@ public class AgentServiceImpl implements AgentService {
                 // 过滤工具
                 boolean isAio = sandboxService.isAioSandbox(sessionId);
                 String targetType = isAio ? "AIO" : "COMMON";
-                List<Tool> filteredTools = tools.stream()
+                List<Tool> filteredTools = new ArrayList<>(tools.stream()
                         .filter(t -> {
                             String type = t.getDefinition().getSandboxType();
                             return "ALL".equals(type) || targetType.equals(type);
                         })
-                        .toList();
+                        .toList());
+                if (isAio) {
+                    filteredTools.addAll(mcpToolProvider.getTools(sessionId));
+                }
 
                 // 知识库注入
                 String kbDescription = null;
