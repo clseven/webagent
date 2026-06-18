@@ -77,6 +77,7 @@ public class BrowserScreenshotTool implements Tool {
                         Canvas 或 DOM 语义信息不足的页面。此工具不能理解图片内容或返回 DOM。
                         需要页面文本和交互元素时使用 browser_inspect。
                         坐标点击前先截图，页面变化后重新截图，避免使用过期坐标。
+                        当页面包含用户需要看到的内容（二维码、验证码、图形验证等）时，截图结果会以图片形式展示给用户，务必截图让用户查看。
                         """,
                 parameters,
                 "AIO"

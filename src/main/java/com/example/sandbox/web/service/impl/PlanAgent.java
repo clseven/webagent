@@ -1,5 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
+import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.PlanResult;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.entity.ToolDefinition;
@@ -8,6 +9,7 @@ import com.example.sandbox.web.service.LlmService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -52,6 +54,9 @@ public class PlanAgent {
 
     private static final Logger log = LoggerFactory.getLogger(PlanAgent.class);
 
+    /** 历史消息字符数上限，超过则截断 */
+    private static final int HISTORY_MAX_CHARS = 30_000;
+
     private static final String PLANNER_SYSTEM_PROMPT = """
             你是一个任务规划专家。你的职责只有三件事：
             1. 准确理解用户意图
@@ -74,6 +79,7 @@ public class PlanAgent {
             3. **用户便利** — 站在用户角度想：怎么减少等待？怎么让结果一目了然？完事了要不要主动清理？
             4. **步骤原子化** — 一步只做一件事，输入输出清晰
             5. **按需激活技能** — 如果某技能与任务相关，在步骤中建议先激活它获取详细指导
+            6. **浏览器内容需展示** — 当步骤涉及浏览器页面且页面包含用户需要看到的内容（如二维码、验证码、图形验证）时，必须安排 browser_screenshot 截图步骤，让用户看到页面内容
 
             ## 输出格式
 
@@ -128,14 +134,16 @@ public class PlanAgent {
     /**
      * 产出执行计划
      *
-     * <p>调用一次 LLM，让它根据用户消息、可用工具和技能，
+     * <p>调用一次 LLM，让它根据用户消息、对话历史、可用工具和技能，
      * 输出结构化的执行计划文本。</p>
      *
      * @param userMessage 用户原始消息
+     * @param history     对话历史消息（可为 null 或空）
      * @return 规划结果（包含计划内容和 token 用量）
      */
-    public PlanResult plan(String userMessage) {
-        log.info("PlanAgent 开始规划，用户消息长度: {} 字符", userMessage.length());
+    public PlanResult plan(String userMessage, List<ChatMessage> history) {
+        log.info("PlanAgent 开始规划，用户消息长度: {} 字符，历史消息: {} 条",
+                userMessage.length(), history != null ? history.size() : 0);
 
         String systemPrompt = String.format(PLANNER_SYSTEM_PROMPT, toolsDescription, skillsDescription);
 
@@ -147,8 +155,18 @@ public class PlanAgent {
         fullPrompt.append(systemPrompt);
         String finalSystemPrompt = fullPrompt.toString();
 
-        LlmResponse response = llmService.chatWithSystemResponse(finalSystemPrompt,
-                List.of(com.example.sandbox.web.model.entity.ChatMessage.userMessage(userMessage)));
+        // 构建消息列表：对话历史 + 当前用户消息
+        List<ChatMessage> messages = new ArrayList<>();
+        if (history != null && !history.isEmpty()) {
+            // 只取 user 和 assistant 角色的消息，过滤掉 tool/system 等内部消息
+            List<ChatMessage> filtered = history.stream()
+                    .filter(m -> "user".equals(m.getRole()) || "assistant".equals(m.getRole()))
+                    .toList();
+            messages.addAll(trimHistory(filtered));
+        }
+        messages.add(ChatMessage.userMessage(userMessage));
+
+        LlmResponse response = llmService.chatWithSystemResponse(finalSystemPrompt, messages);
 
         String plan = response.getContent();
         log.info("PlanAgent 规划完成，Plan 长度: {} 字符", plan != null ? plan.length() : 0);
@@ -173,5 +191,37 @@ public class PlanAgent {
         return skills.stream()
                 .map(s -> String.format("- **%s**: %s", s.getId(), s.getDescription()))
                 .collect(Collectors.joining("\n"));
+    }
+
+    /**
+     * 截断历史消息，防止超 token 限制
+     *
+     * <p>从最新消息往前累加字符数，超过 {@link #HISTORY_MAX_CHARS} 时截断旧消息。</p>
+     */
+    private List<ChatMessage> trimHistory(
+            List<ChatMessage> history) {
+        int totalChars = 0;
+        for (var msg : history) {
+            totalChars += msg.getContent() != null ? msg.getContent().length() : 0;
+        }
+        if (totalChars <= HISTORY_MAX_CHARS) {
+            return history;
+        }
+        // 从最新往前累加，保留不超限的最近消息
+        int keptChars = 0;
+        int splitAt = history.size();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            int len = history.get(i).getContent() != null ? history.get(i).getContent().length() : 0;
+            keptChars += len;
+            if (keptChars > HISTORY_MAX_CHARS) {
+                splitAt = i + 1;
+                break;
+            }
+        }
+        List<ChatMessage> trimmed =
+                history.subList(splitAt, history.size());
+        log.info("PlanAgent 历史消息截断: 总字符 {} 超限 {}，保留最近 {} 条",
+                totalChars, HISTORY_MAX_CHARS, trimmed.size());
+        return trimmed;
     }
 }

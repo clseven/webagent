@@ -312,8 +312,19 @@ public class AgentServiceImpl implements AgentService {
         log.info("【工具过滤】沙箱类型: {}, 可用工具: {}", targetType,
                 filteredTools.stream().map(t -> t.getDefinition().getName()).toList());
 
-        // 5. Phase 1: PlanAgent 规划
+        // 5. 知识库检索增强（Query Rewrite + Rerank）— 提前到规划前，PlanAgent 也需要知识库上下文
         Long userId = UserContext.getCurrentUserId();
+        String enhancedContext = "";
+        if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
+            List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
+            enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
+            if (!enhancedContext.isEmpty()) {
+                systemPrompt = enhancedContext + "\n\n" + systemPrompt;
+                log.info("【知识库增强】注入上下文: {} 字符", enhancedContext.length());
+            }
+        }
+
+        // 6. Phase 1: PlanAgent 规划
         List<Skill> skills = skillService.listSkills();
 
         // Skill 过滤：如果应用配置了 skill，只使用应用关联的 skill
@@ -326,9 +337,9 @@ public class AgentServiceImpl implements AgentService {
                     skills.stream().map(Skill::getId).toList());
         }
 
-        String sessionContext = buildSessionContext(session, extraContext);
+        String sessionContext = buildSessionContext(session, enhancedContext);
         PlanAgent planAgent = new PlanAgent(plannerLlm, toolDefinitions, skills, sessionContext);
-        PlanResult planResult = planAgent.plan(userMessage);
+        PlanResult planResult = planAgent.plan(userMessage, history);
         String plan = planResult.getPlan();
         log.info("【规划结果】{}", plan.length() > 300 ? plan.substring(0, 300) + "..." : plan);
 
@@ -340,18 +351,7 @@ public class AgentServiceImpl implements AgentService {
                     planUsage.totalTokens(), "planner", "plan");
         }
 
-        // 知识库检索增强（Query Rewrite + Rerank）
-        String enhancedContext = "";
-        if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-            List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
-            enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
-            if (!enhancedContext.isEmpty()) {
-                systemPrompt = enhancedContext + "\n\n" + systemPrompt;
-                log.info("【知识库增强】注入上下文: {} 字符", enhancedContext.length());
-            }
-        }
-
-        // 6. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
+        // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
         ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan);
         AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
         String response = agentResponse.getFinalAnswer();
@@ -390,15 +390,25 @@ public class AgentServiceImpl implements AgentService {
     }
 
     /**
-     * 构建会话上下文（已启用技能 + 额外信息）
+     * 构建会话上下文（已启用技能描述 + 知识库增强上下文）
      */
-    private String buildSessionContext(ConversationSession session, String extraContext) {
+    private String buildSessionContext(ConversationSession session, String enhancedContext) {
         StringBuilder sb = new StringBuilder();
         if (session.getEnabledSkillIds() != null && !session.getEnabledSkillIds().isEmpty()) {
-            sb.append("已启用技能: ").append(String.join(", ", session.getEnabledSkillIds())).append("\n");
+            sb.append("## 已启用技能\n\n");
+            for (String skillId : session.getEnabledSkillIds()) {
+                try {
+                    Skill skill = skillService.getSkill(skillId);
+                    sb.append(skill.toMetadataLine()).append("\n");
+                } catch (Exception e) {
+                    log.warn("构建会话上下文时获取技能 {} 失败: {}", skillId, e.getMessage());
+                    sb.append("- ").append(skillId).append("\n");
+                }
+            }
+            sb.append("\n");
         }
-        if (extraContext != null) {
-            sb.append(extraContext);
+        if (enhancedContext != null && !enhancedContext.isEmpty()) {
+            sb.append(enhancedContext).append("\n");
         }
         return sb.toString();
     }
@@ -554,8 +564,19 @@ public class AgentServiceImpl implements AgentService {
                 log.info("【Stream 工具过滤】沙箱类型: {}, 可用工具: {}", targetType,
                         filteredTools.stream().map(t -> t.getDefinition().getName()).toList());
 
-                // Phase 1: 规划
+                // 知识库检索增强（Query Rewrite + Rerank）— 提前到规划前，PlanAgent 也需要知识库上下文
                 Long userId = UserContext.getCurrentUserId();
+                String enhancedContext = "";
+                if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
+                    List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
+                    enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
+                    if (!enhancedContext.isEmpty()) {
+                        systemPrompt = enhancedContext + "\n\n" + systemPrompt;
+                        log.info("【Stream 知识库增强】注入上下文: {} 字符", enhancedContext.length());
+                    }
+                }
+
+                // Phase 1: 规划
                 List<Skill> skills = skillService.listSkills();
 
                 if (app != null && !app.getSkillIds().isEmpty()) {
@@ -565,9 +586,9 @@ public class AgentServiceImpl implements AgentService {
                             .toList();
                 }
 
-                String sessionContext = buildSessionContext(session, extraContext);
+                String sessionContext = buildSessionContext(session, enhancedContext);
                 PlanAgent planAgent = new PlanAgent(plannerLlm, toolDefinitions, skills, sessionContext);
-                PlanResult planResult = planAgent.plan(userMessage);
+                PlanResult planResult = planAgent.plan(userMessage, history);
                 String plan = planResult.getPlan();
 
                 // 发送规划事件
@@ -587,17 +608,6 @@ public class AgentServiceImpl implements AgentService {
                     sink.next(SseEvent.interrupted("用户在规划后中断"));
                     sink.complete();
                     return;
-                }
-
-                // 知识库检索增强（Query Rewrite + Rerank）
-                String enhancedContext = "";
-                if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-                    List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
-                    enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
-                    if (!enhancedContext.isEmpty()) {
-                        systemPrompt = enhancedContext + "\n\n" + systemPrompt;
-                        log.info("【Stream 知识库增强】注入上下文: {} 字符", enhancedContext.length());
-                    }
                 }
 
                 // Phase 2: 执行
