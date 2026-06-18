@@ -54,8 +54,8 @@ public class PlanAgent {
 
     private static final Logger log = LoggerFactory.getLogger(PlanAgent.class);
 
-    /** 历史消息字符数上限，超过则截断 */
-    private static final int HISTORY_MAX_CHARS = 30_000;
+    /** 历史消息保留条数上限，只取最近 N 条，防止历史过长导致规划偏离格式 */
+    private static final int HISTORY_MAX_ITEMS = 6;
 
     private static final String PLANNER_SYSTEM_PROMPT = """
             你是一个任务规划专家。你的职责只有三件事：
@@ -194,34 +194,20 @@ public class PlanAgent {
     }
 
     /**
-     * 截断历史消息，防止超 token 限制
+     * 截断历史消息，只保留最近 {@value #HISTORY_MAX_ITEMS} 条
      *
-     * <p>从最新消息往前累加字符数，超过 {@link #HISTORY_MAX_CHARS} 时截断旧消息。</p>
+     * <p>历史过长会稀释系统提示的注意力，导致规划偏离结构化格式。
+     * 改为按条数截断，取最近几条对话即可把握用户意图与上下文。</p>
      */
     private List<ChatMessage> trimHistory(
             List<ChatMessage> history) {
-        int totalChars = 0;
-        for (var msg : history) {
-            totalChars += msg.getContent() != null ? msg.getContent().length() : 0;
-        }
-        if (totalChars <= HISTORY_MAX_CHARS) {
+        if (history.size() <= HISTORY_MAX_ITEMS) {
             return history;
         }
-        // 从最新往前累加，保留不超限的最近消息
-        int keptChars = 0;
-        int splitAt = history.size();
-        for (int i = history.size() - 1; i >= 0; i--) {
-            int len = history.get(i).getContent() != null ? history.get(i).getContent().length() : 0;
-            keptChars += len;
-            if (keptChars > HISTORY_MAX_CHARS) {
-                splitAt = i + 1;
-                break;
-            }
-        }
         List<ChatMessage> trimmed =
-                history.subList(splitAt, history.size());
-        log.info("PlanAgent 历史消息截断: 总字符 {} 超限 {}，保留最近 {} 条",
-                totalChars, HISTORY_MAX_CHARS, trimmed.size());
+                history.subList(history.size() - HISTORY_MAX_ITEMS, history.size());
+        log.info("PlanAgent 历史消息截断: {} 条超限，保留最近 {} 条",
+                history.size(), trimmed.size());
         return trimmed;
     }
 }
