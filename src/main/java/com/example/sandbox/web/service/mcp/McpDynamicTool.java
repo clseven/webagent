@@ -70,6 +70,13 @@ public class McpDynamicTool implements Tool {
     }
 
     /**
+     * 获取 MCP 工具引用（含原始 server 和 tool 名），用于去重比较。
+     */
+    public McpToolRef getRef() {
+        return ref;
+    }
+
+    /**
      * 执行 MCP 工具调用。
      *
      * <p>本方法不做自动重试。MCP 工具可能访问外部系统或执行带副作用操作，重复调用可能造成

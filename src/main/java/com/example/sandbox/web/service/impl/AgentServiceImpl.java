@@ -15,12 +15,14 @@ import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.TokenUsageService;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
+import com.example.sandbox.web.service.mcp.McpDynamicTool;
 import com.example.sandbox.web.service.mcp.McpToolProvider;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -105,6 +107,10 @@ public class AgentServiceImpl implements AgentService {
     @Autowired
     @org.springframework.context.annotation.Lazy
     private com.example.sandbox.web.service.SandboxService sandboxService;
+
+    /** MCP 动态工具开关，默认关闭 */
+    @Value("${agent.mcp.enabled:false}")
+    private boolean mcpEnabled;
 
     /**
      * 创建新会话（无关联应用）
@@ -259,9 +265,8 @@ public class AgentServiceImpl implements AgentService {
                     return "ALL".equals(type) || targetType.equals(type);
                 })
                 .toList());
-        if (isAio) {
-            filteredTools.addAll(mcpToolProvider.getTools(sessionId));
-        }
+        // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
+        filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
 
         // 知识库描述注入：如果应用关联了知识库，动态修改 knowledge_search 工具的描述
         KnowledgeSearchTool knowledgeSearchTool = null;
@@ -519,9 +524,8 @@ public class AgentServiceImpl implements AgentService {
                             return "ALL".equals(type) || targetType.equals(type);
                         })
                         .toList());
-                if (isAio) {
-                    filteredTools.addAll(mcpToolProvider.getTools(sessionId));
-                }
+                // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
+                filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
 
                 // 知识库注入
                 String kbDescription = null;
@@ -680,5 +684,49 @@ public class AgentServiceImpl implements AgentService {
                 }
             }
         });
+    }
+
+    /**
+     * 按配置合并 MCP 动态工具。
+     *
+     * <p>受 {@code agent.mcp.enabled} 控制，默认关闭。
+     * 开启时与自定义工具去重：若 MCP 工具原始名与已有自定义工具同名，保留自定义工具。
+     * 非 AIO 沙箱不加载 MCP 工具。</p>
+     *
+     * @param customTools 已过滤的自定义工具列表
+     * @param sessionId   当前会话 ID
+     * @param isAio       是否为 AIO 沙箱
+     * @return 合并后的工具列表（可能包含 MCP 工具）
+     */
+    private List<Tool> mergeMcpTools(List<Tool> customTools, String sessionId, boolean isAio) {
+        if (!mcpEnabled || !isAio) {
+            return customTools;
+        }
+
+        // 收集自定义工具名，用于去重
+        Set<String> customNames = customTools.stream()
+                .map(t -> t.getDefinition().getName())
+                .collect(Collectors.toSet());
+
+        List<Tool> result = new ArrayList<>(customTools);
+        int skipped = 0;
+        for (Tool mcpTool : mcpToolProvider.getTools(sessionId)) {
+            if (mcpTool instanceof McpDynamicTool mcp) {
+                String originalName = mcp.getRef().tool();
+                if (customNames.contains(originalName)) {
+                    log.debug("MCP 工具 {} (原始名: {}) 与自定义工具冲突，使用自定义版本",
+                            mcpTool.getDefinition().getName(), originalName);
+                    skipped++;
+                    continue;
+                }
+            }
+            result.add(mcpTool);
+        }
+
+        if (skipped > 0) {
+            log.info("MCP 工具去重: 跳过 {} 个冲突工具，保留 {} 个 MCP 工具",
+                    skipped, result.size() - customTools.size());
+        }
+        return result;
     }
 }

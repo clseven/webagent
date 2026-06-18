@@ -29,6 +29,8 @@ spring:
         format_sql: true
 
 agent:
+  mcp:
+    enabled: ${MCP_ENABLED:false}
   sandbox:
     domain: ${SANDBOX_DOMAIN:localhost:8080}
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}
