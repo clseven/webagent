@@ -200,6 +200,23 @@ public class AioHttpClient {
     }
 
     /**
+     * 获取二进制响应（使用 URI 模板变量，由 WebClient 负责编码）。
+     *
+     * @param pathTemplate URI 模板，如 "/v1/file/download?path={path}"
+     * @param variables    模板变量
+     * @param mediaType    期望的响应媒体类型
+     * @return 响应字节；空响应时为 null
+     */
+    public byte[] getBytes(String pathTemplate, Map<String, String> variables, MediaType mediaType) {
+        return webClient.get()
+                .uri(pathTemplate, variables)
+                .accept(mediaType)
+                .retrieve()
+                .bodyToMono(byte[].class)
+                .block();
+    }
+
+    /**
      * 上传二进制文件到 AIO multipart endpoint。
      *
      * @param path       REST 路径

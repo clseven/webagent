@@ -5,7 +5,6 @@ import com.example.sandbox.aio.core.AioHttpClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.Base64;
 import java.util.HashMap;
@@ -100,11 +99,7 @@ public class AioFileApi {
      * @return 文件字节；空响应时为 null
      */
     public byte[] download(String path) {
-        String uri = UriComponentsBuilder.fromPath("/v1/file/download")
-                .queryParam("path", path)
-                .build()
-                .toUriString();
-        return http.getBytes(uri, MediaType.APPLICATION_OCTET_STREAM);
+        return http.getBytes("/v1/file/download?path={path}", Map.of("path", path), MediaType.APPLICATION_OCTET_STREAM);
     }
 
     /**
