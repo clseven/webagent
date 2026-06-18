@@ -157,35 +157,53 @@ public class PlanAgent {
      * @return 规划结果（包含计划内容和 token 用量）
      */
     public PlanResult plan(String userMessage, List<ChatMessage> history) {
-        log.info("PlanAgent 开始规划，用户消息长度: {} 字符，历史消息: {} 条",
-                userMessage.length(), history != null ? history.size() : 0);
-
-        String systemPrompt = String.format(PLANNER_SYSTEM_PROMPT, toolsDescription, skillsDescription);
-
-        StringBuilder fullPrompt = new StringBuilder();
-        if (sessionContext != null && !sessionContext.isEmpty()) {
-            fullPrompt.append("## 当前会话上下文\n\n");
-            fullPrompt.append(sessionContext).append("\n\n");
-        }
-        fullPrompt.append(systemPrompt);
-        String finalSystemPrompt = fullPrompt.toString();
-
-        // 构建消息列表：对话历史 + 当前用户消息
+        // ── 历史消息处理 ──
+        int rawCount = history != null ? history.size() : 0;
         List<ChatMessage> messages = new ArrayList<>();
         if (history != null && !history.isEmpty()) {
-            // 只取 user 和 assistant 角色的消息，过滤掉 tool/system 等内部消息
             List<ChatMessage> filtered = history.stream()
                     .filter(m -> "user".equals(m.getRole()) || "assistant".equals(m.getRole()))
+                    .map(this::annotateHistory)
                     .toList();
             messages.addAll(trimHistory(filtered));
         }
         messages.add(ChatMessage.userMessage(userMessage));
 
-        LlmResponse response = llmService.chatWithSystemResponse(finalSystemPrompt, messages);
+        log.info("PlanAgent 规划 → \"{}\" | 历史 {}→{} 条{} | 发送 {} 条消息",
+                truncate(userMessage, 80),
+                rawCount,
+                messages.size() - 1,  // 减去当前用户消息
+                rawCount > 0 ? " (已标注)" : "",
+                messages.size());
 
+        // ── 构建 System Prompt ──
+        StringBuilder fullPrompt = new StringBuilder();
+        if (sessionContext != null && !sessionContext.isEmpty()) {
+            fullPrompt.append("## 当前会话上下文\n\n");
+            fullPrompt.append(sessionContext).append("\n\n");
+        }
+        fullPrompt.append(String.format(PLANNER_SYSTEM_PROMPT, toolsDescription, skillsDescription));
+
+        // ── 调用 LLM ──
+        LlmResponse response = llmService.chatWithSystemResponse(fullPrompt.toString(), messages);
         String plan = response.getContent();
-        log.info("PlanAgent 规划完成，Plan 长度: {} 字符", plan != null ? plan.length() : 0);
+
+        // ── 格式检测 ──
+        boolean looksLikePlan = plan != null && plan.trim().startsWith("###");
+        if (!looksLikePlan) {
+            log.warn("PlanAgent 格式异常 → 未以 \"###\" 开头，疑似对话式输出 | 内容: {}", truncate(plan, 200));
+        } else {
+            log.info("PlanAgent 规划完成 → 格式: OK | {}", truncate(plan, 200));
+        }
+
         return new PlanResult(plan, response.getTokenUsage());
+    }
+
+    /** 截断字符串，超出长度追加 "..." */
+    private static String truncate(String s, int maxLen) {
+        if (s == null) return "null";
+        if (s.length() <= maxLen) return s;
+        return s.substring(0, maxLen) + "...";
     }
 
     /**
@@ -209,6 +227,20 @@ public class PlanAgent {
     }
 
     /**
+     * 给历史消息打上标注，防止模型将历史对话风格误认为是当前输出范例。
+     *
+     * <p>不加标注时，模型会自然延续历史中 assistant 的叙述风格（如"让我截图""页面已打开…"），
+     * 导致 PlanAgent 输出对话式内容而非结构化计划。
+     * 加上 [历史记录] 前缀后，明确告诉模型"这是参考资料，不是你要模仿的输出"。</p>
+     */
+    private ChatMessage annotateHistory(ChatMessage msg) {
+        String roleLabel = "user".equals(msg.getRole()) ? "用户" : "助手";
+        String annotated = String.format("[历史记录 - %s] %s", roleLabel, msg.getContent());
+        return ChatMessage.restore(msg.getRole(), annotated, msg.getReasoning(),
+                msg.getTimestamp(), msg.getEvents());
+    }
+
+    /**
      * 截断历史消息，只保留最近 {@value #HISTORY_MAX_ITEMS} 条
      *
      * <p>历史过长会稀释系统提示的注意力，导致规划偏离结构化格式。
@@ -221,8 +253,7 @@ public class PlanAgent {
         }
         List<ChatMessage> trimmed =
                 history.subList(history.size() - HISTORY_MAX_ITEMS, history.size());
-        log.info("PlanAgent 历史消息截断: {} 条超限，保留最近 {} 条",
-                history.size(), trimmed.size());
+        log.debug("PlanAgent 历史截断: {} → {}", history.size(), trimmed.size());
         return trimmed;
     }
 }
