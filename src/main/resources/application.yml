@@ -31,6 +31,9 @@ spring:
 agent:
   mcp:
     enabled: ${MCP_ENABLED:false}
+  search:
+    max-results: ${SEARCH_MAX_RESULTS:5}
+    timeout: ${SEARCH_TIMEOUT:10s}
   sandbox:
     domain: ${SANDBOX_DOMAIN:localhost:8080}
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}

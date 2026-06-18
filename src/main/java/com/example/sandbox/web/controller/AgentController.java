@@ -94,8 +94,13 @@ public class AgentController {
      */
     @PostMapping("/{id}/chat")
     public ApiResponse<ChatMessage> chat(@PathVariable String id, @RequestBody ChatRequest request) {
-        ChatMessage response = agentService.chat(id, request.getMessage());
-        return ApiResponse.success(response);
+        UserContext.setWebSearchEnabled(request.isSearchEnabled());
+        try {
+            ChatMessage response = agentService.chat(id, request.getMessage());
+            return ApiResponse.success(response);
+        } finally {
+            UserContext.clear();
+        }
     }
 
     /**
@@ -112,6 +117,7 @@ public class AgentController {
     public SseEmitter chatStream(
             @PathVariable String id,
             @RequestParam String message,
+            @RequestParam(defaultValue = "false") boolean searchEnabled,
             HttpServletResponse response) {
 
         Long userId = UserContext.getCurrentUserId();
@@ -131,6 +137,7 @@ public class AgentController {
         CompletableFuture.runAsync(() -> {
             try {
                 UserContext.setCurrentUserId(userId);
+                UserContext.setWebSearchEnabled(searchEnabled);
                 agentService.chatStream(id, message)
                         .doFinally(signalType -> UserContext.clear())
                         .subscribe(

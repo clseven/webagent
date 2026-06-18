@@ -13,11 +13,24 @@ public class ChatRequest {
      */
     private String message;
 
+    /**
+     * 是否启用网络搜索（前端开关）
+     */
+    private boolean searchEnabled;
+
     public String getMessage() {
         return message;
     }
 
     public void setMessage(String message) {
         this.message = message;
+    }
+
+    public boolean isSearchEnabled() {
+        return searchEnabled;
+    }
+
+    public void setSearchEnabled(boolean searchEnabled) {
+        this.searchEnabled = searchEnabled;
     }
 }

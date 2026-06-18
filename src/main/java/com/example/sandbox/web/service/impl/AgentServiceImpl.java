@@ -17,6 +17,7 @@ import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
 import com.example.sandbox.web.service.mcp.McpDynamicTool;
 import com.example.sandbox.web.service.mcp.McpToolProvider;
+import com.example.sandbox.web.service.tool.WebSearchTool;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -267,6 +268,9 @@ public class AgentServiceImpl implements AgentService {
                 .toList());
         // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
         filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
+
+        // WebSearch 工具：仅在前端开启搜索时才保留
+        filteredTools = filterWebSearchTool(filteredTools);
 
         // 知识库描述注入：如果应用关联了知识库，动态修改 knowledge_search 工具的描述
         KnowledgeSearchTool knowledgeSearchTool = null;
@@ -527,6 +531,9 @@ public class AgentServiceImpl implements AgentService {
                 // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
                 filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
 
+                // WebSearch 工具：仅在前端开启搜索时才保留
+                filteredTools = filterWebSearchTool(filteredTools);
+
                 // 知识库注入
                 String kbDescription = null;
                 if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
@@ -728,5 +735,26 @@ public class AgentServiceImpl implements AgentService {
                     skipped, result.size() - customTools.size());
         }
         return result;
+    }
+
+    /**
+     * 按前端网络搜索开关过滤 {@link WebSearchTool}。
+     *
+     * <p>开关来自当前请求的 {@code searchEnabled} 参数（通过 {@link com.example.sandbox.web.context.UserContext} 传递）。
+     * 关闭时从工具列表中移除 web_search，LLM 将无法调用。</p>
+     */
+    private List<Tool> filterWebSearchTool(List<Tool> tools) {
+        boolean enabled = UserContext.isWebSearchEnabled();
+        if (enabled) {
+            log.debug("网络搜索已启用");
+            return tools;
+        }
+        List<Tool> filtered = tools.stream()
+                .filter(t -> !(t instanceof WebSearchTool))
+                .toList();
+        if (filtered.size() < tools.size()) {
+            log.debug("网络搜索已关闭，web_search 工具已移除");
+        }
+        return filtered;
     }
 }

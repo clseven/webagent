@@ -102,6 +102,13 @@
             <version>2.9.1</version>
         </dependency>
 
+        <!-- Jsoup HTML 解析，用于 WebSearchTool 解析 DuckDuckGo 搜索结果 -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.18.3</version>
+        </dependency>
+
         <!-- Milvus Java SDK：向量数据库 -->
         <dependency>
             <groupId>io.milvus</groupId>
