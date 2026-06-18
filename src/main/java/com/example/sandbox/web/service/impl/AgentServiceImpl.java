@@ -338,7 +338,7 @@ public class AgentServiceImpl implements AgentService {
         }
 
         String sessionContext = buildSessionContext(session, enhancedContext);
-        PlanAgent planAgent = new PlanAgent(plannerLlm, toolDefinitions, skills, sessionContext);
+        PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
         PlanResult planResult = planAgent.plan(userMessage, history);
         String plan = planResult.getPlan();
         log.info("【规划结果】{}", plan.length() > 300 ? plan.substring(0, 300) + "..." : plan);
@@ -587,7 +587,7 @@ public class AgentServiceImpl implements AgentService {
                 }
 
                 String sessionContext = buildSessionContext(session, enhancedContext);
-                PlanAgent planAgent = new PlanAgent(plannerLlm, toolDefinitions, skills, sessionContext);
+                PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
                 PlanResult planResult = planAgent.plan(userMessage, history);
                 String plan = planResult.getPlan();
 
