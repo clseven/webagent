@@ -30,7 +30,25 @@ spring:
 
 agent:
   mcp:
+    # 是否启用真 MCP 协议客户端（基于官方 mcp-core SDK），默认关闭
     enabled: ${MCP_ENABLED:false}
+    # 单次 MCP 请求超时
+    request-timeout: ${MCP_REQUEST_TIMEOUT:60s}
+    # initialize 握手超时
+    initialization-timeout: ${MCP_INIT_TIMEOUT:30s}
+    # MCP Server 列表，每项支持 stdio 和 streamable-http 两种 transport
+    # 示例：
+    #   servers:
+    #     - id: filesystem
+    #       type: stdio
+    #       command: npx
+    #       args: ["-y", "@modelcontextprotocol/server-filesystem", "D:/workspace"]
+    #     - id: github
+    #       type: streamable-http
+    #       url: https://example.com/mcp
+    #       headers:
+    #         Authorization: "Bearer xxx"
+    servers: []
   search:
     max-results: ${SEARCH_MAX_RESULTS:5}
     timeout: ${SEARCH_TIMEOUT:10s}

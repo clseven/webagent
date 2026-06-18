@@ -19,7 +19,21 @@
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <lombok.version>1.18.32</lombok.version>
+        <mcp.sdk.version>2.0.0</mcp.sdk.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- MCP Java SDK BOM：固定 mcp-* 模块版本，避免聚合包带入 Jackson 3 -->
+            <dependency>
+                <groupId>io.modelcontextprotocol.sdk</groupId>
+                <artifactId>mcp-bom</artifactId>
+                <version>${mcp.sdk.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <!-- Spring Boot Web -->
@@ -114,6 +128,16 @@
             <groupId>io.milvus</groupId>
             <artifactId>milvus-sdk-java</artifactId>
             <version>2.4.1</version>
+        </dependency>
+
+        <!-- MCP Java SDK：协议核心（含 stdio 与 HTTP 传输）+ Jackson2 序列化 -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp-json-jackson2</artifactId>
         </dependency>
     </dependencies>
 

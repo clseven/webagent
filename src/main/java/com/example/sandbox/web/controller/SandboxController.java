@@ -11,7 +11,7 @@ import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.OfficePreviewService;
-import com.example.sandbox.web.service.mcp.McpToolProvider;
+import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,9 +50,9 @@ public class SandboxController {
     @Autowired
     private OfficePreviewService officePreviewService;
 
-    /** MCP 动态工具提供器，用于在工作空间刷新时清理会话级工具发现缓存。 */
+    /** MCP 动态工具提供器，刷新接口仍保留以兼容前端，但新实现是无状态的，evict 为 no-op。 */
     @Autowired
-    private McpToolProvider mcpToolProvider;
+    private McpClientToolProvider mcpToolProvider;
 
     /**
      * 执行命令

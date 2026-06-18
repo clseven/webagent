@@ -15,8 +15,8 @@ import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.TokenUsageService;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
-import com.example.sandbox.web.service.mcp.McpDynamicTool;
-import com.example.sandbox.web.service.mcp.McpToolProvider;
+import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
+import com.example.sandbox.web.service.mcpclient.RealMcpTool;
 import com.example.sandbox.web.service.tool.WebSearchTool;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
 import org.slf4j.Logger;
@@ -88,9 +88,9 @@ public class AgentServiceImpl implements AgentService {
     @Autowired
     private List<Tool> tools;
 
-    /** MCP 动态工具提供器（从当前沙箱发现第三方 MCP 能力） */
+    /** MCP 动态工具提供器（基于官方 MCP Java SDK 的真 MCP 协议客户端） */
     @Autowired
-    private McpToolProvider mcpToolProvider;
+    private McpClientToolProvider mcpToolProvider;
 
     /** Agent 应用服务（加载应用配置：知识库、技能过滤等） */
     @Autowired
@@ -697,16 +697,18 @@ public class AgentServiceImpl implements AgentService {
      * 按配置合并 MCP 动态工具。
      *
      * <p>受 {@code agent.mcp.enabled} 控制，默认关闭。
-     * 开启时与自定义工具去重：若 MCP 工具原始名与已有自定义工具同名，保留自定义工具。
-     * 非 AIO 沙箱不加载 MCP 工具。</p>
+     * 开启时与自定义工具去重：若 MCP 工具原始名与已有自定义工具同名，保留自定义工具。</p>
+     *
+     * <p>新版 MCP 客户端是基于官方 SDK 的真 MCP 协议长连接，与具体沙箱类型无关，
+     * 因此不再像旧版那样限制只在 AIO 沙箱启用。</p>
      *
      * @param customTools 已过滤的自定义工具列表
      * @param sessionId   当前会话 ID
-     * @param isAio       是否为 AIO 沙箱
+     * @param isAio       是否为 AIO 沙箱（保留参数兼容现有调用，目前未使用）
      * @return 合并后的工具列表（可能包含 MCP 工具）
      */
     private List<Tool> mergeMcpTools(List<Tool> customTools, String sessionId, boolean isAio) {
-        if (!mcpEnabled || !isAio) {
+        if (!mcpEnabled) {
             return customTools;
         }
 
@@ -718,8 +720,8 @@ public class AgentServiceImpl implements AgentService {
         List<Tool> result = new ArrayList<>(customTools);
         int skipped = 0;
         for (Tool mcpTool : mcpToolProvider.getTools(sessionId)) {
-            if (mcpTool instanceof McpDynamicTool mcp) {
-                String originalName = mcp.getRef().tool();
+            if (mcpTool instanceof RealMcpTool mcp) {
+                String originalName = mcp.getOriginalName();
                 if (customNames.contains(originalName)) {
                     log.debug("MCP 工具 {} (原始名: {}) 与自定义工具冲突，使用自定义版本",
                             mcpTool.getDefinition().getName(), originalName);
