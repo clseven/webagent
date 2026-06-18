@@ -68,7 +68,7 @@ export async function health() {
  * 返回当前活动页面的紧凑语义快照。
  *
  * @param {{maxElements?: number, maxTextChars?: number}} options 快照范围限制
- * @returns {Promise<object>} 页面标识、可见文本、视口和交互元素
+ * @returns {Promise<object>} 页面标识、正文摘要、标题层级、语义区域、视口和交互元素
  * @throws {Error} 内部 CDP 地址不可用、浏览器连接失败或页面读取失败时抛出
  */
 export async function inspect(options = {}) {
@@ -78,6 +78,7 @@ export async function inspect(options = {}) {
   try {
     return await page.evaluate(({ elementLimit, textLimit }) => {
       const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const compact = (value, limit = 300) => normalize(value).slice(0, limit);
       const visible = (element) => {
         const style = window.getComputedStyle(element);
         const rect = element.getBoundingClientRect();
@@ -86,6 +87,56 @@ export async function inspect(options = {}) {
           && Number(style.opacity) !== 0
           && rect.width > 0
           && rect.height > 0;
+      };
+      const referencedText = (element, attribute) => {
+        const ids = normalize(element.getAttribute(attribute)).split(" ").filter(Boolean);
+        return compact(ids
+          .map((id) => document.getElementById(id)?.innerText
+            || document.getElementById(id)?.textContent)
+          .filter(Boolean)
+          .join(" "));
+      };
+      const associatedLabel = (element) => {
+        if (element.labels?.length) {
+          return compact([...element.labels]
+            .map((label) => label.innerText || label.textContent)
+            .join(" "));
+        }
+        return referencedText(element, "aria-labelledby");
+      };
+      const inferredRole = (element) => {
+        const explicitRole = normalize(element.getAttribute("role"));
+        if (explicitRole) {
+          return explicitRole;
+        }
+        const tag = element.tagName.toLowerCase();
+        const type = normalize(element.getAttribute("type")).toLowerCase();
+        if (tag === "a" && element.hasAttribute("href")) return "link";
+        if (tag === "button" || tag === "summary") return "button";
+        if (tag === "textarea") return "textbox";
+        if (tag === "select") return element.multiple ? "listbox" : "combobox";
+        if (element.isContentEditable) return "textbox";
+        if (element.hasAttribute("onclick")) return "button";
+        if (tag !== "input") return "";
+        if (["button", "submit", "reset", "image"].includes(type)) return "button";
+        if (type === "checkbox") return "checkbox";
+        if (type === "radio") return "radio";
+        if (type === "range") return "slider";
+        if (type === "number") return "spinbutton";
+        if (type === "search") return "searchbox";
+        if (type === "hidden") return "";
+        return "textbox";
+      };
+      const accessibleName = (element) => {
+        const labelledBy = referencedText(element, "aria-labelledby");
+        const ariaLabel = compact(element.getAttribute("aria-label"));
+        const label = associatedLabel(element);
+        const alt = compact(element.getAttribute("alt"));
+        const title = compact(element.getAttribute("title"));
+        const text = compact(element.innerText || element.textContent);
+        const placeholder = compact(element.getAttribute("placeholder"));
+        const value = compact(element.value);
+        return labelledBy || ariaLabel || label || alt || title || text || placeholder || value;
       };
       const selectorFor = (element) => {
         if (element.id) {
@@ -118,7 +169,7 @@ export async function inspect(options = {}) {
       const allCandidates = [...document.querySelectorAll(
         "a[href],button,input,textarea,select,[role='button'],[role='link'],"
           + "[role='checkbox'],[role='radio'],[role='combobox'],[contenteditable='true'],"
-          + "[tabindex]:not([tabindex='-1'])"
+          + "summary,[onclick],[tabindex]:not([tabindex='-1'])"
       )].filter(visible);
       const candidates = allCandidates.slice(0, elementLimit);
 
@@ -129,16 +180,41 @@ export async function inspect(options = {}) {
         return {
           ref: `e${index + 1}`,
           tag: element.tagName.toLowerCase(),
-          role: element.getAttribute("role") || "",
+          role: inferredRole(element),
+          accessibleName: accessibleName(element),
+          label: associatedLabel(element),
+          description: referencedText(element, "aria-describedby"),
           type,
-          text: normalize(element.innerText || element.textContent).slice(0, 300),
-          ariaLabel: normalize(element.getAttribute("aria-label")).slice(0, 300),
-          placeholder: normalize(element.getAttribute("placeholder")).slice(0, 300),
+          text: compact(element.innerText || element.textContent),
+          ariaLabel: compact(element.getAttribute("aria-label")),
+          placeholder: compact(element.getAttribute("placeholder")),
+          title: compact(element.getAttribute("title")),
+          testId: element.getAttribute("data-testid") || "",
           name: element.getAttribute("name") || "",
-          value: password ? "[password]" : normalize(element.value).slice(0, 300),
+          value: password ? "[password]" : compact(element.value),
           href: element.href || "",
           disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
+          required: Boolean(element.required) || element.getAttribute("aria-required") === "true",
+          readOnly: Boolean(element.readOnly) || element.getAttribute("aria-readonly") === "true",
+          focused: element === document.activeElement,
           checked: typeof element.checked === "boolean" ? element.checked : undefined,
+          selectedOptions: element.tagName === "SELECT"
+            ? [...element.selectedOptions].map((option) => ({
+                text: compact(option.textContent, 150),
+                value: option.value
+              }))
+            : undefined,
+          options: element.tagName === "SELECT"
+            ? [...element.options].slice(0, 20).map((option) => ({
+                text: compact(option.textContent, 150),
+                value: option.value,
+                selected: option.selected,
+                disabled: option.disabled
+              }))
+            : undefined,
+          optionsTruncated: element.tagName === "SELECT" && element.options.length > 20
+            ? true
+            : undefined,
           selector: selectorFor(element),
           box: {
             x: Math.round(rect.x),
@@ -149,6 +225,49 @@ export async function inspect(options = {}) {
         };
       });
 
+      const headings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")]
+        .filter(visible)
+        .slice(0, 30)
+        .map((element) => ({
+          level: Number(element.tagName.slice(1)),
+          text: compact(element.innerText || element.textContent)
+        }));
+      const landmarkSelector = "header,nav,main,aside,footer,form,[role='banner'],"
+        + "[role='navigation'],[role='main'],[role='complementary'],"
+        + "[role='contentinfo'],[role='search'],[role='form'],[role='region']";
+      const landmarkRole = (element) => {
+        const explicitRole = normalize(element.getAttribute("role"));
+        if (explicitRole) return explicitRole;
+        return {
+          header: "banner",
+          nav: "navigation",
+          main: "main",
+          aside: "complementary",
+          footer: "contentinfo",
+          form: "form"
+        }[element.tagName.toLowerCase()] || element.tagName.toLowerCase();
+      };
+      const landmarkName = (element) => {
+        const labelledBy = referencedText(element, "aria-labelledby");
+        const ariaLabel = compact(element.getAttribute("aria-label"));
+        const title = compact(element.getAttribute("title"));
+        const heading = element.querySelector("h1,h2,h3,h4,h5,h6");
+        return labelledBy || ariaLabel || title
+          || compact(heading?.innerText || heading?.textContent);
+      };
+      const allHeadings = [...document.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+      const allLandmarks = [...document.querySelectorAll(landmarkSelector)];
+      const landmarks = allLandmarks
+        .filter(visible)
+        .slice(0, 20)
+        .map((element) => ({
+          role: landmarkRole(element),
+          name: landmarkName(element)
+        }));
+      const mainContent = [...document.querySelectorAll("main,[role='main']")].find(visible);
+      const textSource = mainContent || document.body;
+      const bodyText = normalize(textSource?.innerText);
+
       return {
         url: location.href,
         title: document.title,
@@ -156,9 +275,17 @@ export async function inspect(options = {}) {
           width: window.innerWidth,
           height: window.innerHeight
         },
-        text: normalize(document.body?.innerText).slice(0, textLimit),
+        headings,
+        landmarks,
+        textScope: mainContent ? "main" : "body",
+        text: bodyText.slice(0, textLimit),
         elements,
-        truncated: allCandidates.length > elementLimit
+        truncated: {
+          text: bodyText.length > textLimit,
+          elements: allCandidates.length > elementLimit,
+          headings: allHeadings.filter(visible).length > 30,
+          landmarks: allLandmarks.filter(visible).length > 20
+        }
       };
     }, { elementLimit: maxElements, textLimit: maxTextChars });
   } finally {

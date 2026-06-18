@@ -762,6 +762,44 @@ a:hover { text-decoration: underline; }
   margin-top: 1px;
 }
 
+.session-delete-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all var(--transition-fast);
+  flex: 0 0 auto;
+}
+
+.session-item:hover .session-delete-btn,
+.session-delete-btn:focus-visible,
+.session-delete-btn:disabled {
+  opacity: 1;
+}
+
+.session-delete-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+}
+
+.session-delete-btn:disabled {
+  cursor: default;
+}
+
+.thinking-spinner.tiny {
+  width: 11px;
+  height: 11px;
+  border-width: 2px;
+}
+
 .sidebar-empty {
   flex: 1;
   display: flex;

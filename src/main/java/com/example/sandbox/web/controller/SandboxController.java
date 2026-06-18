@@ -11,6 +11,7 @@ import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.OfficePreviewService;
+import com.example.sandbox.web.service.mcp.McpToolProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,10 @@ public class SandboxController {
     @Autowired
     private OfficePreviewService officePreviewService;
 
+    /** MCP 动态工具提供器，用于在工作空间刷新时清理会话级工具发现缓存。 */
+    @Autowired
+    private McpToolProvider mcpToolProvider;
+
     /**
      * 执行命令
      */
@@ -56,11 +61,18 @@ public class SandboxController {
     public ApiResponse<ExecutionResult> executeCommand(
             @PathVariable String id,
             @RequestBody ExecuteRequest request) {
+        String command = request.getCommand();
+        String commandPreview = command != null && command.length() > 200
+                ? command.substring(0, 200) + "..."
+                : command;
+        log.info("收到沙箱命令执行请求: session={}, command={}", id, commandPreview);
         agentService.getSession(id);
         Instant start = Instant.now();
         AioClient client = sandboxClientFactory.getAioClient(id);
-        String output = client.execCommand(request.getCommand());
+        String output = client.execCommand(command);
         Duration duration = Duration.between(start, Instant.now());
+        log.info("沙箱命令执行完成: session={}, durationMs={}, outputLength={}",
+                id, duration.toMillis(), output != null ? output.length() : 0);
         return ApiResponse.success(ExecutionResult.success(output, duration));
     }
 
@@ -96,6 +108,23 @@ public class SandboxController {
         agentService.getSession(id);
         String endpoint = sandboxServiceImpl.getAioEndpoint(id);
         return ApiResponse.success(endpoint);
+    }
+
+    /**
+     * 刷新工作空间相关状态。
+     *
+     * <p>前端工作空间刷新按钮会调用本接口。当前主要清理 MCP 工具发现缓存，
+     * 让用户在沙箱内新增或调整 MCP Server 后，下一轮对话能重新发现最新工具。</p>
+     *
+     * @param id 会话 ID
+     * @return 空成功响应
+     */
+    @PostMapping("/{id}/workspace/refresh")
+    public ApiResponse<Void> refreshWorkspace(@PathVariable String id) {
+        log.info("刷新工作空间状态: session={}", id);
+        agentService.getSession(id);
+        mcpToolProvider.evict(id);
+        return ApiResponse.success();
     }
 
     /**

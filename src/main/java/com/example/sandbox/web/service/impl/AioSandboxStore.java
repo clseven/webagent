@@ -16,87 +16,87 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * AIO 沙箱存储
+ * AIO 沙箱映射存储。
  *
- * <p>管理 sessionId → endpoint 的映射，支持持久化和启动恢复。</p>
- *
- * @author example
- * @date 2026/05/21
+ * <p>负责维护 sessionId/userId 与 AIO endpoint 的内存映射，并在应用启动时从数据库恢复。
+ * 启动恢复阶段只恢复健康的未删除记录，避免不可达旧 endpoint 阻止后续重新创建沙箱。</p>
  */
 @Component
 public class AioSandboxStore {
 
+    /** 记录沙箱映射恢复、注册和移除行为。 */
     private static final Logger log = LoggerFactory.getLogger(AioSandboxStore.class);
 
-    /**
-     * 内存映射：sessionId → aioEndpoint
-     */
+    /** 内存映射：sessionId 或用户级 key → aioEndpoint。 */
     private final Map<String, String> sessionEndpoints = new ConcurrentHashMap<>();
 
-    /**
-     * 内存映射：sandboxId → sessionId（用于反向查找）
-     */
+    /** 内存映射：sandboxId → sessionId 或用户级 key，用于反向查找。 */
     private final Map<String, String> sandboxToSession = new ConcurrentHashMap<>();
 
+    /** 会话仓库，用于清理会话上的沙箱绑定。 */
     @Autowired
     private ConversationSessionRepository sessionRepository;
 
+    /** 用户沙箱仓库，用于恢复用户级永久沙箱绑定。 */
     @Autowired
     private UserSandboxRepository userSandboxRepository;
 
     /**
-     * 应用启动时从 UserSandboxEntity 恢复映射
-     * <p>
-     * 同时清理数据库中不健康的沙箱记录
+     * 应用启动时恢复 AIO 沙箱映射。
+     *
+     * <p>这里不重新激活 deleted=true 的记录，也不恢复健康检查失败的 endpoint。
+     * 这样旧容器已停止或端口不可达时，创建流程可以正常进入重建路径。</p>
      */
     @PostConstruct
     public void restore() {
         log.info("开始恢复 AIO 沙箱映射...");
         try {
-            var userSandboxes = userSandboxRepository.findAll();
+            var userSandboxes = userSandboxRepository.findByDeletedFalse();
             int restored = 0;
-            int cleaned = 0;
+            int unhealthy = 0;
+            int skipped = 0;
 
             for (UserSandboxEntity userSandbox : userSandboxes) {
+                Long userId = userSandbox.getUserId();
                 String sandboxId = userSandbox.getSandboxId();
                 String endpoint = userSandbox.getAioEndpoint();
 
-                if (endpoint == null || endpoint.isBlank()) {
-                    log.debug("用户 {} 缺少 endpoint，跳过", userSandbox.getUserId());
+                if (userId == null || endpoint == null || endpoint.isBlank()) {
+                    skipped++;
+                    log.debug("用户沙箱记录缺少 userId 或 endpoint，跳过: userId={}, sandboxId={}", userId, sandboxId);
                     continue;
                 }
 
-                // 检查沙箱是否健康
-                if (checkHealth(endpoint)) {
-                    // 使用 "__user_" + userId 作为 key，供 SandboxServiceImpl 使用
-                    String key = "__user_" + userSandbox.getUserId();
-                    sessionEndpoints.put(key, endpoint);
-                    if (sandboxId != null) {
-                        sandboxToSession.put(sandboxId, key);
-                    }
-                    restored++;
-                    log.debug("恢复沙箱: userId={}, sandboxId={}, endpoint={}", userSandbox.getUserId(), sandboxId, endpoint);
-                } else {
-                    // 沙箱不健康，软删除（保留记录，避免 Docker 容器还在但被误删）
-                    log.warn("沙箱不健康，软删除: userId={}, sandboxId={}, endpoint={}", userSandbox.getUserId(), sandboxId, endpoint);
-                    try {
-                        userSandbox.setDeleted(true);
-                        userSandboxRepository.save(userSandbox);
-                        cleaned++;
-                    } catch (Exception e) {
-                        log.error("软删除不健康沙箱记录失败: userId={}", userSandbox.getUserId(), e);
-                    }
+                if (!checkHealth(endpoint)) {
+                    unhealthy++;
+                    log.warn("AIO 沙箱启动恢复时暂不可达，跳过内存映射，后续请求将重建: userId={}, sandboxId={}, endpoint={}",
+                            userId, sandboxId, endpoint);
+                    continue;
                 }
+
+                String key = "__user_" + userId;
+                sessionEndpoints.put(key, endpoint);
+                if (sandboxId != null && !sandboxId.isBlank()) {
+                    sandboxToSession.put(sandboxId, key);
+                }
+
+                restored++;
+                log.debug("恢复沙箱映射: userId={}, sandboxId={}, endpoint={}", userId, sandboxId, endpoint);
             }
 
-            log.info("AIO 沙箱恢复完成: 恢复 {} 个，清理 {} 个不健康记录，当前活跃 {} 个", restored, cleaned, sessionEndpoints.size());
+            log.info("AIO 沙箱恢复完成: 恢复 {} 个，暂不可达 {} 个，跳过 {} 个，当前活跃 {} 个",
+                    restored, unhealthy, skipped, sessionEndpoints.size());
         } catch (Exception e) {
             log.error("恢复 AIO 沙箱映射失败", e);
         }
     }
 
     /**
-     * 注册沙箱
+     * 注册沙箱映射。
+     *
+     * @param sessionId 会话 ID 或用户级 key
+     * @param sandboxId 沙箱 ID
+     * @param endpoint  AIO endpoint
      */
     public void register(String sessionId, String sandboxId, String endpoint) {
         sessionEndpoints.put(sessionId, endpoint);
@@ -107,7 +107,9 @@ public class AioSandboxStore {
     }
 
     /**
-     * 移除沙箱
+     * 移除指定会话的沙箱映射。
+     *
+     * @param sessionId 会话 ID
      */
     public void remove(String sessionId) {
         String endpoint = sessionEndpoints.remove(sessionId);
@@ -118,28 +120,40 @@ public class AioSandboxStore {
     }
 
     /**
-     * 检查会话是否有沙箱
+     * 检查会话是否已有沙箱映射。
+     *
+     * @param sessionId 会话 ID 或用户级 key
+     * @return 存在映射返回 true
      */
     public boolean hasSandbox(String sessionId) {
         return sessionEndpoints.containsKey(sessionId);
     }
 
     /**
-     * 获取沙箱 endpoint
+     * 获取沙箱 endpoint。
+     *
+     * @param sessionId 会话 ID 或用户级 key
+     * @return AIO endpoint，不存在时返回 null
      */
     public String getEndpoint(String sessionId) {
         return sessionEndpoints.get(sessionId);
     }
 
     /**
-     * 获取所有 session → endpoint 映射
+     * 获取所有 session/key 到 endpoint 的映射。
+     *
+     * @return 当前内存映射
      */
     public Map<String, String> getAllEndpoints() {
         return sessionEndpoints;
     }
 
     /**
-     * 获取 AIO 客户端
+     * 获取 AIO 客户端。
+     *
+     * @param sessionId 会话 ID 或用户级 key
+     * @return AIO 客户端
+     * @throws RuntimeException 当没有映射时抛出
      */
     public AioClient getClient(String sessionId) {
         String endpoint = sessionEndpoints.get(sessionId);
@@ -150,12 +164,18 @@ public class AioSandboxStore {
     }
 
     /**
-     * 检查沙箱健康
+     * 快速检查沙箱健康状态。
+     *
+     * <p>该检查只用于启动恢复日志，不会触发删除。连接拒绝、超时或 HTTP 错误都返回 false，
+     * 因为这些失败在后端刚启动时可能只是 AIO 端口尚未恢复。</p>
+     *
+     * @param endpoint AIO endpoint
+     * @return 单次检查成功返回 true
      */
     private boolean checkHealth(String endpoint) {
         try {
             AioClient client = new AioClient("http://" + endpoint);
-            return client.isReady();
+            return client.shell().quickHealthCheck();
         } catch (Exception e) {
             log.debug("沙箱健康检查失败: endpoint={}, error={}", endpoint, e.getMessage());
             return false;
@@ -163,7 +183,9 @@ public class AioSandboxStore {
     }
 
     /**
-     * 清除数据库中的沙箱记录
+     * 清除数据库中的会话沙箱记录。
+     *
+     * @param sessionId 会话 ID
      */
     @Transactional
     public void clearSandboxRecord(String sessionId) {

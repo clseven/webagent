@@ -8,8 +8,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -45,6 +49,29 @@ class BrowserAgentRuntimeServiceTest {
         assertFalse(script.contains("cdp_url"));
         assertFalse(script.contains("connectOverCDP"));
         verifyNoInteractions(browserApi);
+    }
+
+    /**
+     * 页面检查脚本应提供定位、结构和表单状态信息，同时保留输出截断标记。
+     *
+     * @throws Exception 读取类路径资源失败时抛出
+     */
+    @Test
+    void inspectScriptContainsCompactSemanticFields() throws Exception {
+        try (InputStream input = getClass().getResourceAsStream(
+                "/tools/browser-agent/browser-agent.mjs")) {
+            assertNotNull(input, "Browser Agent 脚本应被打包到类路径");
+            String script = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+
+            assertTrue(script.contains("accessibleName: accessibleName(element)"));
+            assertTrue(script.contains("label: associatedLabel(element)"));
+            assertTrue(script.contains("description: referencedText(element, \"aria-describedby\")"));
+            assertTrue(script.contains("selectedOptions:"));
+            assertTrue(script.contains("headings,"));
+            assertTrue(script.contains("landmarks,"));
+            assertTrue(script.contains("textScope:"));
+            assertTrue(script.contains("truncated: {"));
+        }
     }
 
     /**

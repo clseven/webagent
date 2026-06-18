@@ -66,6 +66,13 @@ public interface ConversationService {
     void clearHistory(String sessionId);
 
     /**
+     * 删除会话及其关联消息和启用技能记录。
+     *
+     * @param sessionId 会话 ID
+     */
+    void deleteSession(String sessionId);
+
+    /**
      * 构建系统提示（仅技能元数据，不含消息历史）
      *
      * @param sessionId 会话 ID

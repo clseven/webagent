@@ -2,6 +2,7 @@ package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.agent.SandboxAgent;
 import com.example.sandbox.aio.AioClient;
+import com.example.sandbox.aio.shell.model.ShellExecResult;
 import com.example.sandbox.web.config.AgentConfigProperties;
 import com.example.sandbox.web.exception.SessionNotFoundException;
 import com.example.sandbox.web.model.entity.ConversationSessionEntity;
@@ -44,6 +45,14 @@ public class SandboxServiceImpl implements SandboxService {
     private static final Logger log = LoggerFactory.getLogger(SandboxServiceImpl.class);
 
     private static final Duration RENEW_INTERVAL = Duration.ofMinutes(30);
+
+    /** AIO 工作目录创建命令，使用显式路径避免不同 shell 对花括号展开支持不一致。 */
+    private static final String AIO_WORKSPACE_DIRS_COMMAND = """
+            mkdir -p /home/gem/uploads /home/gem/workspace /home/gem/output /home/gem/skills /home/gem/temp /home/gem/tools /home/gem/knowledge
+            """.trim();
+
+    /** AIO 初始化命令最大重试次数，用于覆盖服务刚启动时连接被短暂中止的情况。 */
+    private static final int AIO_INIT_RETRY_ATTEMPTS = 3;
 
     /** sandboxId → SandboxAgent */
     private final Map<String, SandboxAgent> sandboxAgents = new ConcurrentHashMap<>();
@@ -106,13 +115,13 @@ public class SandboxServiceImpl implements SandboxService {
                 }
                 String endpoint = userSandbox.getAioEndpoint();
                 if (endpoint != null && !endpoint.isBlank()) {
-                    // 检查沙箱是否健康（快速检测）
                     boolean healthy = isSandboxHealthy(endpoint);
                     if (!healthy) {
-                        log.warn("沙箱不健康但仍恢复映射: userId={}, sandboxId={}, endpoint={}", userId, sandboxId, endpoint);
                         unhealthy++;
+                        log.warn("用户沙箱启动恢复时暂不可达，跳过内存映射: userId={}, sandboxId={}, endpoint={}",
+                                userId, sandboxId, endpoint);
+                        continue;
                     }
-                    // 无论是否健康，都恢复内存映射，后续请求时再处理
                     aioSandboxStore.register("__user_" + userId, sandboxId, endpoint);
                 }
                 userSandboxMap.put(userId, sandboxId);
@@ -172,6 +181,7 @@ public class SandboxServiceImpl implements SandboxService {
                     if (isSandboxHealthy(endpoint)) {
                         linkSessionToSandbox(sessionId, existingSandboxId, endpoint);
                         aioSandboxStore.register(sessionId, existingSandboxId, endpoint);
+                        initAioDirectories(sessionId, endpoint);
                         log.info("用户 {} 已有沙箱 {}，关联会话 {}", userId, existingSandboxId, sessionId);
                         return;
                     }
@@ -208,6 +218,7 @@ public class SandboxServiceImpl implements SandboxService {
                         if (endpoint != null && isSandboxHealthy(endpoint)) {
                             linkSessionToSandbox(sessionId, existingSandboxId, endpoint);
                             aioSandboxStore.register(sessionId, existingSandboxId, endpoint);
+                            initAioDirectories(sessionId, endpoint);
                             return;
                         }
                         // 沙箱不健康，清理记录
@@ -245,8 +256,10 @@ public class SandboxServiceImpl implements SandboxService {
 
                 if (isCurrentImageAio()) {
                     aioSandboxStore.register(sessionId, agent.getSandboxId(), endpoint);
-                    initAioContext(sessionId, agent);
-                    initAioDirectories(sessionId, agent);
+                    if (!initAioContext(sessionId, agent)) {
+                        throw new IllegalStateException("AIO 服务未在启动窗口内就绪");
+                    }
+                    initAioDirectories(sessionId, endpoint);
                     restoreUserWorkspace(
                             userId,
                             sessionId,
@@ -387,20 +400,49 @@ public class SandboxServiceImpl implements SandboxService {
         // 1. 检查内存中的 session 映射
         String sandboxId = sessionSandboxMap.get(sessionId);
         if (sandboxId != null) {
-            return true;
+            if (!isCurrentImageAio()) {
+                return true;
+            }
+            try {
+                String endpoint = getAioEndpoint(sessionId);
+                if (endpoint != null && isSandboxHealthy(endpoint)) {
+                    return true;
+                }
+                log.warn("会话 {} 绑定的 AIO 沙箱不可用，将触发重建", sessionId);
+            } catch (Exception e) {
+                log.debug("检查会话 AIO 沙箱失败: sessionId={}, reason={}", sessionId, e.getMessage());
+            }
+            sessionSandboxMap.remove(sessionId);
+            sessionTypeMap.remove(sessionId);
         }
 
         // 2. 通过 userId 查找
         Long userId = getUserIdForSession(sessionId);
         if (userId != null && userSandboxMap.containsKey(userId)) {
             sandboxId = userSandboxMap.get(userId);
-            sessionSandboxMap.put(sessionId, sandboxId);
-            return true;
+            if (!isCurrentImageAio()) {
+                sessionSandboxMap.put(sessionId, sandboxId);
+                return true;
+            }
+            String endpoint = findEndpointForUser(userId, sandboxId);
+            if (endpoint != null && isSandboxHealthy(endpoint)) {
+                sessionSandboxMap.put(sessionId, sandboxId);
+                aioSandboxStore.register(sessionId, sandboxId, endpoint);
+                return true;
+            }
+            log.warn("用户 {} 的 AIO 沙箱 {} 不可用，将触发重建", userId, sandboxId);
+            userSandboxMap.remove(userId);
+            sandboxUserMap.remove(sandboxId);
+            aioSandboxStore.remove("__user_" + userId);
         }
 
         // 3. 检查 aioSandboxStore
         if (aioSandboxStore.hasSandbox(sessionId)) {
-            return true;
+            String endpoint = aioSandboxStore.getEndpoint(sessionId);
+            if (!isCurrentImageAio() || (endpoint != null && isSandboxHealthy(endpoint))) {
+                return true;
+            }
+            aioSandboxStore.remove(sessionId);
         }
 
         return false;
@@ -470,7 +512,17 @@ public class SandboxServiceImpl implements SandboxService {
         return image.contains("agent-infra/sandbox") || image.contains("all-in-one-sandbox");
     }
 
-    private void initAioContext(String sessionId, SandboxAgent agent) {
+    /**
+     * 等待新建 AIO 服务就绪并记录基础上下文。
+     *
+     * <p>连接拒绝、响应过早关闭和超时由 AIO 客户端在启动窗口内轮询处理；
+     * 超过窗口仍不可用时返回 false，让创建流程停止后续目录初始化。</p>
+     *
+     * @param sessionId 会话 ID
+     * @param agent     新建沙箱代理
+     * @return AIO Shell API 在启动窗口内就绪时返回 true
+     */
+    private boolean initAioContext(String sessionId, SandboxAgent agent) {
         try {
             String endpoint = agent.getAioEndpoint();
             AioClient client = new AioClient("http://" + endpoint);
@@ -478,32 +530,60 @@ public class SandboxServiceImpl implements SandboxService {
             log.info("等待 AIO 服务就绪，会话: {}", sessionId);
             if (!client.waitForReady()) {
                 log.warn("AIO 服务未就绪，会话: {}", sessionId);
-                return;
+                return false;
             }
 
-            SandboxClient.SandboxContext context = client.getContext();
-            if (context != null) {
-                log.info("AIO 沙箱就绪 - 会话: {}, workspace: {}", sessionId, context.getWorkspace());
+            try {
+                SandboxClient.SandboxContext context = client.getContext();
+                if (context != null) {
+                    log.info("AIO 沙箱就绪 - 会话: {}, workspace: {}", sessionId, context.getWorkspace());
+                }
+            } catch (Exception e) {
+                log.warn("获取 AIO 环境信息失败（不影响目录初始化），会话: {}, 原因: {}", sessionId, e.getMessage());
             }
+            return true;
         } catch (Exception e) {
-            log.warn("获取 AIO 环境信息失败（不影响使用），会话: {}, 原因: {}", sessionId, e.getMessage());
+            log.warn("等待 AIO 服务就绪失败，会话: {}, 原因: {}", sessionId, e.getMessage());
+            return false;
         }
     }
 
     /**
-     * 初始化 AIO 沙箱目录结构
+     * 初始化 AIO 沙箱目录结构和运行时辅助资源。
+     *
+     * <p>方法先等待 Shell API 就绪，再创建工作目录、写入 README、上传工具脚本并尝试安装
+     * Browser Agent 运行时。服务未就绪或工作目录创建失败会抛出异常，因为后续文件恢复依赖这些目录；
+     * README、工具脚本和浏览器运行时的非关键失败由各自方法降级记录。</p>
+     *
+     * @param sessionId 会话 ID
+     * @param endpoint  AIO endpoint
+     * @throws IllegalStateException 当 AIO 未就绪或工作目录创建失败时抛出
      */
-    private void initAioDirectories(String sessionId, SandboxAgent agent) {
+    private void initAioDirectories(String sessionId, String endpoint) {
+        AioClient client = new AioClient("http://" + endpoint);
+        if (!client.waitForReady()) {
+            throw new IllegalStateException("AIO 服务未就绪，无法初始化工作目录");
+        }
+
+        execShellWithRetry(client, AIO_WORKSPACE_DIRS_COMMAND, "创建 AIO 工作目录");
+        log.info("AIO 沙箱目录已确认，会话: {}", sessionId);
+
+        writeAioReadme(client, sessionId);
+        uploadToolScript(client, "file_parser.py");
+        installBrowserAgentRuntime(client, sessionId);
+        log.info("AIO 沙箱初始化完成，会话: {}", sessionId);
+    }
+
+    /**
+     * 写入 AIO 工作空间说明文件。
+     *
+     * <p>README 仅用于用户可读说明，写入失败不会阻断沙箱创建；目录创建才是工作空间可用的硬依赖。</p>
+     *
+     * @param client    当前 AIO 客户端
+     * @param sessionId 会话 ID
+     */
+    private void writeAioReadme(AioClient client, String sessionId) {
         try {
-            String endpoint = agent.getAioEndpoint();
-            AioClient client = new AioClient("http://" + endpoint);
-
-            // 创建目录结构
-            String mkdirCmd = "mkdir -p /home/gem/{uploads,workspace,output,skills,temp,tools}";
-            client.shell().exec(mkdirCmd);
-            log.info("AIO 沙箱目录已创建，会话: {}", sessionId);
-
-            // 写入 README.md
             String readme = """
                     # 工作空间目录说明
 
@@ -530,16 +610,80 @@ public class SandboxServiceImpl implements SandboxService {
                     """;
             String encoded = java.util.Base64.getEncoder().encodeToString(readme.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String writeCmd = "echo '" + encoded + "' | base64 -d > /home/gem/README.md";
-            client.shell().exec(writeCmd);
+            execShellWithRetry(client, writeCmd, "写入 AIO README");
             log.info("AIO 沙箱 README.md 已写入，会话: {}", sessionId);
-
-            // 上传 file_parser.py 工具脚本
-            uploadToolScript(client, "file_parser.py");
-            installBrowserAgentRuntime(client, sessionId);
-            log.info("AIO 沙箱工具脚本已上传，会话: {}", sessionId);
         } catch (Exception e) {
-            log.warn("初始化 AIO 沙箱目录失败（不影响使用），会话: {}, 原因: {}", sessionId, e.getMessage());
+            log.warn("AIO 沙箱 README.md 写入失败（不影响工作目录），会话: {}, 原因: {}", sessionId, e.getMessage());
         }
+    }
+
+    /**
+     * 带重试执行 AIO Shell 命令。
+     *
+     * <p>仅重试连接中止、响应过早关闭、服务刚启动等瞬时调用失败；命令返回非零退出码不会被视为可恢复成功，
+     * 重试耗尽后抛出异常，让关键初始化失败可见，避免前端看到空工作空间却没有后端错误。</p>
+     *
+     * @param client    当前 AIO 客户端
+     * @param command   Shell 命令
+     * @param operation 操作说明，用于日志和异常信息
+     * @return 最后一次成功的 Shell 执行结果
+     */
+    private ShellExecResult execShellWithRetry(AioClient client, String command, String operation) {
+        Exception lastException = null;
+        ShellExecResult lastResult = null;
+        for (int attempt = 1; attempt <= AIO_INIT_RETRY_ATTEMPTS; attempt++) {
+            try {
+                ShellExecResult result = client.shell().exec(command);
+                lastResult = result;
+                if (result != null && result.isSuccess() && result.getExitCode() == 0) {
+                    return result;
+                }
+                log.warn("{} 未成功，第 {} 次，exitCode={}, output={}",
+                        operation, attempt, result != null ? result.getExitCode() : null,
+                        result != null ? truncate(result.getOutput(), 300) : null);
+            } catch (Exception e) {
+                lastException = e;
+                log.warn("{} 调用失败，第 {} 次，原因: {}", operation, attempt, e.getMessage());
+            }
+            if (attempt < AIO_INIT_RETRY_ATTEMPTS) {
+                sleepBeforeRetry(attempt);
+            }
+        }
+
+        if (lastException != null) {
+            throw new IllegalStateException(operation + "失败: " + lastException.getMessage(), lastException);
+        }
+        throw new IllegalStateException(operation + "失败: exitCode="
+                + (lastResult != null ? lastResult.getExitCode() : null)
+                + ", output=" + (lastResult != null ? truncate(lastResult.getOutput(), 300) : null));
+    }
+
+    /**
+     * 初始化重试前短暂等待。
+     *
+     * @param attempt 当前重试序号
+     */
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(500L * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待 AIO 初始化重试时被中断", e);
+        }
+    }
+
+    /**
+     * 截断日志文本，避免大输出刷屏。
+     *
+     * @param value 原始文本
+     * @param max   最大长度
+     * @return 截断后的文本
+     */
+    private String truncate(String value, int max) {
+        if (value == null || value.length() <= max) {
+            return value;
+        }
+        return value.substring(0, max) + "...";
     }
 
     void restoreUserWorkspace(Long userId, String sessionId, AioClient client) {

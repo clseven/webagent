@@ -69,11 +69,14 @@ public class AgentController {
     }
 
     /**
-     * 关闭会话
+     * 删除当前用户拥有的会话及其历史消息。
+     *
+     * @param id 会话 ID
+     * @return 删除成功时返回空响应
      */
     @DeleteMapping("/{id}")
-    public ApiResponse<Void> closeSession(@PathVariable String id) {
-        agentService.closeSession(id);
+    public ApiResponse<Void> deleteSession(@PathVariable String id) {
+        agentService.deleteSession(id);
         return ApiResponse.success();
     }
 

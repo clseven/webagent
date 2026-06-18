@@ -81,8 +81,10 @@ public class BrowserInspectTool implements Tool {
                 "additionalProperties", false
         );
         String description = """
-                读取当前浏览器页面的语义快照，返回 URL、标题、可见文本、视口大小和可交互元素。
-                元素包含文本、角色、标签、placeholder、selector 和屏幕坐标，可据此编写 browser_execute。
+                读取当前浏览器页面的紧凑语义快照，返回 URL、标题、可见文本、标题层级、
+                页面语义区域、视口大小和可交互元素。
+                元素包含推断后的 role、accessibleName、关联 label、辅助说明、表单状态、
+                selector 和屏幕坐标，可据此编写 browser_execute。
 
                 推荐流程：
                 1. browser_inspect 了解当前页面；
@@ -90,6 +92,7 @@ public class BrowserInspectTool implements Tool {
                 3. 再次 browser_inspect 或 browser_screenshot 验证结果。
 
                 页面导航或显著变化后必须重新检查，不要假设旧 selector 或坐标仍然有效。
+                ref 只是当前快照中的阅读编号，不能直接作为 Playwright locator。
                 此工具只观察，不点击、不输入、不导航。
                 """;
         return new ToolDefinition(NAME, description, parameters, "AIO");

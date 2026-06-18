@@ -21,6 +21,12 @@ import java.time.Duration;
  */
 public class AioClient implements SandboxClient {
 
+    /** AIO 健康检查等待窗口，用于兼容少量旧式 SandboxClient 调用。 */
+    private static final Duration READY_TIMEOUT = Duration.ofSeconds(10);
+
+    /** AIO 启动等待窗口，覆盖端口已开放但 Shell API 仍在启动的过渡阶段。 */
+    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(120);
+
     /** Sandbox 环境 API。 */
     private final AioSandboxApi sandbox;
 
@@ -164,21 +170,21 @@ public class AioClient implements SandboxClient {
     }
 
     /**
-     * 检查 AIO 是否在十秒内就绪。
+     * 检查 AIO 是否在快速健康检查窗口内就绪。
      *
      * @return 是否就绪
      */
     @Override
     public boolean isReady() {
-        return shell.waitUntilReady(Duration.ofSeconds(10));
+        return shell.waitUntilReady(READY_TIMEOUT);
     }
 
     /**
-     * 等待 AIO 在十秒沙箱启动时限内就绪。
+     * 等待 AIO 在启动窗口内就绪。
      *
      * @return 是否就绪
      */
     public boolean waitForReady() {
-        return shell.waitUntilReady(Duration.ofSeconds(10));
+        return shell.waitUntilReady(STARTUP_TIMEOUT);
     }
 }

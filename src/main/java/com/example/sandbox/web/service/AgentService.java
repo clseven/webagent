@@ -29,11 +29,11 @@ public interface AgentService {
     ConversationSession createSession(Long appId);
 
     /**
-     * 关闭会话
+     * 删除当前用户拥有的会话。
      *
      * @param sessionId 会话 ID
      */
-    void closeSession(String sessionId);
+    void deleteSession(String sessionId);
 
     /**
      * 获取会话

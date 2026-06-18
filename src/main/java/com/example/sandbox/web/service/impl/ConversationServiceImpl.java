@@ -260,8 +260,11 @@ public class ConversationServiceImpl implements ConversationService {
     }
 
     /**
-     * 删除会话（数据库）
+     * 删除会话实体，级联删除消息并清理会话技能关联。
+     *
+     * @param sessionId 会话 ID
      */
+    @Override
     @Transactional
     public void deleteSession(String sessionId) {
         if (sessionRepository.existsById(sessionId)) {

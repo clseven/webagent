@@ -166,15 +166,18 @@ public class AgentServiceImpl implements AgentService {
     }
 
     /**
-     * 关闭会话（沙箱为用户级，关闭会话不销毁沙箱）
+     * 删除会话记录及其历史消息。
+     *
+     * <p>沙箱是用户级资源，删除单个会话时只移除会话数据，不销毁用户沙箱。</p>
+     *
+     * @param sessionId 会话 ID
      */
     @Override
-    public void closeSession(String sessionId) {
+    public void deleteSession(String sessionId) {
         ConversationSession session = conversationService.getSession(sessionId);
         validateSessionOwnership(session);
-        // 沙箱为用户级，关闭会话不销毁沙箱
         conversationService.deleteSession(sessionId);
-        log.info("Closed session: {}", sessionId);
+        log.info("Deleted session: {}", sessionId);
     }
 
     /**

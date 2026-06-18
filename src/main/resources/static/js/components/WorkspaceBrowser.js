@@ -224,6 +224,10 @@ const WorkspaceBrowser = {
 
         const refreshRoot = () => {
             expandedSet.value = new Set();
+            if (store.currentSessionId) {
+                api.refreshWorkspace(store.currentSessionId)
+                    .catch(e => console.warn('刷新工作空间状态失败:', e));
+            }
             loadWorkspaceTree();
         };
 

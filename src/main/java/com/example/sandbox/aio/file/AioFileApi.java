@@ -2,6 +2,8 @@ package com.example.sandbox.aio.file;
 
 import com.example.sandbox.aio.core.AioApiException;
 import com.example.sandbox.aio.core.AioHttpClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.util.UriComponentsBuilder;
 
@@ -11,8 +13,20 @@ import java.util.Map;
 
 /**
  * 封装 AIO File REST API。
+ *
+ * <p>该类是新 AIO 客户端的文件能力入口，调用 checked-in OpenAPI 中定义的
+ * `/v1/file/*` 接口，不在这里混用旧版 shell/base64 文件写入协议。</p>
  */
 public class AioFileApi {
+
+    /** 记录 AIO 文件接口调用中的瞬时失败，便于排查沙箱刚启动时的连接问题。 */
+    private static final Logger log = LoggerFactory.getLogger(AioFileApi.class);
+
+    /** 文件写入最大重试次数，仅用于 `/v1/file/write` 的瞬时调用失败。 */
+    private static final int WRITE_RETRY_ATTEMPTS = 3;
+
+    /** 文件写入重试基础等待时间，按尝试次数线性递增。 */
+    private static final long WRITE_RETRY_BASE_DELAY_MILLIS = 300L;
 
     /** 共享 AIO HTTP 传输客户端。 */
     private final AioHttpClient http;
@@ -54,11 +68,7 @@ public class AioFileApi {
      * @return 写入是否成功
      */
     public boolean writeText(String path, String content) {
-        return success(http.postMap("/v1/file/write", Map.of(
-                "file", path,
-                "content", content,
-                "encoding", "utf-8"
-        )));
+        return writeWithRetry(path, content, "utf-8");
     }
 
     /**
@@ -69,11 +79,7 @@ public class AioFileApi {
      * @return 写入是否成功
      */
     public boolean writeBytes(String path, byte[] content) {
-        return success(http.postMap("/v1/file/write", Map.of(
-                "file", path,
-                "content", Base64.getEncoder().encodeToString(content),
-                "encoding", "base64"
-        )));
+        return writeWithRetry(path, Base64.getEncoder().encodeToString(content), "base64");
     }
 
     /**
@@ -167,6 +173,39 @@ public class AioFileApi {
     }
 
     /**
+     * 使用 AIO `/v1/file/write` 写入文件并处理瞬时失败。
+     *
+     * <p>这里只重试连接被中止、响应提前关闭、HTTP 客户端异常以及 AIO 返回 success=false
+     * 这类沙箱服务刚启动时常见的瞬时问题；重试耗尽后返回 false，由上层记录失败路径。
+     * 本方法不切换到 multipart upload，避免同一个写入行为走两套不同协议。</p>
+     *
+     * @param path     Sandbox 内绝对路径
+     * @param content  已按 encoding 准备好的内容
+     * @param encoding OpenAPI 定义的写入编码，例如 utf-8 或 base64
+     * @return 写入成功返回 true，重试耗尽仍失败返回 false
+     */
+    private boolean writeWithRetry(String path, String content, String encoding) {
+        Map<String, Object> body = Map.of(
+                "file", path,
+                "content", content,
+                "encoding", encoding
+        );
+        for (int attempt = 1; attempt <= WRITE_RETRY_ATTEMPTS; attempt++) {
+            try {
+                Map<String, Object> response = http.postMap("/v1/file/write", body);
+                if (success(response)) {
+                    return true;
+                }
+                log.warn("AIO 文件写入返回失败: path={}, attempt={}, response={}", path, attempt, response);
+            } catch (Exception e) {
+                log.warn("AIO 文件写入调用异常: path={}, attempt={}, reason={}", path, attempt, e.getMessage());
+            }
+            sleepBeforeRetry(attempt);
+        }
+        return false;
+    }
+
+    /**
      * 判断 AIO 通用响应是否成功。
      *
      * @param response AIO 完整响应
@@ -174,5 +213,19 @@ public class AioFileApi {
      */
     private boolean success(Map<String, Object> response) {
         return response != null && Boolean.TRUE.equals(response.get("success"));
+    }
+
+    /**
+     * 写入重试前短暂等待。
+     *
+     * @param attempt 当前尝试序号
+     */
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(WRITE_RETRY_BASE_DELAY_MILLIS * attempt);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待 AIO 文件写入重试时被中断", e);
+        }
     }
 }

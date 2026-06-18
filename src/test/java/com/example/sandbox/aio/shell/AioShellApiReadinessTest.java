@@ -22,7 +22,7 @@ class AioShellApiReadinessTest {
     @Test
     void waitUntilReadyPollsAgainWithoutFixedGracePeriod() {
         AioHttpClient http = mock(AioHttpClient.class);
-        when(http.getText("/v1/shell/sessions", Duration.ofSeconds(5)))
+        when(http.getTextQuietly("/v1/shell/sessions", Duration.ofSeconds(5)))
                 .thenThrow(new RuntimeException("尚未就绪"))
                 .thenReturn("{}");
         AioShellApi api = new AioShellApi(http);
@@ -33,6 +33,6 @@ class AioShellApiReadinessTest {
 
         assertTrue(ready);
         assertTrue(elapsedMillis >= 900, "两次就绪探测之间应等待约一秒");
-        verify(http, times(2)).getText("/v1/shell/sessions", Duration.ofSeconds(5));
+        verify(http, times(2)).getTextQuietly("/v1/shell/sessions", Duration.ofSeconds(5));
     }
 }

@@ -7,6 +7,7 @@ import com.example.sandbox.aio.shell.model.ShellExecResult;
 import com.example.sandbox.web.config.RagConfigProperties;
 import com.example.sandbox.web.model.entity.KnowledgeDocumentEntity;
 import com.example.sandbox.web.model.response.FilePreviewContent;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -26,6 +27,15 @@ class OfficePreviewServiceTest {
 
     private final RagConfigProperties properties = new RagConfigProperties();
     private final OfficePreviewService service = new OfficePreviewService(properties);
+
+    /**
+     * 为预览转换用例启用 Office 转换配置。
+     */
+    @BeforeEach
+    void setUp() {
+        properties.getPreview().getConversion().setEnabled(true);
+        properties.getPreview().getConversion().setTimeoutSeconds(120);
+    }
 
     @Test
     void classifiesOfficeExtensions() {

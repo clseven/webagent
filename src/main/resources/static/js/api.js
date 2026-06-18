@@ -277,6 +277,7 @@ function createApiClient() {
 
         // 沙箱文件操作
         executeCommand: (sessionId, command) => request('POST', `/api/sessions/${sessionId}/execute`, { command }),
+        refreshWorkspace: (sessionId) => request('POST', `/api/sessions/${sessionId}/workspace/refresh`),
         readFileInSandbox: (sessionId, path) => request('POST', `/api/sessions/${sessionId}/files/read`, { path }),
 
         // 沙箱文件预览（返回 ArrayBuffer，inline 渲染用）

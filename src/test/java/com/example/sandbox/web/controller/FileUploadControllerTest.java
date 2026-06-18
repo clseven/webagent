@@ -5,6 +5,7 @@ import com.example.sandbox.aio.file.AioFileApi;
 import com.example.sandbox.web.model.entity.ConversationSession;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.service.AgentService;
+import com.example.sandbox.web.service.impl.OfficePreviewAsyncService;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.UserWorkspaceStorageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +18,7 @@ import java.nio.file.Path;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class FileUploadControllerTest {
@@ -24,6 +26,8 @@ class FileUploadControllerTest {
     private final AgentService agentService = mock(AgentService.class);
     private final SandboxServiceImpl sandboxService = mock(SandboxServiceImpl.class);
     private final UserWorkspaceStorageService storage = mock(UserWorkspaceStorageService.class);
+    /** Office 文件异步预转换服务 mock，用于验证上传后触发预转换。 */
+    private final OfficePreviewAsyncService officePreviewAsyncService = mock(OfficePreviewAsyncService.class);
     private final AioClient client = mock(AioClient.class);
     private final AioFileApi files = mock(AioFileApi.class);
     private final FileUploadController controller = new FileUploadController();
@@ -33,6 +37,7 @@ class FileUploadControllerTest {
         ReflectionTestUtils.setField(controller, "agentService", agentService);
         ReflectionTestUtils.setField(controller, "sandboxService", sandboxService);
         ReflectionTestUtils.setField(controller, "workspaceStorage", storage);
+        ReflectionTestUtils.setField(controller, "officePreviewAsyncService", officePreviewAsyncService);
         ConversationSession session = mock(ConversationSession.class);
         when(session.getUserId()).thenReturn(7L);
         when(agentService.getSession("s1")).thenReturn(session);
@@ -61,5 +66,7 @@ class FileUploadControllerTest {
         var order = inOrder(storage, files);
         order.verify(storage).write(local, bytes);
         order.verify(files).upload("/home/gem/uploads/report.docx", bytes);
+        verify(officePreviewAsyncService)
+                .convertWorkspaceFileAsync(7L, "/home/gem/uploads/report.docx");
     }
 }

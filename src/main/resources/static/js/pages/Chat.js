@@ -261,6 +261,13 @@ const ChatPage = {
                                     <span v-if="s.enabledSkillIds && s.enabledSkillIds.length">{{ s.enabledSkillIds.length }} 技能</span>
                                 </div>
                             </div>
+                            <button class="session-delete-btn"
+                                    :disabled="deletingSessionId === s.sessionId"
+                                    @click.stop="deleteSession(s)"
+                                    title="删除会话">
+                                <span v-if="deletingSessionId === s.sessionId" class="thinking-spinner tiny"></span>
+                                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </button>
                         </div>
                     </div>
                     <div v-else class="sidebar-empty">
@@ -312,6 +319,7 @@ const ChatPage = {
 
         const apps = Vue.ref([]);
         const sessions = Vue.ref([]);
+        const deletingSessionId = Vue.ref('');
         const currentAppId = Vue.ref('');
         const currentSessionId = Vue.ref(store.currentSessionId || '');
         const messages = Vue.ref([]);
@@ -408,6 +416,49 @@ const ChatPage = {
                 await loadSessions();
                 await loadHistory();
             } catch (e) { alert('创建会话失败: ' + e.message); }
+        };
+
+        // 删除当前用户会话；如果删的是当前会话，则清理本地选中状态并切换到同 Agent 下的下一条。
+        const deleteSession = async (session) => {
+            if (!session || !session.sessionId) return;
+            const shortId = session.sessionId.substring(0, 8);
+            if (!confirm(`确定删除会话 ${shortId}？删除后历史消息也会一起删除。`)) return;
+
+            deletingSessionId.value = session.sessionId;
+            const wasCurrent = currentSessionId.value === session.sessionId;
+            try {
+                await api.deleteSession(session.sessionId);
+                sessions.value = sessions.value.filter(s => s.sessionId !== session.sessionId);
+
+                if (wasCurrent) {
+                    clearStreamTimers();
+                    if (stopStreamFn.value) {
+                        stopStreamFn.value();
+                        stopStreamFn.value = null;
+                    }
+                    streaming.value = false;
+                    sending.value = false;
+                    messages.value = [];
+                    currentThinking.value = '';
+                    currentReasoning.value = '';
+                    currentToolCall.value = null;
+                    finalAnswer.value = '';
+                    finalAnswerSaved.value = false;
+                    currentEvents.value = [];
+                    streamPhase.value = 'idle';
+
+                    const next = filteredSessions.value[0];
+                    if (next) await selectSession(next.sessionId);
+                    else {
+                        currentSessionId.value = '';
+                        store.setSession('');
+                    }
+                }
+            } catch (e) {
+                alert('删除会话失败: ' + e.message);
+            } finally {
+                deletingSessionId.value = '';
+            }
         };
 
         const switchSession = async () => {
@@ -714,10 +765,10 @@ const ChatPage = {
 
         return {
             store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
-            messages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
+            messages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn, deletingSessionId,
             streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
             finalAnswer, finalAnswerSaved, currentEvents,
-            onAppChange, selectApp, selectSession, createSession, switchSession, send, stopStream, retryMessage,
+            onAppChange, selectApp, selectSession, createSession, deleteSession, switchSession, send, stopStream, retryMessage,
             renderContent, renderMarkdown, previewText, processTitle, processPreview,
             handleMessageContentClick, formatTime, copyId, handleFileSelect, removeFile,
             vncOpen, vncUrl, vncStatus, vncPlaceholder, vncWidth, toggleVnc, resizeVnc, startResize, scrollToBottom
