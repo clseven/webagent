@@ -272,6 +272,29 @@ public class ConversationServiceImpl implements ConversationService {
         }
     }
 
+    /**
+     * 在同一事务中删除指定用户拥有的多个会话实体。
+     *
+     * <p>使用实体删除以保留消息和会话技能关联的级联清理；不存在或属于其他用户的 ID 会被忽略。</p>
+     *
+     * @param sessionIds 待删除的会话 ID 集合
+     * @param userId     当前用户 ID
+     * @return 实际成功删除的会话 ID
+     */
+    @Override
+    @Transactional
+    public List<String> deleteSessionsOwnedByUser(Set<String> sessionIds, Long userId) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return List.of();
+        }
+        List<ConversationSessionEntity> sessions = sessionRepository.findByIdInAndUserId(sessionIds, userId);
+        List<String> deletedSessionIds = sessions.stream()
+                .map(ConversationSessionEntity::getId)
+                .toList();
+        sessionRepository.deleteAll(sessions);
+        return deletedSessionIds;
+    }
+
     @Override
     @Transactional(readOnly = true)
     public List<Skill> getEnabledSkills(String sessionId) {

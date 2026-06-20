@@ -71,6 +71,7 @@ function createApiClient() {
         createSession: (appId) => request('POST', '/api/sessions', appId ? { appId } : undefined),
         getSession: (id) => request('GET', `/api/sessions/${id}`),
         deleteSession: (id) => request('DELETE', `/api/sessions/${id}`),
+        deleteSessions: (sessionIds) => request('DELETE', '/api/sessions/batch', { sessionIds }),
 
         // 聊天
         sendMessage: (sessionId, message) => request('POST', `/api/sessions/${sessionId}/chat`, { message }),

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 会话 Repository
@@ -28,4 +29,13 @@ public interface ConversationSessionRepository extends JpaRepository<Conversatio
     List<ConversationSessionEntity> findAllWithSandbox();
 
     List<ConversationSessionEntity> findByUserIdOrderByUpdatedAtDesc(Long userId);
+
+    /**
+     * 查询指定用户拥有的目标会话。
+     *
+     * @param ids    待查询的会话 ID 集合
+     * @param userId 当前用户 ID
+     * @return 当前用户实际拥有的会话实体
+     */
+    List<ConversationSessionEntity> findByIdInAndUserId(Set<String> ids, Long userId);
 }

@@ -3,8 +3,10 @@ package com.example.sandbox.web.controller;
 import com.example.sandbox.web.context.UserContext;
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ConversationSession;
+import com.example.sandbox.web.model.request.BatchDeleteSessionsRequest;
 import com.example.sandbox.web.model.request.ChatRequest;
 import com.example.sandbox.web.model.response.ApiResponse;
+import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.response.SessionResponse;
 import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
@@ -78,6 +80,19 @@ public class AgentController {
     public ApiResponse<Void> deleteSession(@PathVariable String id) {
         agentService.deleteSession(id);
         return ApiResponse.success();
+    }
+
+    /**
+     * 批量删除当前用户拥有的会话及其历史消息。
+     *
+     * @param request 待删除的会话 ID 列表
+     * @return 实际删除和跳过的会话 ID
+     */
+    @DeleteMapping("/batch")
+    public ApiResponse<BatchDeleteSessionsResponse> deleteSessions(
+            @RequestBody BatchDeleteSessionsRequest request) {
+        List<String> sessionIds = request == null ? List.of() : request.getSessionIds();
+        return ApiResponse.success(agentService.deleteSessions(sessionIds));
     }
 
     /**

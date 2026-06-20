@@ -5,49 +5,45 @@ import com.example.sandbox.web.model.entity.PlanResult;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.model.llm.LlmResponse;
+import com.example.sandbox.web.model.llm.LlmUsage;
 import com.example.sandbox.web.service.LlmService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
- * 规划 Agent — 理解用户意图，拆解任务，产出执行计划
+ * 规划 Agent — 从用户目标和对话上下文中提炼可修正的任务策略。
  *
  * <h3>职责</h3>
  * <ul>
- *   <li>理解用户意图 — 先搞清楚用户到底要什么</li>
- *   <li>发现缺口 — 列出缺失的信息（不要编造）</li>
- *   <li>拆解步骤 — 把任务拆成可执行的原子步骤</li>
- *   <li>匹配工具 — 为每步推荐合适的工具和参数</li>
+ *   <li>目标建模 — 明确用户希望最终达到的状态</li>
+ *   <li>事实分层 — 区分已有事实、待确认信息和当前假设</li>
+ *   <li>成功定义 — 提炼能够证明任务完成的可观察信号</li>
+ *   <li>策略建议 — 给出轻量、可随环境反馈调整的初始方向</li>
  * </ul>
  *
  * <h3>为什么不用工具</h3>
- * <p>规划阶段不带工具，只调用一次 LLM。理由：</p>
+ * <p>规划阶段不带工具，只调用一次 LLM。它负责建立任务模型，而不是预演运行时过程：</p>
  * <ul>
- *   <li>规划是"想清楚再行动"，不需要运行时信息</li>
- *   <li>ReactAgent 在执行阶段有 ReAct 循环兜底，会自己调整</li>
+ *   <li>无法观察到的运行时状态只应标记为待确认，不能写成事实</li>
+ *   <li>ReactAgent 在执行阶段根据真实环境反馈选择和调整行动</li>
  *   <li>分离关注点：规划管方向，执行管落地</li>
  * </ul>
  *
  * <h3>输出格式</h3>
  * <pre>
- * ### 意图
- * [一句话说清用户想干什么]
+ * ### 目标状态
+ * [用户真正希望实现的结果]
  *
- * ### 前置确认
- * [缺什么信息？没有就写"无"]
+ * ### 当前判断
+ * [已知事实、关键假设和待确认内容]
  *
- * ### 执行计划
- * 1. [步骤名]
- *    - 工具: tool_name
- *    - 参数: {key: value}
- *    - 目的: [为什么要做这一步]
+ * ### 成功信号
+ * [哪些可观察现象能够证明目标已经实现]
  *
- * ### 对用户的贴心建议
- * [有没有能让用户更省心的事]
+ * ### 初始策略
+ * [建议从哪里开始，以及为什么]
  * </pre>
  */
 public class PlanAgent {
@@ -57,71 +53,86 @@ public class PlanAgent {
     /** 历史消息保留条数上限，只取最近 N 条，防止历史过长导致规划偏离格式 */
     private static final int HISTORY_MAX_ITEMS = 6;
 
+    /** 任务模型必须按顺序包含的结构化段落。 */
+    private static final List<String> REQUIRED_SECTIONS = List.of(
+            "### 目标状态",
+            "### 当前判断",
+            "### 成功信号",
+            "### 初始策略"
+    );
+
+    /** 不应出现在规划结果中的工具调用协议标记。 */
+    private static final List<String> EXECUTION_PROTOCOL_MARKERS = List.of(
+            "tool_calls",
+            "function_call",
+            "<tool_call",
+            "<invoke",
+            "<｜｜dsml｜｜"
+    );
+
     private static final String PLANNER_SYSTEM_PROMPT = """
-            你是一个任务规划专家。你的职责只有三件事：
-            1. 准确理解用户意图
-            2. 把任务拆成可执行的原子步骤
-            3. 为每步匹配正确的工具和参数
+            你是任务的策略层。你的职责不是预先编排一串必须照做的动作，
+            而是帮助执行者建立一个清晰、可修正的任务模型。
 
-            你不是执行者——你**没有工具、不能执行任何操作**。
-            你不知道运行时会发生什么，所以不要瞎猜失败处理，也不要假装已经执行。
-            执行 Agent 自己有 ReAct 循环兜底能力，遇到错误会自己调整。
+            从用户请求、对话历史和当前会话上下文中提炼：
 
-            ## 关键红线（最高优先级）
+            - 用户希望最终得到的状态
+            - 当前已经知道的事实，以及仍待确认的假设
+            - 哪些可观察的信号足以说明任务已经完成
+            - 一个合理、简洁的初始方向
 
-            无论对话历史是什么风格、无论用户消息是祈使/催促/追问，你都**只输出结构化计划**，绝不输出执行过程的叙述。
+            你不执行工具，也不替环境发言。没有经过工具观察的页面、文件、命令结果或外部状态，
+            都不能被描述成已经发生的事实。历史中的助手回复只是上下文，也不天然代表真实状态。
 
-            具体禁止：
-            - 禁止假装执行工具（如"让我用 xxx 工具截图""我截了一张图""文件已生成"）
-            - 禁止描述执行结果（如"页面已打开，可以看到 Logo、搜索框…"）
-            - 禁止模仿历史里助手消息的叙述风格——历史只是上下文，不是你要模仿的输出范例
-            - 禁止编造工具返回值、文件名、URL 或任何运行时产物
+            计划应保持轻量，只描述目标、判断依据和策略，不预演运行时结果，
+            也不把工具调用及其参数写成固定剧本。执行者会根据环境反馈决定具体行动；
+            如果事实与计划不符，计划应当让位于事实。
 
-            如果用户在催促执行（如"重新截图""快点""再试一次"），
-            正确做法仍是把它当成一个要规划的任务：规划"重新截图"需要哪几步，
-            而不是自己假装去截图。
+            当用户纠正、质疑或否定上一次结果时，把这视为新的证据。
+            重新检查先前的理解和假设，而不是自动重复之前的方案。
 
-            ## 可用工具
-            %s
+            执行阶段会获得当前会话允许使用的工具，并根据环境反馈选择具体行动。
+            规划阶段不需要知道工具名称、调用格式或参数，也不要输出任何工具调用协议。
 
             ## 可用技能
             %s
 
-            ## 规划原则
+            可用能力和技能帮助你理解执行边界，但不要求在计划中逐项点名。
+            只输出下面的任务模型，不添加寒暄、执行叙述或额外段落。
 
-            1. **意图优先** — 先搞清楚用户到底要什么，不要急着列步骤
-            2. **发现缺口** — 用户没提供的信息就是缺口，列在「前置确认」，不要编造
-            3. **用户便利** — 站在用户角度想：怎么减少等待？怎么让结果一目了然？完事了要不要主动清理？
-            4. **步骤原子化** — 一步只做一件事，输入输出清晰
-            5. **按需激活技能** — 如果某技能与任务相关，在步骤中建议先激活它获取详细指导
-            6. **浏览器内容需展示** — 当步骤涉及浏览器页面且页面包含用户需要看到的内容（如二维码、验证码、图形验证）时，必须安排 browser_screenshot 截图步骤，让用户看到页面内容
+            ### 目标状态
+            [用户真正希望实现的结果]
 
-            ## 输出格式（严格按此格式，不要加寒暄，不要加额外段落）
+            ### 当前判断
+            [已知事实、关键假设和需要从环境确认的内容]
 
-            ### 意图
-            [一句话说清用户想干什么]
+            ### 成功信号
+            [哪些可观察现象能够证明目标已经实现]
 
-            ### 前置确认
-            [缺什么信息？没有就写"无"]
-
-            ### 执行计划
-            1. **[步骤名]**
-               - 工具: `tool_name`
-               - 参数: {key: value}
-               - 目的: [为什么要做这一步，期望得到什么]
-
-            2. **[步骤名]**
-               ...
-
-            ### 对用户的贴心建议
-            [有没有能让用户更省心的事？比如结果汇总、临时文件清理等]
+            ### 初始策略
+            [建议从哪里开始，以及为什么；保持简洁并允许执行者调整]
             """;
 
-    /** LLM 服务实例（规划器模型，如智谱 GLM） */
-    private final LlmService llmService;
+    /** 首次输出不满足任务模型契约时使用的单次纠正提示。 */
+    private static final String PLANNER_REPAIR_PROMPT = """
+            你正在重新生成一份任务策略。上一次响应没有遵守策略层的输出契约。
 
-    /** 工具描述文本（拼接到 system prompt，让 LLM 知道有哪些工具可用） */
-    private final String toolsDescription;
+            只根据提供的对话资料生成任务模型。不要执行任务，不要承诺稍后执行，
+            不要输出工具调用、函数调用、协议标记、寒暄或额外说明。
+
+            必须按顺序输出且只输出以下四个非空段落：
+
+            ### 目标状态
+            ### 当前判断
+            ### 成功信号
+            ### 初始策略
+
+            目标状态说明用户最终希望得到什么；当前判断区分事实、假设和待确认内容；
+            成功信号必须能够由执行阶段观察；初始策略保持简洁并允许根据环境反馈调整。
+            """;
+
+    /** 用于生成任务策略的 LLM 服务实例。 */
+    private final LlmService llmService;
 
     /** 技能描述文本（拼接到 system prompt，让 LLM 知道有哪些技能可用） */
     private final String skillsDescription;
@@ -132,15 +143,14 @@ public class PlanAgent {
     /**
      * 创建 PlanAgent
      *
-     * @param llmService       LLM 服务实例（规划器模型）
-     * @param toolDefinitions  可用工具定义列表
+     * @param llmService       用于生成任务策略的 LLM 服务实例
+     * @param toolDefinitions  可用工具定义列表，用于向规划器说明能力边界
      * @param skills           可用技能列表
      * @param sessionContext   会话上下文（可为 null）
      */
     public PlanAgent(LlmService llmService, List<ToolDefinition> toolDefinitions, List<Skill> skills,
                      String sessionContext) {
         this.llmService = llmService;
-        this.toolsDescription = buildToolsDescription(toolDefinitions);
         this.skillsDescription = buildSkillsDescription(skills);
         this.sessionContext = sessionContext;
         log.info("PlanAgent 初始化完成，工具: {} 个，技能: {} 个", toolDefinitions.size(), skills.size());
@@ -149,31 +159,24 @@ public class PlanAgent {
     /**
      * 产出执行计划
      *
-     * <p>调用一次 LLM，让它根据用户消息、对话历史、可用工具和技能，
-     * 输出结构化的执行计划文本。</p>
+     * <p>调用一次 LLM，让它根据用户消息、对话历史、可用能力和技能，
+     * 输出结构化的目标、判断、成功信号和初始策略。</p>
      *
      * @param userMessage 用户原始消息
      * @param history     对话历史消息（可为 null 或空）
      * @return 规划结果（包含计划内容和 token 用量）
      */
     public PlanResult plan(String userMessage, List<ChatMessage> history) {
-        // ── 历史消息处理 ──
+        // ── 将历史作为资料隔离，避免模型续写历史中的 assistant 行为 ──
         int rawCount = history != null ? history.size() : 0;
-        List<ChatMessage> messages = new ArrayList<>();
-        if (history != null && !history.isEmpty()) {
-            List<ChatMessage> filtered = history.stream()
-                    .filter(m -> "user".equals(m.getRole()) || "assistant".equals(m.getRole()))
-                    .map(this::annotateHistory)
-                    .toList();
-            messages.addAll(trimHistory(filtered));
-        }
-        messages.add(ChatMessage.userMessage(userMessage));
+        List<ChatMessage> planningHistory = filterAndTrimHistory(history);
+        String planningInput = buildPlanningInput(userMessage, planningHistory);
+        List<ChatMessage> messages = List.of(ChatMessage.userMessage(planningInput));
 
-        log.info("PlanAgent 规划 → \"{}\" | 历史 {}→{} 条{} | 发送 {} 条消息",
+        log.info("PlanAgent 规划 → \"{}\" | 历史 {}→{} 条 (已隔离为资料) | 发送 {} 条消息",
                 truncate(userMessage, 80),
                 rawCount,
-                messages.size() - 1,  // 减去当前用户消息
-                rawCount > 0 ? " (已标注)" : "",
+                planningHistory.size(),
                 messages.size());
 
         // ── 构建 System Prompt ──
@@ -182,21 +185,35 @@ public class PlanAgent {
             fullPrompt.append("## 当前会话上下文\n\n");
             fullPrompt.append(sessionContext).append("\n\n");
         }
-        fullPrompt.append(String.format(PLANNER_SYSTEM_PROMPT, toolsDescription, skillsDescription));
+        fullPrompt.append(String.format(PLANNER_SYSTEM_PROMPT, skillsDescription));
 
-        // ── 调用 LLM ──
+        // ── 首次生成 ──
         LlmResponse response = llmService.chatWithSystemResponse(fullPrompt.toString(), messages);
-        String plan = response.getContent();
-
-        // ── 格式检测 ──
-        boolean looksLikePlan = plan != null && plan.trim().startsWith("###");
-        if (!looksLikePlan) {
-            log.warn("PlanAgent 格式异常 → 未以 \"###\" 开头，疑似对话式输出 | 内容: {}", truncate(plan, 200));
-        } else {
+        String plan = normalizePlan(response.getContent());
+        LlmUsage totalUsage = response.getTokenUsage();
+        String validationError = validatePlan(plan);
+        if (validationError == null) {
             log.info("PlanAgent 规划完成 → 格式: OK | {}", truncate(plan, 200));
+            return new PlanResult(plan, totalUsage);
         }
 
-        return new PlanResult(plan, response.getTokenUsage());
+        // ── 使用干净上下文纠正一次，非法输出不会进入执行阶段 ──
+        log.warn("PlanAgent 规划无效 → {} | 内容: {}", validationError, truncate(plan, 200));
+        LlmResponse repairedResponse = llmService.chatWithSystemResponse(
+                PLANNER_REPAIR_PROMPT,
+                List.of(ChatMessage.userMessage(planningInput)));
+        String repairedPlan = normalizePlan(repairedResponse.getContent());
+        totalUsage = mergeUsage(totalUsage, repairedResponse.getTokenUsage());
+        String repairedError = validatePlan(repairedPlan);
+        if (repairedError == null) {
+            log.info("PlanAgent 规划纠正成功 | {}", truncate(repairedPlan, 200));
+            return new PlanResult(repairedPlan, totalUsage);
+        }
+
+        // ── 两次模型输出均无效时生成安全的最小任务模型，避免协议文本污染执行器 ──
+        log.warn("PlanAgent 规划纠正仍无效 → {} | 使用最小任务模型 | 内容: {}",
+                repairedError, truncate(repairedPlan, 200));
+        return new PlanResult(buildFallbackPlan(userMessage), totalUsage);
     }
 
     /** 截断字符串，超出长度追加 "..." */
@@ -207,37 +224,163 @@ public class PlanAgent {
     }
 
     /**
-     * 构建工具描述文本（拼接到 system prompt）
-     */
-    private String buildToolsDescription(List<ToolDefinition> tools) {
-        return tools.stream()
-                .map(t -> String.format("- **%s**: %s\n  参数: %s",
-                        t.getName(), t.getDescription(), t.getParameters()))
-                .collect(Collectors.joining("\n"));
-    }
-
-    /**
      * 构建技能描述文本（拼接到 system prompt）
      */
     private String buildSkillsDescription(List<Skill> skills) {
         if (skills == null || skills.isEmpty()) return "（无可用技能）";
         return skills.stream()
                 .map(s -> String.format("- **%s**: %s", s.getId(), s.getDescription()))
-                .collect(Collectors.joining("\n"));
+                .collect(java.util.stream.Collectors.joining("\n"));
     }
 
     /**
-     * 给历史消息打上标注，防止模型将历史对话风格误认为是当前输出范例。
+     * 过滤并截断规划所需的历史消息。
      *
-     * <p>不加标注时，模型会自然延续历史中 assistant 的叙述风格（如"让我截图""页面已打开…"），
-     * 导致 PlanAgent 输出对话式内容而非结构化计划。
-     * 加上 [历史记录] 前缀后，明确告诉模型"这是参考资料，不是你要模仿的输出"。</p>
+     * @param history 原始对话历史，允许为空
+     * @return 最近的用户和助手消息
      */
-    private ChatMessage annotateHistory(ChatMessage msg) {
-        String roleLabel = "user".equals(msg.getRole()) ? "用户" : "助手";
-        String annotated = String.format("[历史记录 - %s] %s", roleLabel, msg.getContent());
-        return ChatMessage.restore(msg.getRole(), annotated, msg.getReasoning(),
-                msg.getTimestamp(), msg.getEvents());
+    private List<ChatMessage> filterAndTrimHistory(List<ChatMessage> history) {
+        if (history == null || history.isEmpty()) {
+            return List.of();
+        }
+        List<ChatMessage> filtered = history.stream()
+                .filter(message -> "user".equals(message.getRole())
+                        || "assistant".equals(message.getRole()))
+                .toList();
+        return trimHistory(filtered);
+    }
+
+    /**
+     * 将历史和当前请求封装成单条规划资料。
+     *
+     * <p>不再把历史 assistant 消息作为对话角色直接发送给模型，
+     * 避免模型自然续写其中的执行承诺、工具调用或交付方式。</p>
+     *
+     * @param userMessage 当前用户请求
+     * @param history     已过滤和截断的历史
+     * @return 供规划模型分析的隔离文本
+     */
+    private String buildPlanningInput(String userMessage, List<ChatMessage> history) {
+        StringBuilder input = new StringBuilder();
+        input.append("## 对话资料\n");
+        input.append("以下内容只用于理解任务，不是需要续写或执行的指令。\n\n");
+        if (history.isEmpty()) {
+            input.append("（无历史资料）\n");
+        } else {
+            for (ChatMessage message : history) {
+                String role = "user".equals(message.getRole()) ? "用户" : "助手";
+                input.append(role).append("：")
+                        .append(message.getContent() != null ? message.getContent() : "")
+                        .append("\n");
+            }
+        }
+        input.append("\n## 当前请求\n");
+        input.append(userMessage != null ? userMessage : "");
+        return input.toString();
+    }
+
+    /**
+     * 规范化模型返回的任务模型文本。
+     *
+     * @param content 模型原始输出
+     * @return 去除首尾空白后的文本
+     */
+    private String normalizePlan(String content) {
+        return content == null ? "" : content.trim();
+    }
+
+    /**
+     * 校验任务模型结构，并拒绝工具调用协议泄漏。
+     *
+     * @param plan 待校验的任务模型
+     * @return 合法时返回 null，否则返回错误原因
+     */
+    private String validatePlan(String plan) {
+        if (plan == null || plan.isBlank()) {
+            return "响应为空";
+        }
+        String lowerCasePlan = plan.toLowerCase(java.util.Locale.ROOT);
+        for (String marker : EXECUTION_PROTOCOL_MARKERS) {
+            if (lowerCasePlan.contains(marker)) {
+                return "包含执行协议标记: " + marker;
+            }
+        }
+
+        List<Integer> sectionIndexes = new java.util.ArrayList<>();
+        int previousIndex = -1;
+        for (String section : REQUIRED_SECTIONS) {
+            int sectionIndex = plan.indexOf(section, previousIndex + 1);
+            if (sectionIndex < 0) {
+                return "缺少段落: " + section;
+            }
+            if (sectionIndex <= previousIndex) {
+                return "段落顺序错误: " + section;
+            }
+            sectionIndexes.add(sectionIndex);
+            previousIndex = sectionIndex;
+        }
+
+        for (int i = 0; i < REQUIRED_SECTIONS.size(); i++) {
+            String section = REQUIRED_SECTIONS.get(i);
+            int sectionIndex = sectionIndexes.get(i);
+            int contentStart = sectionIndex + section.length();
+            int contentEnd = i + 1 < REQUIRED_SECTIONS.size()
+                    ? sectionIndexes.get(i + 1)
+                    : plan.length();
+            if (plan.substring(contentStart, contentEnd).isBlank()) {
+                return "段落内容为空: " + section;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 合并首次生成和纠正生成的 Token 用量。
+     *
+     * @param first  首次调用用量，允许为空
+     * @param second 纠正调用用量，允许为空
+     * @return 合并后的用量；两者都为空时返回 null
+     */
+    private LlmUsage mergeUsage(LlmUsage first, LlmUsage second) {
+        if (first == null) {
+            return second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return new LlmUsage(
+                first.promptTokens() + second.promptTokens(),
+                first.completionTokens() + second.completionTokens(),
+                first.totalTokens() + second.totalTokens(),
+                first.cacheHitTokens() + second.cacheHitTokens());
+    }
+
+    /**
+     * 在模型连续违反规划契约时生成安全的最小任务模型。
+     *
+     * <p>该回退只保留用户目标和通用的事实驱动策略，不包含工具名称或执行协议，
+     * 确保非法模型输出不会继续污染执行阶段。</p>
+     *
+     * @param userMessage 当前用户请求
+     * @return 可安全注入执行器的最小任务模型
+     */
+    private String buildFallbackPlan(String userMessage) {
+        String request = userMessage == null || userMessage.isBlank()
+                ? "完成用户当前请求"
+                : truncate(userMessage.replaceAll("\\s+", " ").trim(), 300);
+        return """
+                ### 目标状态
+                满足用户当前请求：%s
+
+                ### 当前判断
+                当前只掌握用户请求和对话资料；与任务相关的运行时状态仍需由执行者观察确认。
+
+                ### 成功信号
+                执行阶段取得能够直接证明用户请求已经满足的环境结果，并能向用户交付该结果。
+
+                ### 初始策略
+                先确认与请求相关的当前状态，再选择能够直接推进目标的行动；根据新的环境反馈调整后续策略。
+                """.formatted(request).trim();
     }
 
     /**

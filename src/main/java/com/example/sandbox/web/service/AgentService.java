@@ -2,8 +2,11 @@ package com.example.sandbox.web.service;
 
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ConversationSession;
+import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.sse.SseEvent;
 import reactor.core.publisher.Flux;
+
+import java.util.List;
 
 /**
  * Agent 编排服务接口
@@ -34,6 +37,14 @@ public interface AgentService {
      * @param sessionId 会话 ID
      */
     void deleteSession(String sessionId);
+
+    /**
+     * 批量删除当前用户拥有的会话。
+     *
+     * @param sessionIds 待删除的会话 ID
+     * @return 实际删除和跳过的会话 ID
+     */
+    BatchDeleteSessionsResponse deleteSessions(List<String> sessionIds);
 
     /**
      * 获取会话

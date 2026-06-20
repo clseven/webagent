@@ -73,6 +73,17 @@ public interface ConversationService {
     void deleteSession(String sessionId);
 
     /**
+     * 在同一事务中删除指定用户拥有的多个会话。
+     *
+     * <p>不存在或不属于该用户的会话不会删除，也不会抛出权限差异信息。</p>
+     *
+     * @param sessionIds 待删除的会话 ID 集合
+     * @param userId     会话所属用户 ID
+     * @return 实际成功删除的会话 ID
+     */
+    List<String> deleteSessionsOwnedByUser(Set<String> sessionIds, Long userId);
+
+    /**
      * 构建系统提示（仅技能元数据，不含消息历史）
      *
      * @param sessionId 会话 ID

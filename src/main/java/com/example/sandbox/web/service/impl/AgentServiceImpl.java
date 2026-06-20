@@ -6,6 +6,7 @@ import com.example.sandbox.web.model.entity.*;
 import com.example.sandbox.web.model.llm.AgentEventMapper;
 import com.example.sandbox.web.model.llm.AgentResponse;
 import com.example.sandbox.web.model.llm.LlmUsage;
+import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.AgentAppService;
@@ -28,6 +29,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -185,6 +187,38 @@ public class AgentServiceImpl implements AgentService {
         validateSessionOwnership(session);
         conversationService.deleteSession(sessionId);
         log.info("Deleted session: {}", sessionId);
+    }
+
+    /**
+     * 批量删除当前用户拥有的会话记录及其历史消息。
+     *
+     * <p>输入会先去除空值和重复项；不存在或不属于当前用户的 ID 统一作为跳过项返回。
+     * 批量删除仍不销毁用户级沙箱。</p>
+     *
+     * @param sessionIds 待删除的会话 ID
+     * @return 实际删除和跳过的会话 ID
+     */
+    @Override
+    public BatchDeleteSessionsResponse deleteSessions(List<String> sessionIds) {
+        LinkedHashSet<String> requestedIds = sessionIds == null
+                ? new LinkedHashSet<>()
+                : sessionIds.stream()
+                        .filter(id -> id != null && !id.isBlank())
+                        .map(String::trim)
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (requestedIds.isEmpty()) {
+            return new BatchDeleteSessionsResponse(List.of(), List.of());
+        }
+
+        Long userId = UserContext.getCurrentUserId();
+        List<String> deletedIds = conversationService.deleteSessionsOwnedByUser(requestedIds, userId);
+        Set<String> deletedIdSet = Set.copyOf(deletedIds);
+        List<String> skippedIds = requestedIds.stream()
+                .filter(id -> !deletedIdSet.contains(id))
+                .toList();
+        log.info("Batch deleted sessions: userId={}, deleted={}, skipped={}",
+                userId, deletedIds.size(), skippedIds.size());
+        return new BatchDeleteSessionsResponse(deletedIds, skippedIds);
     }
 
     /**

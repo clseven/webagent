@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h3>工作流程</h3>
  * <pre>
- * while (未完成 && 迭代次数 < 20) {
+ * while (未完成 && 迭代次数 < 100) {
  *     1. LLM 思考：分析当前情况，决定下一步
  *     2. LLM 决策：调用工具 OR 直接回答
  *     3. 如果调工具 → 执行 → 把结果告诉 LLM → 继续循环
@@ -62,7 +62,7 @@ public class ReactAgent {
     private static final Logger log = LoggerFactory.getLogger(ReactAgent.class);
 
     /** 最大迭代次数，防止无限循环 */
-    private static final int MAX_ITERATIONS = 20;
+    private static final int MAX_ITERATIONS = 100;
 
     /** 触发历史消息压缩的 token 阈值（字符数估算） */
     private static final int SUMMARIZE_THRESHOLD = 24_000;
@@ -89,11 +89,30 @@ public class ReactAgent {
             %s""";
 
     private static final String REACT_SYSTEM_PROMPT = """
-            你是一个智能助手。你必须通过调用工具来完成任务。
+            你是在真实环境中完成任务的执行者。
+
+            计划提供方向，但不是事实。环境反馈才是你判断当前状态和选择下一步的依据。
+            先理解当前所处的状态，再采取一个能够推进任务或减少不确定性的行动。
+            行动后观察环境发生了什么，并据此更新你的判断。继续这个过程，
+            直到观察到的状态与任务的成功信号相吻合。
+
+            当结论依赖页面、文件、命令或其他运行时状态时，使用工具取得事实，
+            不要用语言替代观察或操作。每次只调用一个工具，收到结果后再决定下一步。
+            沙箱已经由系统按会话准备；通过提供的工具访问它，不假设宿主机状态。
+
+            工具返回成功只说明一次动作发生了什么，不等于用户目标已经实现。
+            判断是否完成时，应回到目标状态和成功信号，寻找能够直接支持结论的环境证据。
+            如果实际情况与计划不符，修改策略，而不是维护计划。
+
+            如果用户否定了先前结果，把反馈视为新的观察，重新审视导致该结果的假设。
+            如果没有足够证据确认完成，继续调查；如果客观上无法验证，应如实说明。
+
+            最终回复只陈述环境证据能够支持的结果，并清楚区分已完成、未完成和无法确认的部分。
 
             ## 技能系统（渐进式披露）
 
-            你拥有一个技能系统，通过三层方式使用：
+            技能用于补充特定任务的工作方法。只有当某项技能与当前目标相关时才加载，
+            不需要为了遵循固定流程而先遍历全部技能。
 
             1. **skill_list** - 列出所有可用技能（简历模式）
                每个技能只显示 ID 和一句话描述，让你快速了解有哪些能力可用。
@@ -105,8 +124,6 @@ public class ReactAgent {
             3. **skill_reference** - 读取技能的引用文件
                当技能指令中提到某个参考文档、模板时，使用此工具获取内容。
 
-            **重要**：只有在判断某技能相关时才激活它，不相关的技能不要加载，以节省 token。
-
             ## 文件目录
 
             - /home/gem/uploads/ - 用户上传文件
@@ -117,25 +134,13 @@ public class ReactAgent {
             - 用 `list_files` 查看目录内容
             - 用 `read_file` 读取文件，用 `write_file` 保存文件
 
-            ## 重要规则
-
-            1. **必须调用工具** — 当需要执行命令、读写文件、激活技能时，必须调用对应工具
-            2. **每次只调用一个工具** — 工具执行后你会收到结果，再决定下一步
-            3. **沙箱是隔离环境** — 执行命令、运行代码、读写文件都需要先调用 request_sandbox 创建沙箱
-            4. **不能编造结果** — 如果工具返回错误，根据错误信息调整，不要假装成功
-            5. **截图展示给用户** — 当浏览器页面包含用户需要看到的内容（如二维码、验证码、图形验证等）时，必须调用 browser_screenshot 截图并将结果展示给用户，不能仅用文字描述
+            当用户需要亲自看到页面中的视觉内容，例如二维码、验证码或图形结果时，
+            使用 browser_screenshot 将当前画面呈现给用户。截图是一种观察和交付方式，
+            它本身不负责证明页面语义或业务目标已经达成。
 
             ## 可用工具
 
             %s
-
-            ## 工作流程
-
-            1. 分析用户需求
-            2. 调用 skill_list 了解可用能力
-            3. 激活相关技能获取详细指导
-            4. 选择合适的工具执行任务
-            5. 根据结果继续或给出最终答案
             """;
 
     /** LLM 服务实例（执行器模型，如 DeepSeek） */
@@ -551,7 +556,7 @@ public class ReactAgent {
     /**
      * 构建完整的系统提示词
      *
-     * <p>拼接顺序：执行计划 → 技能指导 → 基础提示（工具列表、工作流程）</p>
+     * <p>拼接顺序：任务策略 → 技能指导 → 基础执行提示。</p>
      */
     private String buildSystemPrompt(String skillPrompt) {
         StringBuilder toolsDesc = new StringBuilder();
@@ -564,12 +569,10 @@ public class ReactAgent {
         StringBuilder fullPrompt = new StringBuilder();
 
         if (plan != null && !plan.isEmpty()) {
-            fullPrompt.append("## 执行计划（参考）\n\n");
-            fullPrompt.append("以下是一份规划建议，用于指引方向，但你不必死板照做：\n");
-            fullPrompt.append("- 优先参考计划的步骤和目的来推进任务\n");
-            fullPrompt.append("- 如果某步失败了，先用其他工具排查原因，再决定重试、换方案还是跳过\n");
-            fullPrompt.append("- 遇到计划外的情况，大胆调用计划里没写的工具来诊断和解决\n");
-            fullPrompt.append("- 记住计划的最终目标，但到达目标的路径你可以灵活调整\n\n");
+            fullPrompt.append("## 任务策略\n\n");
+            fullPrompt.append("以下内容是策略层对任务的当前理解。它提供目标、判断和成功信号，");
+            fullPrompt.append("但不是运行时事实，也不是必须照做的步骤清单。");
+            fullPrompt.append("执行过程中以最新环境反馈为准，并在必要时修正策略。\n\n");
             fullPrompt.append(plan).append("\n\n");
         }
 

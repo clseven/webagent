@@ -20,6 +20,9 @@ const FilePreviewer = {
     activeChunkId: null,          // 当前高亮的切片
     expandedChunks: new Set(),    // 展开的切片 id（>500 字符默认折叠）
     source: '',                   // 'knowledge' | 'workspace'
+    sessionId: '',                // 工作空间会话 ID，用于从预览界面下载文件
+    filePath: '',                 // 工作空间文件路径，用于从预览界面下载文件
+    docId: null,                  // 知识库文档 ID，用于从预览界面下载原文件
     _mounted: false,
     _container: null,
     _app: null,
@@ -42,6 +45,9 @@ const FilePreviewer = {
         this._ensureMounted();
         this._reset();
         this.source = opts.source;
+        this.sessionId = opts.sessionId || '';
+        this.filePath = opts.filePath || '';
+        this.docId = opts.docId ?? null;
         this.fileName = opts.fileName || '';
         this.fileType = this._normalizeFileType(opts.fileType, opts.fileName, opts.filePath);
         this.previewType = opts.previewType || this._previewTypeFor(this.fileType);
@@ -78,6 +84,35 @@ const FilePreviewer = {
             this.fileBlobUrl = '';
         }
         this._syncView();
+    },
+
+    /**
+     * 下载当前预览的原文件。
+     * 工作空间文件复用沙箱下载接口，知识库文件重新读取原始字节，失败时在页面内给出提示。
+     */
+    async downloadCurrent() {
+        try {
+            if (this.source === 'workspace' && this.sessionId && this.filePath) {
+                api.downloadFileFromSandbox(this.sessionId, this.filePath);
+                return;
+            }
+            if (this.source === 'knowledge' && this.docId != null) {
+                const buffer = await api.getKnowledgeFile(this.docId);
+                const blobUrl = URL.createObjectURL(new Blob([buffer], { type: this._mimeOf(this.fileType) }));
+                const anchor = document.createElement('a');
+                anchor.href = blobUrl;
+                anchor.download = this.fileName || '文件';
+                document.body.appendChild(anchor);
+                anchor.click();
+                document.body.removeChild(anchor);
+                URL.revokeObjectURL(blobUrl);
+                return;
+            }
+            throw new Error('当前文件缺少下载信息');
+        } catch (e) {
+            console.error('FilePreviewer 下载失败:', e);
+            this._toast(e.message || '下载失败', 'error');
+        }
     },
 
     // ==================== 内部方法 ====================
@@ -123,6 +158,9 @@ const FilePreviewer = {
         this.fileContentKind = '';
         this.previewType = '';
         this.converting = false;
+        this.sessionId = '';
+        this.filePath = '';
+        this.docId = null;
         this.chunks = [];
         this.chunkSearch = '';
         this.activeChunkId = null;
@@ -543,6 +581,7 @@ const FilePreviewer = {
             },
             methods: {
                 close() { self.close(); },
+                downloadCurrent() { self.downloadCurrent(); },
                 isChunkExpanded(chunk) { return self._isChunkExpanded(chunk); },
                 toggleChunkExpand(chunk) { self._toggleChunkExpand(chunk.id); },
                 onChunkClick(chunk) { self._onChunkClick(chunk); },
@@ -556,6 +595,8 @@ const FilePreviewer = {
                             <div class="fp-title">
                                 <span class="fp-icon">{{ fileTypeIcon(fileType) }}</span>
                                 <span class="fp-name">{{ fileName }}</span>
+                                <span class="fp-title-divider" aria-hidden="true">|</span>
+                                <button type="button" class="fp-title-download" @click="downloadCurrent">下载</button>
                                 <span class="fp-meta" v-if="fileSizeText">{{ fileSizeText }} · {{ fileType.toUpperCase() }}</span>
                             </div>
                             <div class="fp-actions">
