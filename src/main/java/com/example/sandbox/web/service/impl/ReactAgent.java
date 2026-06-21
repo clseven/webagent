@@ -373,6 +373,13 @@ public class ReactAgent {
             }
         }
 
+        int alignedSplitAt = alignSplitAtToToolCallBoundary(messages, splitAt);
+        if (alignedSplitAt != splitAt) {
+            log.debug("压缩切分点从 {} 回退到 {}，以保留完整的工具调用消息组",
+                    splitAt, alignedSplitAt);
+        }
+        splitAt = alignedSplitAt;
+
         if (splitAt <= 2) {
             return; // 太少消息不值得压缩
         }
@@ -437,15 +444,62 @@ public class ReactAgent {
     }
 
     /**
-     * 限制历史消息条数（最多保留最近 20 条）
+     * 将消息切分点对齐到 OpenAI tool calling 协议允许的消息边界。
      *
-     * <p>Token 预算由循环内的 compressIfNeeded 动态管理，这里只做条数限制。</p>
+     * <p>如果候选切分点位于 assistant(tool_calls) 与其全部 tool 结果之间，
+     * 则回退到该 assistant 消息之前，避免保留区以孤立的 tool 消息开头，
+     * 也避免压缩区留下尚未获得完整结果的工具调用。</p>
+     *
+     * @param messages         待切分的完整消息列表
+     * @param candidateSplitAt 候选切分点，表示右侧保留区的起始下标
+     * @return 对齐后的切分点；未命中工具调用消息组时返回原候选值
+     */
+    static int alignSplitAtToToolCallBoundary(List<ChatMessage> messages, int candidateSplitAt) {
+        if (candidateSplitAt <= 0 || candidateSplitAt >= messages.size()) {
+            return candidateSplitAt;
+        }
+
+        int openToolCallGroupStart = -1;
+        List<String> pendingToolCallIds = new ArrayList<>();
+
+        for (int i = 0; i < candidateSplitAt; i++) {
+            ChatMessage message = messages.get(i);
+            if ("assistant".equals(message.getRole()) && !message.getToolCalls().isEmpty()) {
+                if (pendingToolCallIds.isEmpty()) {
+                    openToolCallGroupStart = i;
+                }
+                for (LlmToolCall toolCall : message.getToolCalls()) {
+                    pendingToolCallIds.add(toolCall.id());
+                }
+                continue;
+            }
+
+            if ("tool".equals(message.getRole()) && openToolCallGroupStart >= 0) {
+                pendingToolCallIds.remove(message.getToolCallId());
+                if (pendingToolCallIds.isEmpty()) {
+                    openToolCallGroupStart = -1;
+                }
+            }
+        }
+
+        return openToolCallGroupStart >= 0 ? openToolCallGroupStart : candidateSplitAt;
+    }
+
+    /**
+     * 限制历史消息条数（目标为最近 20 条）
+     *
+     * <p>Token 预算由循环内的 compressIfNeeded 动态管理，这里只做条数限制。
+     * 如果第 20 条落在工具调用消息组内部，则向前扩展以保留完整协议组。</p>
+     *
+     * @param history 原始历史消息
+     * @return 裁剪后的历史消息，不会从孤立的 tool 消息开始
      */
     private List<ChatMessage> trimHistory(List<ChatMessage> history) {
         if (history.size() <= 20) {
             return new ArrayList<>(history);
         }
-        return new ArrayList<>(history.subList(history.size() - 20, history.size()));
+        int splitAt = alignSplitAtToToolCallBoundary(history, history.size() - 20);
+        return new ArrayList<>(history.subList(splitAt, history.size()));
     }
 
     /**

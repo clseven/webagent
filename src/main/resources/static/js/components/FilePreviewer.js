@@ -589,7 +589,10 @@ const FilePreviewer = {
             },
             template: `
                 <div v-if="visible" class="fp-overlay" @click.self="close">
-                    <div class="fp-dialog" :class="{ 'fp-with-chunks': showChunks }">
+                    <div class="fp-dialog" :class="{
+                        'fp-with-chunks': showChunks,
+                        'fp-image-dialog': isImage && !showChunks
+                    }">
                         <!-- 头部 -->
                         <div class="fp-header">
                             <div class="fp-title">
@@ -620,7 +623,10 @@ const FilePreviewer = {
                                 <div class="fp-original-header">原文</div>
                                 <div
                                     class="fp-original-content"
-                                    :class="{ 'fp-content-pdf': isPdf }"
+                                    :class="{
+                                        'fp-content-pdf': isPdf,
+                                        'fp-content-image': isImage
+                                    }"
                                     ref="originalContent"
                                 >
                                     <!-- 二进制图片 -->

@@ -52,6 +52,13 @@ agent:
   search:
     max-results: ${SEARCH_MAX_RESULTS:5}
     timeout: ${SEARCH_TIMEOUT:10s}
+    proxy:
+      host: ${SEARCH_PROXY_HOST:127.0.0.1}
+      port: ${SEARCH_PROXY_PORT:7890}
+    baidu:
+      api-key: ${BAIDU_SEARCH_API_KEY:}
+      timeout: ${BAIDU_SEARCH_TIMEOUT:15s}
+      max-results: ${BAIDU_SEARCH_MAX_RESULTS:5}
   sandbox:
     domain: ${SANDBOX_DOMAIN:localhost:8080}
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}

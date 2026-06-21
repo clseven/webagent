@@ -97,6 +97,10 @@ public class BrowserExecuteTool implements Tool {
                 执行后使用 browser_inspect 或 browser_screenshot 验证页面状态。
 
                 不要在未经用户确认时完成支付、发布、删除、发送消息等不可逆操作。
+
+                搜索兜底限制：当 web_search 返回 SEARCH_SOURCE_BLOCKED 时，
+                浏览器搜索兜底最多访问一个明确新闻源（如 Google News），
+                不要连续尝试百度、Bing、Google 多个搜索页，避免 token 消耗过大。
                 """;
         return new ToolDefinition(NAME, description, parameters, "AIO");
     }

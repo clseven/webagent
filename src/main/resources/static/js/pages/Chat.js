@@ -207,37 +207,77 @@ const ChatPage = {
                         </button>
                     </div>
 
-                    <!-- 上传区 -->
-                    <div class="upload-area">
-                        <label class="upload-btn" title="添加文件">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                            <span>添加文件</span>
-                            <input type="file" multiple @change="handleFileSelect">
-                        </label>
-                        <div class="upload-file-list" v-if="pendingFiles.length > 0">
-                            <span class="upload-file-tag" v-for="(file, index) in pendingFiles" :key="index">
-                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                                {{ file.name }}
-                                <span class="remove-btn" @click="removeFile(index)">×</span>
+                    <!-- Chat Composer -->
+                    <div class="chat-composer">
+                        <div class="composer-files" v-if="pendingFiles.length > 0">
+                            <span class="composer-file-chip" v-for="(file, index) in pendingFiles" :key="index">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                    <polyline points="14 2 14 8 20 8"/>
+                                </svg>
+                                <span class="composer-file-name">{{ file.name }}</span>
+                                <button type="button" class="composer-file-remove" @click="removeFile(index)">×</button>
                             </span>
                         </div>
-                    </div>
 
-                    <!-- 输入区 -->
-                    <div class="chat-input-area">
-                        <input
+                        <textarea
                             v-model="inputText"
-                            placeholder="输入消息... (Enter 发送)"
-                            @keyup.enter="send"
+                            class="composer-input"
+                            placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                            rows="1"
                             :disabled="sending"
-                        >
-                        <button v-if="streaming" @click="stopStream" class="btn-send stop-btn" title="停止生成">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-                        </button>
-                        <button v-else @click="send" :disabled="sending || !inputText.trim()" class="btn-send" title="发送">
-                            <svg v-if="!sending" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                            <span v-else class="thinking-spinner small" style="border-color:rgba(255,255,255,0.3);border-top-color:#fff;"></span>
-                        </button>
+                            @keydown.enter.exact.prevent="send"
+                            @input="autoResize"
+                            ref="composerInput"
+                        ></textarea>
+
+                        <div class="composer-toolbar">
+                            <div class="composer-tools-left">
+                                <label class="composer-tool-btn" title="添加文件">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                                    </svg>
+                                    <span>文件</span>
+                                    <input type="file" multiple @change="handleFileSelect">
+                                </label>
+
+                                <button
+                                    type="button"
+                                    class="composer-tool-btn"
+                                    :class="{ active: searchEnabled }"
+                                    @click="toggleSearch"
+                                    :title="searchEnabled ? '已启用联网搜索' : '启用联网搜索'"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <circle cx="12" cy="12" r="10"/>
+                                        <line x1="2" y1="12" x2="22" y2="12"/>
+                                        <path d="M12 2a15.3 15.3 0 0 1 0 20"/>
+                                        <path d="M12 2a15.3 15.3 0 0 0 0 20"/>
+                                    </svg>
+                                    <span>{{ searchEnabled ? '联网已开' : '联网搜索' }}</span>
+                                </button>
+                            </div>
+
+                            <button v-if="streaming" @click="stopStream" class="composer-send-btn stop-btn" title="停止生成">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                    <rect x="6" y="6" width="12" height="12" rx="1"/>
+                                </svg>
+                            </button>
+
+                            <button
+                                v-else
+                                @click="send"
+                                :disabled="sending || (!inputText.trim() && pendingFiles.length === 0)"
+                                class="composer-send-btn"
+                                title="发送"
+                            >
+                                <svg v-if="!sending" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                    <line x1="22" y1="2" x2="11" y2="13"/>
+                                    <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                                </svg>
+                                <span v-else class="thinking-spinner small" style="border-color:rgba(255,255,255,0.3);border-top-color:#fff;"></span>
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -511,6 +551,12 @@ const ChatPage = {
         const inputText = Vue.ref('');
         const sending = Vue.ref(false);
         const pendingFiles = Vue.ref([]);
+        const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
+
+        const toggleSearch = () => {
+            searchEnabled.value = !searchEnabled.value;
+            localStorage.setItem('web_search_enabled', searchEnabled.value ? 'true' : 'false');
+        };
         const copied = Vue.ref(false);
         const loadingHistory = Vue.ref(false);
         const showScrollBtn = Vue.ref(false);
@@ -821,7 +867,7 @@ const ChatPage = {
             messages.value.push({ role: 'user', content: fullMessage, timestamp: Date.now() });
             streamBaselineLength = messages.value.length;
             scrollToBottom();
-            const stop = api.createChatStream(currentSessionId.value, fullMessage, handleStreamEvent);
+            const stop = api.createChatStream(currentSessionId.value, fullMessage, searchEnabled.value, handleStreamEvent);
             stopStreamFn.value = stop;
             startStreamHistorySync();
         };
@@ -1152,6 +1198,14 @@ const ChatPage = {
         const copyId = () => { if (currentSessionId.value) { navigator.clipboard.writeText(currentSessionId.value); copied.value = true; setTimeout(() => copied.value = false, 1500); } };
         const handleFileSelect = (e) => { Array.from(e.target.files).forEach(f => { if (!pendingFiles.value.some(p => p.name === f.name)) pendingFiles.value.push(f); }); e.target.value = ''; };
         const removeFile = (i) => { pendingFiles.value.splice(i, 1); };
+
+        const composerInput = Vue.ref(null);
+        const autoResize = () => {
+            const el = composerInput.value;
+            if (!el) return;
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+        };
         const escapeHtml = (s) => s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
 
         const toggleVnc = () => { vncOpen.value = !vncOpen.value; if (vncOpen.value && currentSessionId.value && !vncUrl.value) loadVncView(); };
@@ -1187,6 +1241,7 @@ const ChatPage = {
         return {
             store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
             messages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
+            searchEnabled, toggleSearch, composerInput, autoResize,
             sessionManageMode, selectedSessionCount, allFilteredSessionsSelected,
             batchDeletePending, batchDeleteError, batchDeleting,
             sessionPendingDelete, deleteSessionError, deletingSessionId,
