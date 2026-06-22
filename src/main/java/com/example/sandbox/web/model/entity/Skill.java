@@ -3,7 +3,9 @@ package com.example.sandbox.web.model.entity;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -42,11 +44,17 @@ public class Skill {
      */
     private final Path localPath;
 
-    public Skill(String id, String name, String description, Path localPath) {
+    /**
+     * 完整的 YAML frontmatter（所有字段，含 metadata、license 等）
+     */
+    private final Map<String, Object> frontmatter;
+
+    public Skill(String id, String name, String description, Path localPath, Map<String, Object> frontmatter) {
         this.id = id;
-        this.name = name != null ? name : id;
+        this.name = (name != null && !name.isBlank()) ? name : id;
         this.description = description;
         this.localPath = localPath;
+        this.frontmatter = frontmatter != null ? Collections.unmodifiableMap(frontmatter) : Collections.emptyMap();
     }
 
     /**
@@ -72,7 +80,11 @@ public class Skill {
      * @return 文件内容
      */
     public String getReferenceFile(String relativePath) throws IOException {
-        Path file = localPath.resolve(relativePath);
+        Path normalizedBase = localPath.normalize();
+        Path file = normalizedBase.resolve(relativePath).normalize();
+        if (!file.startsWith(normalizedBase)) {
+            throw new IOException("Invalid reference path: " + relativePath);
+        }
         if (!Files.exists(file)) {
             throw new IOException("Reference file not found: " + relativePath);
         }
@@ -177,6 +189,10 @@ public class Skill {
 
     public Path getLocalPath() {
         return localPath;
+    }
+
+    public Map<String, Object> getFrontmatter() {
+        return frontmatter;
     }
 
     @Override

@@ -6,11 +6,13 @@ import com.example.sandbox.web.service.SkillService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -125,20 +127,25 @@ public class SkillServiceImpl implements SkillService {
      * 解析 SKILL.md 内容
      */
     private Skill parseSkillMd(String skillId, String content, Path skillPath) {
-        // 解析 YAML frontmatter: ---
-        // name: xxx
-        // description: xxx
-        // ---
         String name = "";
         String description = "";
+        Map<String, Object> frontmatterMap = Collections.emptyMap();
 
-        // 尝试解析 frontmatter
+        // 提取并解析 YAML frontmatter
         if (content.startsWith("---")) {
-            int endIndex = content.indexOf("---", 3);
-            if (endIndex > 0) {
-                String frontmatter = content.substring(3, endIndex);
-                name = extractFieldFromFrontmatter(frontmatter, "name");
-                description = extractFieldFromFrontmatter(frontmatter, "description");
+            String frontmatterText = extractFrontmatterText(content);
+            if (frontmatterText != null) {
+                try {
+                    Yaml yaml = new Yaml();
+                    Map<String, Object> parsed = yaml.load(frontmatterText);
+                    if (parsed != null) {
+                        frontmatterMap = parsed;
+                        name = getStr(frontmatterMap, "name");
+                        description = getStr(frontmatterMap, "description");
+                    }
+                } catch (Exception e) {
+                    log.warn("解析 SKILL.md frontmatter 失败 (skill={}): {}", skillId, e.getMessage());
+                }
             }
         }
 
@@ -147,39 +154,53 @@ public class SkillServiceImpl implements SkillService {
             description = extractDescriptionFromContent(content);
         }
 
-        return new Skill(skillId, name, description, skillPath);
+        return new Skill(skillId, name, description, skillPath, frontmatterMap);
     }
 
     /**
-     * 从 YAML frontmatter 提取指定字段
+     * 从内容中提取 YAML frontmatter 文本（两个 --- 独占行之间的部分）
      */
-    private String extractFieldFromFrontmatter(String frontmatter, String fieldName) {
-        String prefix = fieldName + ":";
-        for (String line : frontmatter.split("\n")) {
-            line = line.trim();
-            if (line.startsWith(prefix)) {
-                String value = line.substring(prefix.length()).trim();
-                // 去掉引号包裹
-                if ((value.startsWith("\"") && value.endsWith("\""))
-                        || (value.startsWith("'") && value.endsWith("'"))) {
-                    value = value.substring(1, value.length() - 1);
-                }
-                return value;
+    private String extractFrontmatterText(String content) {
+        String[] lines = content.split("\n");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i < lines.length; i++) {
+            if (lines[i].trim().equals("---")) {
+                return sb.toString();
             }
+            sb.append(lines[i]).append("\n");
         }
-        return "";
+        return null;
+    }
+
+    /**
+     * 从 Map 中安全取字符串值
+     */
+    private String getStr(Map<String, Object> map, String key) {
+        Object v = map.get(key);
+        return v != null ? v.toString() : "";
     }
 
     /**
      * 从 Markdown 内容提取描述（标题后的第一段）
      */
     private String extractDescriptionFromContent(String content) {
-        // 跳过 frontmatter
+        // 跳过 frontmatter：找到第二个独占 --- 行，取其后的内容
         String body = content;
         if (content.startsWith("---")) {
-            int endIndex = content.indexOf("---", 3);
-            if (endIndex > 0) {
-                body = content.substring(endIndex + 3).trim();
+            String[] lines = content.split("\n");
+            boolean foundEnd = false;
+            StringBuilder bodyBuilder = new StringBuilder();
+            for (int i = 1; i < lines.length; i++) {
+                if (!foundEnd) {
+                    if (lines[i].trim().equals("---")) {
+                        foundEnd = true;
+                    }
+                } else {
+                    bodyBuilder.append(lines[i]).append("\n");
+                }
+            }
+            if (foundEnd) {
+                body = bodyBuilder.toString().trim();
             }
         }
 
