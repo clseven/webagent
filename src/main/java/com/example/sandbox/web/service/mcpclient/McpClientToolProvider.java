@@ -19,8 +19,8 @@ import java.util.Set;
  * 不是真 MCP 协议）。本类直接对接 {@link McpClientManager}，把所有已配置 server
  * 的工具列表统一暴露给 Agent。</p>
  *
- * <p>方法签名保留 {@code sessionId} 参数只是为了兼容现有 Agent 注入点。
- * MCP server 是全局共享的，所有会话看到的工具集合相同。</p>
+ * <p>系统级 MCP 工具向所有用户开放；用户级 MCP 工具通过 sessionId 解析 userId，
+ * 只暴露当前用户已成功连接的 Server。</p>
  */
 @Service
 public class McpClientToolProvider {
@@ -30,46 +30,69 @@ public class McpClientToolProvider {
     /** 单会话内最多暴露的 MCP 工具数量，避免挤占模型上下文。 */
     private static final int MAX_TOOLS = 50;
 
+    /** MCP Client 生命周期管理器。 */
     private final McpClientManager manager;
 
-    public McpClientToolProvider(McpClientManager manager) {
+    /** MCP 配置服务，用于从 sessionId 稳定解析用户身份。 */
+    private final McpConfigurationService configurationService;
+
+    /**
+     * 创建 MCP 工具提供器。
+     *
+     * @param manager              MCP Client 生命周期管理器
+     * @param configurationService MCP 配置服务
+     */
+    public McpClientToolProvider(McpClientManager manager,
+                                 McpConfigurationService configurationService) {
         this.manager = manager;
+        this.configurationService = configurationService;
     }
 
     /**
      * 获取当前可用的所有 MCP 工具。
      *
-     * @param sessionId 会话 ID（保留参数兼容旧签名，实际不使用）
+     * @param sessionId 当前会话 ID
      * @return MCP 工具列表
      */
     public List<Tool> getTools(String sessionId) {
-        List<String> serverIds = manager.listServerIds();
-        if (serverIds.isEmpty()) {
+        if (!manager.isEnabled()) {
             return List.of();
         }
 
+        Long userId;
+        try {
+            configurationService.ensureUserServersLoaded(sessionId);
+            userId = configurationService.resolveUserId(sessionId);
+        } catch (Exception e) {
+            log.warn("解析 MCP 工具所属用户失败: session={}, 原因={}",
+                    sessionId, e.getMessage());
+            return List.of();
+        }
+
+        List<McpClientKey> keys = manager.listAvailableKeys(userId);
         Set<String> exposedNames = new HashSet<>();
         List<Tool> result = new ArrayList<>();
-        for (String serverId : serverIds) {
-            for (McpSchema.Tool tool : manager.listTools(serverId)) {
+        for (McpClientKey key : keys) {
+            for (McpSchema.Tool tool : manager.listTools(key)) {
                 if (result.size() >= MAX_TOOLS) {
                     log.debug("MCP 工具数量达到上限 {}，截断剩余工具", MAX_TOOLS);
                     return List.copyOf(result);
                 }
-                String exposedName = uniqueName(serverId, tool.name(), exposedNames);
-                result.add(new RealMcpTool(exposedName, serverId, tool, manager));
+                String exposedName = uniqueName(key.serverId(), tool.name(), exposedNames);
+                result.add(new RealMcpTool(
+                        exposedName, key, tool, manager, configurationService));
             }
         }
         return List.copyOf(result);
     }
 
     /**
-     * 兼容旧 API 的清缓存方法。新实现是无状态的，这里是 no-op。
+     * 兼容现有工作区刷新入口，并显式重新加载用户 MCP 配置。
      *
      * @param sessionId 会话 ID
      */
     public void evict(String sessionId) {
-        // no-op: tool list 由 McpClientManager 通过 tools/list_changed 通知自动维护
+        configurationService.reloadUserServers(sessionId);
     }
 
     /**

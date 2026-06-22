@@ -30,12 +30,18 @@ spring:
 
 agent:
   mcp:
-    # 是否启用真 MCP 协议客户端（基于官方 mcp-core SDK），默认关闭
-    enabled: ${MCP_ENABLED:false}
+    # 是否启用真 MCP 协议客户端（基于官方 mcp-core SDK），当前项目默认开启
+    enabled: ${MCP_ENABLED:true}
     # 单次 MCP 请求超时
     request-timeout: ${MCP_REQUEST_TIMEOUT:60s}
     # initialize 握手超时
     initialization-timeout: ${MCP_INIT_TIMEOUT:30s}
+    # 单个用户最多允许配置的远程 MCP Server 数量
+    max-user-servers: ${MCP_MAX_USER_SERVERS:10}
+    # 用户动态 MCP 默认只允许 HTTPS；本地开发确有需要时可显式开启
+    user-allow-http: ${MCP_USER_ALLOW_HTTP:false}
+    # 默认禁止用户动态 MCP 访问环回、私网和链路本地地址，降低 SSRF 风险
+    user-allow-private-network: ${MCP_USER_ALLOW_PRIVATE_NETWORK:false}
     # MCP Server 列表，每项支持 stdio 和 streamable-http 两种 transport
     # 示例：
     #   servers:

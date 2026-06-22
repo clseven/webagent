@@ -50,7 +50,7 @@ public class SandboxController {
     @Autowired
     private OfficePreviewService officePreviewService;
 
-    /** MCP 动态工具提供器，刷新接口仍保留以兼容前端，但新实现是无状态的，evict 为 no-op。 */
+    /** MCP 动态工具提供器，工作区刷新时显式重新加载用户 MCP 配置。 */
     @Autowired
     private McpClientToolProvider mcpToolProvider;
 
