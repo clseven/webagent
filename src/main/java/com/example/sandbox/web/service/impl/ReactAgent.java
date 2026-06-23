@@ -201,6 +201,103 @@ public class ReactAgent {
     /** 对话摘要（当历史消息超出 token 预算时，压缩旧消息生成），追加到 system prompt 前 */
     private String conversationSummary;
 
+    // ==================== Hook 系统 ====================
+
+    /**
+     * 工具执行前 Hook：接收工具调用和会话 ID，返回 null 表示放行，返回非 null 字符串表示阻止执行（原因作为工具结果返回给 LLM）。
+     */
+    @FunctionalInterface
+    public interface PreToolUseHook {
+        String run(LlmToolCall toolCall, String sessionId, Map<String, Tool> tools);
+    }
+
+    /**
+     * 工具执行后 Hook：接收工具调用、执行结果和会话 ID，无返回值（副作用型）。
+     */
+    @FunctionalInterface
+    public interface PostToolUseHook {
+        void run(LlmToolCall toolCall, String result, String sessionId);
+    }
+
+    /**
+     * 停止前 Hook：接收当前消息列表，返回 null 表示允许退出，返回非 null 字符串表示强制继续（作为新 user 消息注入）。
+     */
+    @FunctionalInterface
+    public interface StopHook {
+        String run(List<ChatMessage> messages);
+    }
+
+    /** Hook 注册表：事件名 → 回调列表 */
+    private final Map<String, List<Object>> hooks = new ConcurrentHashMap<>();
+
+    /**
+     * 注册一个 PreToolUse Hook。
+     */
+    public ReactAgent registerPreToolUseHook(PreToolUseHook hook) {
+        hooks.computeIfAbsent("PreToolUse", k -> new ArrayList<>()).add(hook);
+        return this;
+    }
+
+    /**
+     * 注册一个 PostToolUse Hook。
+     */
+    public ReactAgent registerPostToolUseHook(PostToolUseHook hook) {
+        hooks.computeIfAbsent("PostToolUse", k -> new ArrayList<>()).add(hook);
+        return this;
+    }
+
+    /**
+     * 注册一个 Stop Hook。
+     */
+    public ReactAgent registerStopHook(StopHook hook) {
+        hooks.computeIfAbsent("Stop", k -> new ArrayList<>()).add(hook);
+        return this;
+    }
+
+    /**
+     * 触发 PreToolUse 事件：遍历所有注册的回调，任一返回非 null 即阻止执行。
+     *
+     * @return null = 放行，非 null = 阻止原因
+     */
+    @SuppressWarnings("unchecked")
+    private String triggerPreToolUseHooks(LlmToolCall toolCall, String sessionId) {
+        List<Object> callbacks = hooks.get("PreToolUse");
+        if (callbacks == null) return null;
+        for (Object cb : callbacks) {
+            String result = ((PreToolUseHook) cb).run(toolCall, sessionId, tools);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    /**
+     * 触发 PostToolUse 事件：遍历所有注册的回调（副作用型，不改变执行结果）。
+     */
+    @SuppressWarnings("unchecked")
+    private void triggerPostToolUseHooks(LlmToolCall toolCall, String result, String sessionId) {
+        List<Object> callbacks = hooks.get("PostToolUse");
+        if (callbacks == null) return;
+        for (Object cb : callbacks) {
+            ((PostToolUseHook) cb).run(toolCall, result, sessionId);
+        }
+    }
+
+    /**
+     * 触发 Stop 事件：遍历所有注册的回调，任一返回非 null 即阻止退出（返回值作为新的 user 消息注入）。
+     *
+     * @return null = 允许退出，非 null = 强制继续
+     */
+    @SuppressWarnings("unchecked")
+    private String triggerStopHooks(List<ChatMessage> messages) {
+        List<Object> callbacks = hooks.get("Stop");
+        if (callbacks == null) return null;
+        for (Object cb : callbacks) {
+            String result = ((StopHook) cb).run(messages);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
     /**
      * 创建 ReactAgent（无技能提示、无执行计划）
      *
@@ -315,6 +412,14 @@ public class ReactAgent {
             }
 
             if (response.isFinished()) {
+                // 🪝 Stop Hook：任一回调返回非 null 即注入消息并强制继续
+                String forceContinue = triggerStopHooks(messages);
+                if (forceContinue != null) {
+                    log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
+                    messages.add(ChatMessage.userMessage(forceContinue));
+                    continue;
+                }
+
                 log.info("ReAct 完成，共 {} 次迭代，token: {}", iteration, totalTokens);
                 LlmUsage totalUsage = new LlmUsage(totalPromptTokens, totalCompletionTokens, totalTokens, totalCacheHitTokens);
                 return new AgentResponse(response.getContent(), response.getReasoningContent(), steps, totalUsage, iteration);
@@ -333,8 +438,24 @@ public class ReactAgent {
                 // 执行工具并记录耗时
                 log.info("执行工具: {} 参数: {}", toolName, arguments);
                 long startTime = System.currentTimeMillis();
-                String observation = executeTool(sessionId, toolName, arguments);
+
+                // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
+                String blocked = triggerPreToolUseHooks(toolCall, sessionId);
+                String observation;
+                if (blocked != null) {
+                    log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
+                    observation = blocked;
+                } else {
+                    observation = executeTool(sessionId, toolName, arguments);
+                }
+
                 long durationMs = System.currentTimeMillis() - startTime;
+
+                // 🪝 PostToolUse Hook：仅在实际执行时触发（副作用型）
+                if (blocked == null) {
+                    triggerPostToolUseHooks(toolCall, observation, sessionId);
+                }
+
                 log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
 
                 LlmToolCall historyToolCall = ensureToolCallId(toolCall);
@@ -804,13 +925,30 @@ public class ReactAgent {
 
                         log.info("执行工具: {} 参数: {}", toolName, arguments);
 
-                        // 发送工具调用事件
-                        sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
+                        // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
+                        String blocked = triggerPreToolUseHooks(toolCall, sessionId);
+                        String observation;
+                        long startTime;
+                        if (blocked != null) {
+                            log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
+                            observation = blocked;
+                            startTime = System.currentTimeMillis();
+                            // 不实际执行，但发送事件告知前端
+                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
+                        } else {
+                            // 发送工具调用事件
+                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
 
-                        // 执行工具并发送心跳
-                        long startTime = System.currentTimeMillis();
-                        String observation = executeToolWithHeartbeat(sessionId, toolName, arguments, sink);
+                            // 执行工具并发送心跳
+                            startTime = System.currentTimeMillis();
+                            observation = executeToolWithHeartbeat(sessionId, toolName, arguments, sink);
+                        }
                         long durationMs = System.currentTimeMillis() - startTime;
+
+                        // 🪝 PostToolUse Hook：仅在实际执行时触发
+                        if (blocked == null) {
+                            triggerPostToolUseHooks(toolCall, observation, sessionId);
+                        }
 
                         // 发送工具执行结果事件
                         sink.next(SseEvent.observation(toolName, observation, durationMs));
@@ -835,6 +973,14 @@ public class ReactAgent {
 
                         String finalContent = currentThinking.toString();
                         String finalReasoning = currentReasoning.toString();
+
+                        // 🪝 Stop Hook：任一回调返回非 null 即注入消息并强制继续
+                        String forceContinue = triggerStopHooks(messages);
+                        if (forceContinue != null) {
+                            log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
+                            messages.add(ChatMessage.userMessage(forceContinue));
+                            continue;
+                        }
 
                         // 保存完成的助手消息
                         saveAssistantMessage(finalContent, finalReasoning, persistedEvents);

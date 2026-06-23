@@ -396,6 +396,7 @@ public class AgentServiceImpl implements AgentService {
 
         // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
         ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan);
+        reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
         String response = agentResponse.getFinalAnswer();
         String reasoning = agentResponse.getFinalReasoning();
@@ -658,6 +659,8 @@ public class AgentServiceImpl implements AgentService {
                 // Phase 2: 执行
                 ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
                         conversationService, sessionId);
+                reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
+                reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
 
                 // 用于累积 token 用量
                 AtomicReference<LlmUsage> totalUsage = new AtomicReference<>();
