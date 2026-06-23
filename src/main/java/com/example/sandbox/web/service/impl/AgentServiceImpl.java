@@ -18,8 +18,10 @@ import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
 import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
 import com.example.sandbox.web.service.mcpclient.RealMcpTool;
+import com.example.sandbox.web.config.SubAgentConfigProperties;
 import com.example.sandbox.web.service.tool.WebSearchTool;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
+import com.example.sandbox.web.service.tool.RunSubagentTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -114,6 +116,10 @@ public class AgentServiceImpl implements AgentService {
     /** MCP 动态工具开关，默认关闭 */
     @Value("${agent.mcp.enabled:false}")
     private boolean mcpEnabled;
+
+    /** 子代理配置（控制 run_subagent 工具的注册和行为） */
+    @Autowired
+    private SubAgentConfigProperties subAgentConfig;
 
     /**
      * 创建新会话（无关联应用）
@@ -306,6 +312,9 @@ public class AgentServiceImpl implements AgentService {
         // WebSearch 工具：仅在前端开启搜索时才保留
         filteredTools = filterWebSearchTool(filteredTools);
 
+        // 子代理工具：受 agent.sub-agent.enabled 控制
+        filteredTools = filterSubAgentTool(filteredTools);
+
         // 知识库描述注入：如果应用关联了知识库，动态修改 knowledge_search 工具的描述
         KnowledgeSearchTool knowledgeSearchTool = null;
         String kbDescription = null;
@@ -397,6 +406,8 @@ public class AgentServiceImpl implements AgentService {
         // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
         ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan);
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
+        // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
+        wireSubAgentParent(reactAgent, filteredTools);
         AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
         String response = agentResponse.getFinalAnswer();
         String reasoning = agentResponse.getFinalReasoning();
@@ -569,6 +580,9 @@ public class AgentServiceImpl implements AgentService {
                 // WebSearch 工具：仅在前端开启搜索时才保留
                 filteredTools = filterWebSearchTool(filteredTools);
 
+                // 子代理工具：受 agent.sub-agent.enabled 控制
+                filteredTools = filterSubAgentTool(filteredTools);
+
                 // 知识库注入
                 String kbDescription = null;
                 if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
@@ -661,6 +675,8 @@ public class AgentServiceImpl implements AgentService {
                         conversationService, sessionId);
                 reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
                 reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
+                // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
+                wireSubAgentParent(reactAgent, filteredTools);
 
                 // 用于累积 token 用量
                 AtomicReference<LlmUsage> totalUsage = new AtomicReference<>();
@@ -795,5 +811,41 @@ public class AgentServiceImpl implements AgentService {
             log.debug("网络搜索已关闭，web_search 工具已移除");
         }
         return filtered;
+    }
+
+    /**
+     * 按子代理总开关过滤 {@link RunSubagentTool}。
+     *
+     * <p>当 {@code agent.sub-agent.enabled=false} 时，从工具列表中移除 run_subagent，
+     * LLM 将无法委托子任务给子代理。</p>
+     */
+    private List<Tool> filterSubAgentTool(List<Tool> tools) {
+        if (subAgentConfig != null && subAgentConfig.isEnabled()) {
+            log.info("子代理已启用，run_subagent 工具可用");
+            return tools;
+        }
+        List<Tool> filtered = tools.stream()
+                .filter(t -> !(t instanceof RunSubagentTool))
+                .toList();
+        if (filtered.size() < tools.size()) {
+            log.info("子代理未启用，run_subagent 工具已移除");
+        }
+        return filtered;
+    }
+
+    /**
+     * 将父 Agent 引用注入到 {@link RunSubagentTool} 中。
+     *
+     * <p>子代理通过 {@code parentAgent.fork()} 创建子实例，继承 Hook 和安全策略。
+     * 如果工具列表中不存在 RunSubagentTool（功能关闭），此方法无操作。</p>
+     */
+    private void wireSubAgentParent(ReactAgent reactAgent, List<Tool> filteredTools) {
+        for (Tool tool : filteredTools) {
+            if (tool instanceof RunSubagentTool runSubagentTool) {
+                runSubagentTool.setParentAgent(reactAgent);
+                log.debug("RunSubagentTool 父 Agent 已注入");
+                return;
+            }
+        }
     }
 }

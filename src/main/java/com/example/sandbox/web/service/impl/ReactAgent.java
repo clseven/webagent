@@ -298,6 +298,69 @@ public class ReactAgent {
         return null;
     }
 
+    // ==================== 子代理支持 ====================
+
+    /**
+     * 创建一个子 Agent 实例，继承父的 Hook 和安全策略，但拥有独立的消息上下文。
+     *
+     * <h3>子 Agent 特点</h3>
+     * <ul>
+     *   <li><b>独立消息列表</b>：不共享父的 {@code messages}，上下文隔离</li>
+     *   <li><b>受限工具列表</b>：只能使用调用方传入的工具</li>
+     *   <li><b>不保存到主会话</b>：{@code conversationService=null}，子代理内部消息不写入 DB</li>
+     *   <li><b>继承 PreToolUse/PostToolUse Hook</b>：安全策略不跳过</li>
+     *   <li><b>不继承 Stop Hook</b>：子 Agent 完成后直接返回，不需要外部干预</li>
+     * </ul>
+     *
+     * <h3>教学材料对应</h3>
+     * <p>对应 s06 Subagent 的 {@code spawn_subagent(description)} 函数：
+     * 子 Agent 拥有全新的 {@code messages[]}，跑自己的循环，完成后只回传结论。</p>
+     *
+     * @param restrictedTools 子 Agent 可用的工具（应不包含 run_subagent）
+     * @param subagentPrompt  子 Agent 专属系统提示词
+     * @return 新的 ReactAgent 实例，SessionId 与父相同（访问同一个沙箱）
+     */
+    public ReactAgent fork(List<Tool> restrictedTools, String subagentPrompt) {
+        ReactAgent child = new ReactAgent(
+                this.llmService, restrictedTools, subagentPrompt,
+                null,   // 无执行计划 — 子 Agent 直接执行任务
+                null,   // conversationService=null — 不写主会话
+                this.sessionId  // 保留 sessionId — 需要访问同一个沙箱
+        );
+
+        // 继承 PreToolUse Hook（安全检查不跳过）
+        List<Object> preHooks = hooks.get("PreToolUse");
+        if (preHooks != null) {
+            for (Object hook : preHooks) {
+                child.registerPreToolUseHook((PreToolUseHook) hook);
+            }
+        }
+
+        // 继承 PostToolUse Hook（副作用型）
+        List<Object> postHooks = hooks.get("PostToolUse");
+        if (postHooks != null) {
+            for (Object hook : postHooks) {
+                child.registerPostToolUseHook((PostToolUseHook) hook);
+            }
+        }
+
+        // 不继承 Stop Hook — 子 Agent 完成后直接返回
+
+        log.debug("Fork 子 Agent: tools={}, prompt={} 字符",
+                restrictedTools.size(),
+                subagentPrompt != null ? subagentPrompt.length() : 0);
+        return child;
+    }
+
+    /**
+     * 获取当前 Agent 的完整工具列表（子代理需要此方法按名称过滤工具）。
+     *
+     * @return 工具实例列表（不可修改的副本）
+     */
+    public List<Tool> getTools() {
+        return List.copyOf(tools.values());
+    }
+
     /**
      * 创建 ReactAgent（无技能提示、无执行计划）
      *

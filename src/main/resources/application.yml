@@ -65,6 +65,24 @@ agent:
       api-key: ${BAIDU_SEARCH_API_KEY:}
       timeout: ${BAIDU_SEARCH_TIMEOUT:15s}
       max-results: ${BAIDU_SEARCH_MAX_RESULTS:5}
+  sub-agent:
+    # 是否启用子代理功能（run_subagent 工具），默认关闭
+    enabled: ${SUB_AGENT_ENABLED:false}
+    # 单个子代理超时（秒）
+    timeout-seconds: ${SUB_AGENT_TIMEOUT:120}
+    types:
+      analyzer:
+        enabled: true
+        max-iterations: 10
+      searcher:
+        enabled: true
+        max-iterations: 5
+      browser:
+        enabled: true
+        max-iterations: 10
+      general:
+        enabled: true
+        max-iterations: 15
   sandbox:
     domain: ${SANDBOX_DOMAIN:localhost:8080}
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}
