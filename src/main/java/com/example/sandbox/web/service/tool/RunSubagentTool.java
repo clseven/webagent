@@ -49,6 +49,9 @@ public class RunSubagentTool implements Tool {
     @Autowired
     private SubAgentConfigProperties config;
 
+    @Autowired
+    private com.example.sandbox.web.service.impl.BackgroundTaskManager backgroundTaskManager;
+
     // ==================== 各类型子代理的系统提示词 ====================
 
     private static final String ANALYZER_PROMPT = """
@@ -192,6 +195,10 @@ public class RunSubagentTool implements Tool {
                 "type", "string",
                 "description", "详细的任务描述。子代理将独立完成此任务，完成后返回摘要。描述中应包含：目标、需要处理的文件/路径、期望的结果。"
         ));
+        properties.put("run_in_background", Map.of(
+                "type", "boolean",
+                "description", "设为 true 时子代理在后台执行，主 Agent 不等待。多个后台子代理可以并行执行。完成后以通知形式告知摘要。"
+        ));
 
         Map<String, Object> parameters = Map.of(
                 "type", "object",
@@ -240,7 +247,31 @@ public class RunSubagentTool implements Tool {
         // 3. Fork 子 ReactAgent
         ReactAgent child = parentAgent.fork(restrictedTools, subagentPrompt);
 
-        // 4. 执行（带超时）
+        // 4. 后台执行：闭包捕获 child，无 singleton 风险
+        boolean isBackground = Boolean.TRUE.equals(arguments.get("run_in_background"));
+        if (isBackground) {
+            String bgId = backgroundTaskManager.start(sessionId, () -> {
+                long timeout = config.getTimeoutSeconds();
+                try {
+                    AgentResponse r = CompletableFuture
+                            .supplyAsync(() -> child.run(sessionId, task, List.of()))
+                            .orTimeout(timeout, TimeUnit.SECONDS)
+                            .exceptionally(ex -> {
+                                String errMsg = ex instanceof TimeoutException
+                                        ? "子代理执行超时（" + timeout + "秒）"
+                                        : "子代理执行失败：" + ex.getMessage();
+                                return new AgentResponse(errMsg, null, List.of(), null, 0);
+                            })
+                            .join();
+                    return r.getFinalAnswer() != null ? r.getFinalAnswer() : "子代理未返回有效结果";
+                } catch (Exception e) {
+                    return "子代理执行异常：" + e.getMessage();
+                }
+            }, "run_subagent:" + type);
+            return String.format("[后台子代理 %s 已启动] 类型=%s。完成后将通知结果。", bgId, type);
+        }
+
+        // 5. 同步执行（带超时）
         long timeoutSeconds = config.getTimeoutSeconds();
         try {
             AgentResponse response = CompletableFuture

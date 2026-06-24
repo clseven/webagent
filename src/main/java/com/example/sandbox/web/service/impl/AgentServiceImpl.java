@@ -117,6 +117,10 @@ public class AgentServiceImpl implements AgentService {
     @Value("${agent.mcp.enabled:false}")
     private boolean mcpEnabled;
 
+    /** 后台任务管理器（统一调度慢操作后台执行） */
+    @Autowired
+    private BackgroundTaskManager backgroundTaskManager;
+
     /** 子代理配置（控制 run_subagent 工具的注册和行为） */
     @Autowired
     private SubAgentConfigProperties subAgentConfig;
@@ -404,7 +408,8 @@ public class AgentServiceImpl implements AgentService {
         }
 
         // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
-        ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan);
+        ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
+                null, null, backgroundTaskManager);
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
         wireSubAgentParent(reactAgent, filteredTools);

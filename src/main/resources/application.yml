@@ -67,7 +67,7 @@ agent:
       max-results: ${BAIDU_SEARCH_MAX_RESULTS:5}
   sub-agent:
     # 是否启用子代理功能（run_subagent 工具），默认关闭
-    enabled: ${SUB_AGENT_ENABLED:false}
+    enabled: ${SUB_AGENT_ENABLED:true}
     # 单个子代理超时（秒）
     timeout-seconds: ${SUB_AGENT_TIMEOUT:120}
     types:
@@ -83,6 +83,8 @@ agent:
       general:
         enabled: true
         max-iterations: 15
+  background:
+    max-concurrent: ${BG_MAX_CONCURRENT:5}
   sandbox:
     domain: ${SANDBOX_DOMAIN:localhost:8080}
     image: ${SANDBOX_IMAGE:agent-infra/sandbox-office:latest}

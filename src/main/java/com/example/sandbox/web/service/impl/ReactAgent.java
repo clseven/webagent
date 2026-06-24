@@ -124,6 +124,23 @@ public class ReactAgent {
             3. **skill_reference** - 读取技能的引用文件
                当技能指令中提到某个参考文档、模板时，使用此工具获取内容。
 
+            ## 子代理（run_subagent）
+
+            **重要：网络访问、搜索、多步骤耗时操作，必须使用 run_subagent。
+            直接调用 web_search、browser_* 会导致主循环阻塞，浪费你的 token 和时间。**
+
+            子代理拥有完整工作能力，内部过程不进入主对话，完成后返回结构化摘要。
+            多个子代理可设置 run_in_background=true 并行执行——同时启动它们，
+            你继续处理其他事务，等通知回来后综合所有结果。
+
+            ### 必须使用子代理的场景
+            - 网络请求（搜索、抓取网页、访问在线文档）
+            - 多步骤复杂操作（安装依赖、编译构建、代码审查、数据分析）
+            - 用户要求同时处理多个独立任务
+
+            ### 不需要子代理的场景
+            - 单次文件读写、简单命令等一步完成的轻量操作
+
             ## 文件目录
 
             - /home/gem/uploads/ - 用户上传文件
@@ -227,6 +244,9 @@ public class ReactAgent {
         String run(List<ChatMessage> messages);
     }
 
+    /** 后台任务管理器（为 null 时后台功能不启用，如流式路径） */
+    private final BackgroundTaskManager backgroundTaskManager;
+
     /** Hook 注册表：事件名 → 回调列表 */
     private final Map<String, List<Object>> hooks = new ConcurrentHashMap<>();
 
@@ -325,7 +345,8 @@ public class ReactAgent {
                 this.llmService, restrictedTools, subagentPrompt,
                 null,   // 无执行计划 — 子 Agent 直接执行任务
                 null,   // conversationService=null — 不写主会话
-                this.sessionId  // 保留 sessionId — 需要访问同一个沙箱
+                this.sessionId,  // 保留 sessionId — 需要访问同一个沙箱
+                null    // 子代理不启用后台任务
         );
 
         // 继承 PreToolUse Hook（安全检查不跳过）
@@ -368,7 +389,7 @@ public class ReactAgent {
      * @param toolList   可用工具列表
      */
     public ReactAgent(LlmService llmService, List<Tool> toolList) {
-        this(llmService, toolList, null, null, null, null);
+        this(llmService, toolList, null, null, null, null, null);
     }
 
     /**
@@ -379,7 +400,7 @@ public class ReactAgent {
      * @param skillPrompt 技能指导提示词（从技能文件加载）
      */
     public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt) {
-        this(llmService, toolList, skillPrompt, null, null, null);
+        this(llmService, toolList, skillPrompt, null, null, null, null);
     }
 
     /**
@@ -391,7 +412,15 @@ public class ReactAgent {
      * @param plan        执行计划（由 PlanAgent 产出，可为 null）
      */
     public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt, String plan) {
-        this(llmService, toolList, skillPrompt, plan, null, null);
+        this(llmService, toolList, skillPrompt, plan, null, null, null);
+    }
+
+    /**
+     * 创建 ReactAgent（带对话服务，无后台任务 — 流式路径用）
+     */
+    public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt, String plan,
+                      ConversationService conversationService, String sessionId) {
+        this(llmService, toolList, skillPrompt, plan, conversationService, sessionId, null);
     }
 
     /**
@@ -405,10 +434,12 @@ public class ReactAgent {
      * @param sessionId           会话 ID（用于保存消息）
      */
     public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt, String plan,
-                      ConversationService conversationService, String sessionId) {
+                      ConversationService conversationService, String sessionId,
+                      BackgroundTaskManager backgroundTaskManager) {
         this.llmService = llmService;
         this.conversationService = conversationService;
         this.sessionId = sessionId;
+        this.backgroundTaskManager = backgroundTaskManager;
         this.tools = new ConcurrentHashMap<>();
         this.toolDefinitions = new ArrayList<>();
         this.plan = plan;
@@ -459,6 +490,15 @@ public class ReactAgent {
         while (iteration < MAX_ITERATIONS) {
             iteration++;
 
+            // 注入后台任务完成通知
+            if (backgroundTaskManager != null) {
+                String notification = backgroundTaskManager.collect(sessionId);
+                if (notification != null) {
+                    messages.add(ChatMessage.userMessage(notification));
+                    log.debug("注入后台通知: {} 字符", notification.length());
+                }
+            }
+
             // 每次 LLM 调用前检查 token 预算，超出则压缩旧消息为摘要
             compressIfNeeded(messages);
 
@@ -481,6 +521,42 @@ public class ReactAgent {
                     log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
                     messages.add(ChatMessage.userMessage(forceContinue));
                     continue;
+                }
+
+                // 最终返回前等待遗留后台任务
+                if (backgroundTaskManager != null && backgroundTaskManager.isPending(sessionId)) {
+                    log.info("最终返回前等待后台任务...");
+                    String remaining = backgroundTaskManager.awaitPending(sessionId, 30_000);
+                    if (remaining != null) {
+                        messages.add(ChatMessage.userMessage(remaining));
+                        // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮
+                        for (int digest = 0; digest < 6; digest++) {
+                            LlmResponse digestResponse = llmService.chatWithTools(
+                                    prompt, messages, toolDefinitions);
+                            if (digestResponse.getTokenUsage() != null) {
+                                LlmUsage usage = digestResponse.getTokenUsage();
+                                totalPromptTokens += usage.promptTokens();
+                                totalCompletionTokens += usage.completionTokens();
+                                totalCacheHitTokens += usage.cacheHitTokens();
+                                totalTokens += usage.totalTokens();
+                            }
+                            if (digestResponse.isFinished()) {
+                                response = digestResponse;
+                                break;
+                            }
+                            if (digestResponse.hasToolCall()) {
+                                LlmToolCall tc = digestResponse.getToolCall();
+                                String obs = executeTool(sessionId, tc.name(), tc.arguments());
+                                LlmToolCall historyTc = ensureToolCallId(tc);
+                                messages.add(ChatMessage.assistantToolCallMessage(historyTc));
+                                messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
+                                steps.add(new AgentStep(iteration, digestResponse.getContent(),
+                                        digestResponse.getReasoningContent(), historyTc,
+                                        LlmToolResult.success(historyTc.id(), tc.name(), obs, 0),
+                                        digestResponse.getTokenUsage()));
+                            }
+                        }
+                    }
                 }
 
                 log.info("ReAct 完成，共 {} 次迭代，token: {}", iteration, totalTokens);
@@ -653,6 +729,9 @@ public class ReactAgent {
 
     private String messageContentForContext(ChatMessage message) {
         if (message.getContent() != null) {
+            if (message.getContent().startsWith("<task_notification>")) {
+                return "";
+            }
             return message.getContent();
         }
         if (!message.getToolCalls().isEmpty()) {
