@@ -1,7 +1,7 @@
 package com.example.sandbox.web.service.mcpclient;
 
 import com.example.sandbox.web.service.Tool;
-import com.example.sandbox.web.service.mcp.McpToolNameCodec;
+import com.example.sandbox.web.service.mcpclient.McpToolNameCodec;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,10 +13,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 真 MCP 工具提供器。
+ * MCP 工具提供器。
  *
- * <p>替换旧的 {@code McpToolProvider}（那一版调的是 AIO 沙箱代理的 REST，
- * 不是真 MCP 协议）。本类直接对接 {@link McpClientManager}，把所有已配置 server
+ * <p>直接对接 {@link McpClientManager}，把所有已配置 server
  * 的工具列表统一暴露给 Agent。</p>
  *
  * <p>系统级 MCP 工具向所有用户开放；用户级 MCP 工具通过 sessionId 解析 userId，

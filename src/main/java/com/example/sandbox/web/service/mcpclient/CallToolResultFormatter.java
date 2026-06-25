@@ -9,8 +9,7 @@ import java.util.List;
 /**
  * 把 MCP {@link McpSchema.CallToolResult} 转换成 Agent observation 文本。
  *
- * <p>类似 {@code McpCallResultFormatter}，但处理的是强类型 SDK 对象，而不是
- * AIO 沙箱返回的 Map。</p>
+ * <p>处理的是强类型 SDK 对象（{@code McpSchema.CallToolResult}）。</p>
  */
 final class CallToolResultFormatter {
 

@@ -1,4 +1,4 @@
-package com.example.sandbox.web.service.mcp;
+package com.example.sandbox.web.service.mcpclient;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

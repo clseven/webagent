@@ -3,7 +3,6 @@ package com.example.sandbox.aio;
 import com.example.sandbox.aio.browser.AioBrowserApi;
 import com.example.sandbox.aio.core.AioHttpClient;
 import com.example.sandbox.aio.file.AioFileApi;
-import com.example.sandbox.aio.mcp.AioMcpApi;
 import com.example.sandbox.aio.node.AioNodeApi;
 import com.example.sandbox.aio.sandbox.AioSandboxApi;
 import com.example.sandbox.aio.sandbox.model.AioSandboxContext;
@@ -45,9 +44,6 @@ public class AioClient implements SandboxClient {
     /** Utility API。 */
     private final AioUtilityApi utility;
 
-    /** MCP API。 */
-    private final AioMcpApi mcp;
-
     /**
      * 根据动态 AIO endpoint 创建聚合客户端。
      *
@@ -61,7 +57,6 @@ public class AioClient implements SandboxClient {
         this.browser = new AioBrowserApi(http);
         this.node = new AioNodeApi(http);
         this.utility = new AioUtilityApi(http);
-        this.mcp = new AioMcpApi(http);
     }
 
     /** @return Sandbox 环境 API */
@@ -92,11 +87,6 @@ public class AioClient implements SandboxClient {
     /** @return Utility API */
     public AioUtilityApi utility() {
         return utility;
-    }
-
-    /** @return MCP API */
-    public AioMcpApi mcp() {
-        return mcp;
     }
 
     /**

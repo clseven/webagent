@@ -2,7 +2,7 @@ package com.example.sandbox.web.service.mcpclient;
 
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
-import com.example.sandbox.web.service.mcp.McpToolNameCodec;
+import com.example.sandbox.web.service.mcpclient.McpToolNameCodec;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import java.util.Map;
@@ -93,7 +93,7 @@ public class RealMcpTool implements Tool {
     /**
      * 执行 MCP 工具调用。
      *
-     * <p>参考旧 McpDynamicTool 的策略：失败不在本层重试。MCP 工具可能产生副作用，
+     * <p>失败不在本层重试。MCP 工具可能产生副作用，
      * 由模型或上层根据语义决定是否重试。</p>
      */
     @Override
