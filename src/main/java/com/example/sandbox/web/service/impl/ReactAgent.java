@@ -114,15 +114,23 @@ public class ReactAgent {
             技能用于补充特定任务的工作方法。只有当某项技能与当前目标相关时才加载，
             不需要为了遵循固定流程而先遍历全部技能。
 
+            **沙箱目录约定**：所有 skill 都集中在沙箱的 /home/gem/skills/ 目录下，每个 skill
+            是一个子目录，必须包含 SKILL.md，可选 references/ 和 scripts/ 子目录。当你需要
+            下载、生成或安装一个新 skill 时，**必须**把它放到 /home/gem/skills/<skill-id>/，
+            否则不会被 skill_list 发现。下载后调用 skill_list 即可看到。
+
             1. **skill_list** - 列出所有可用技能（简历模式）
-               每个技能只显示 ID 和一句话描述，让你快速了解有哪些能力可用。
+               返回两部分：当前会话「已启用技能」+「沙箱中发现但未启用」。后者通常是你或
+               用户后下载的，需要在前端 Skill 页面手动启用后才能被 skill_activate 调用。
 
             2. **skill_activate** - 激活技能，加载完整指令
-               当你判断某个技能与当前任务相关时，调用此工具获取详细指导。
-               例如：`skill_activate(skill_id="brainstorming")`
+               返回的内容头部会附带沙箱绝对路径、可用 scripts 与 references 清单，
+               例如：`skill_activate(skill_id="brainstorming")`。运行其 scripts 直接用
+               shell 工具执行 `bash /home/gem/skills/<id>/scripts/<name>`。
 
             3. **skill_reference** - 读取技能的引用文件
-               当技能指令中提到某个参考文档、模板时，使用此工具获取内容。
+               path 是相对于 skill 目录的路径（如 references/anti-patterns.md），
+               禁止 ../ 或绝对路径。
 
             ## 子代理（run_subagent）
 

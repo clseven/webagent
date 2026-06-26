@@ -42,4 +42,18 @@ public interface SkillService {
      * @param rootPath 技能根目录路径
      */
     void setSkillRootPath(String rootPath);
+
+    /**
+     * 扫描指定会话的沙箱 {@code /home/gem/skills/} 目录，发现其中存在的所有 skill。
+     *
+     * <p>这是运行期的权威发现来源：本地仓库通过 {@code syncSkill} 推送过去的种子、Agent 自行
+     * 下载或生成的 skill 都会出现在这里。返回的 {@link Skill} 实例的 {@code localPath} 为 null，
+     * 所有 IO 必须通过沙箱 {@link com.example.sandbox.aio.AioClient}。</p>
+     *
+     * <p>本方法会执行单次 shell {@code find} + 多次 file/read，未做缓存；调用方按需触发。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return 沙箱内发现的 skill 列表；沙箱未就绪或目录不存在时返回空列表
+     */
+    List<Skill> discoverFromSandbox(String sessionId);
 }

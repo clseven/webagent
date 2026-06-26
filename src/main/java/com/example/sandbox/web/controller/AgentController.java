@@ -8,6 +8,7 @@ import com.example.sandbox.web.model.request.ChatRequest;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.response.SessionResponse;
+import com.example.sandbox.web.model.response.SkillView;
 import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.ConversationService;
@@ -201,11 +202,21 @@ public class AgentController {
     }
 
     /**
-     * 获取启用的技能
+     * 获取启用的技能 ID 集合（仅 ID，旧接口）。
      */
     @GetMapping("/{id}/skills")
     public ApiResponse<Set<String>> getEnabledSkills(@PathVariable String id) {
         Set<String> skills = conversationService.getEnabledSkillIds(id);
+        return ApiResponse.success(skills);
+    }
+
+    /**
+     * 列出当前会话可见的技能融合视图：本地仓库 ∪ 当前会话沙箱发现，
+     * 每项带 source（local / sandbox / both）与 enabled 标记。
+     */
+    @GetMapping("/{id}/skills/available")
+    public ApiResponse<List<SkillView>> listSessionSkills(@PathVariable String id) {
+        List<SkillView> skills = conversationService.listSessionSkills(id);
         return ApiResponse.success(skills);
     }
 

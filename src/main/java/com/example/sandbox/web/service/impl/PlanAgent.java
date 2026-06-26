@@ -111,6 +111,10 @@ public class PlanAgent {
             子代理并行推进，避免串行等待。
 
             ## 可用技能
+            所有 skill 都位于沙箱 /home/gem/skills/ 目录下，由执行阶段通过 skill_list /
+            skill_activate / skill_reference 工具按需读取。如果用户希望使用尚未启用的 skill，
+            初始策略可建议先在前端 Skill 页面启用，再交由执行阶段调用。
+
             %s
 
             可用能力和技能帮助你理解执行边界，但不要求在计划中逐项点名。

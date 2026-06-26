@@ -795,11 +795,23 @@ public class SandboxServiceImpl implements SandboxService {
 
     // ==================== 技能同步 ====================
 
+    /**
+     * 沙箱启动时把所有已启用且来自本地仓库的 skill 推送到沙箱。
+     *
+     * <p>只推本地仓库存在的 skill；纯沙箱（如 Agent 之前下载过、但实际上沙箱重建的场景）需要重新下载。
+     * 本地无副本的技能此处直接跳过，不视为失败。</p>
+     *
+     * @param sessionId 会话 ID
+     */
     private void syncAllEnabledSkills(String sessionId) {
         Set<String> enabledSkillIds = getEnabledSkillIds(sessionId);
         for (String skillId : enabledSkillIds) {
             try {
                 Skill skill = skillService.getSkill(skillId);
+                if (skill.getLocalPath() == null) {
+                    log.debug("技能 {} 无本地副本，跳过推送", skillId);
+                    continue;
+                }
                 fileSyncService.syncSkill(sessionId, skill.getLocalPath(), skill.getId());
             } catch (Exception e) {
                 log.warn("同步技能 {} 失败: {}", skillId, e.getMessage());

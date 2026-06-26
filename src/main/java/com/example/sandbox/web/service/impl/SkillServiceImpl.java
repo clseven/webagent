@@ -1,10 +1,14 @@
 package com.example.sandbox.web.service.impl;
 
+import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.exception.SkillNotFoundException;
 import com.example.sandbox.web.model.entity.Skill;
+import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.SkillService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.yaml.snakeyaml.Yaml;
 
@@ -18,7 +22,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 技能管理服务实现（不存数据库，直接读本地文件系统）
+ * 技能管理服务实现。
+ *
+ * <p>本地仓库扫描是<b>种子来源</b>：启动后由前端配置根目录，扫到的 skill 进入 {@link #skillCache}，
+ * 用于 {@code FileSyncService.syncSkill} 把文件推到沙箱 {@code /home/gem/skills/<id>/}。</p>
+ *
+ * <p>运行期权威发现走 {@link #discoverFromSandbox(String)}：单次 shell 列目录 + 多次 AIO file/read，
+ * 解析 frontmatter 后返回 {@link Skill}（{@code localPath} 为 null）。融合视图由调用方（Controller / Tool）
+ * 把本地仓库与沙箱发现的结果按 {@link Skill.Source} 标记后下发。</p>
  *
  * @author example
  * @date 2026/05/14
@@ -28,25 +39,24 @@ public class SkillServiceImpl implements SkillService {
 
     private static final Logger log = LoggerFactory.getLogger(SkillServiceImpl.class);
 
-    /**
-     * 技能缓存：id -> Skill
-     */
+    /** 沙箱发现允许的子目录深度：{@code /home/gem/skills/<id>/SKILL.md}，深度 2。 */
+    private static final int SANDBOX_FIND_MAXDEPTH = 2;
+
+    /** 本地仓库技能缓存：id -> Skill。仅由前端"设置根目录"流程填充。 */
     private final Map<String, Skill> skillCache = new ConcurrentHashMap<>();
 
-    /**
-     * 技能根目录
-     */
-    private Path skillRootPath;
+    /** 沙箱客户端工厂；用 @Lazy 打破与 {@code SandboxServiceImpl} 的潜在循环依赖。 */
+    @Autowired
+    @Lazy
+    private SandboxClientFactory sandboxClientFactory;
 
-    /**
-     * 启动时不自动加载，等待用户设置根目录
-     */
-    // @jakarta.annotation.PostConstruct
-    // public void init() {
-    //     String defaultPath = ".claude/skills";
-    //     log.info("初始化技能服务，默认技能目录: {}", defaultPath);
-    //     setSkillRootPath(defaultPath);
-    // }
+    /** 用于判断沙箱是否就绪；同样 @Lazy。 */
+    @Autowired
+    @Lazy
+    private SandboxService sandboxService;
+
+    /** 启动时不自动加载本地仓库，等待前端用户设置根目录。 */
+    // @PostConstruct intentionally not used; root path is user-driven.
 
     @Override
     public List<Skill> listSkills() {
@@ -60,19 +70,16 @@ public class SkillServiceImpl implements SkillService {
             log.warn("技能 {} 未找到（缓存中无此技能）", skillId);
             throw new SkillNotFoundException(skillId);
         }
-        // 触发一次 content 加载以验证文件存在
-        String content = skill.getContent();
-        log.info("已获取技能: {} (内容长度: {} 字符)", skillId, content.length());
         return skill;
     }
 
     @Override
     public void loadSkillsFromDirectory(String directory) {
-        log.info("开始加载技能目录: {}", directory);
+        log.info("开始加载本地技能仓库: {}", directory);
         try {
             Path skillDir = Path.of(directory);
             if (!Files.exists(skillDir)) {
-                log.warn("技能目录不存在: {}", directory);
+                log.warn("本地技能仓库不存在: {}", directory);
                 return;
             }
 
@@ -85,22 +92,91 @@ public class SkillServiceImpl implements SkillService {
                 }
             }
 
-            log.info("技能加载完成: {} 个 - {}", loadedCount, loadedSkillIds);
+            log.info("本地技能仓库加载完成: {} 个 - {}", loadedCount, loadedSkillIds);
         } catch (IOException e) {
-            log.error("加载技能目录失败: {}", directory, e);
+            log.error("加载本地技能仓库失败: {}", directory, e);
         }
     }
 
     @Override
     public void setSkillRootPath(String rootPath) {
-        this.skillRootPath = Path.of(rootPath);
+        // 切换根目录时清空旧缓存，避免上一次的本地 skill 残留
+        skillCache.clear();
         loadSkillsFromDirectory(rootPath);
     }
 
+    @Override
+    public List<Skill> discoverFromSandbox(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return List.of();
+        }
+        if (sandboxService == null || !sandboxService.hasSandbox(sessionId)) {
+            log.debug("沙箱未就绪，跳过 skill 发现: sessionId={}", sessionId);
+            return List.of();
+        }
+
+        AioClient client;
+        try {
+            client = sandboxClientFactory.getAioClient(sessionId);
+        } catch (Exception e) {
+            log.warn("获取沙箱客户端失败 sessionId={}: {}", sessionId, e.getMessage());
+            return List.of();
+        }
+        if (client == null) {
+            return List.of();
+        }
+
+        // 一次 shell 列出所有 SKILL.md 路径；目录不存在或为空时输出空字符串
+        String findCmd = "find " + Skill.SANDBOX_SKILL_ROOT
+                + " -maxdepth " + SANDBOX_FIND_MAXDEPTH
+                + " -name SKILL.md -type f 2>/dev/null";
+        String output;
+        try {
+            output = client.execCommand(findCmd);
+        } catch (Exception e) {
+            log.warn("沙箱发现 skill 命令执行失败 sessionId={}: {}", sessionId, e.getMessage());
+            return List.of();
+        }
+        if (output == null || output.isBlank()) {
+            return List.of();
+        }
+
+        List<Skill> result = new ArrayList<>();
+        for (String line : output.split("\\r?\\n")) {
+            String filePath = line.trim();
+            if (filePath.isEmpty() || !filePath.endsWith("/SKILL.md")) {
+                continue;
+            }
+            // 期望路径形如 /home/gem/skills/<id>/SKILL.md
+            String prefix = Skill.SANDBOX_SKILL_ROOT + "/";
+            if (!filePath.startsWith(prefix)) {
+                continue;
+            }
+            String relative = filePath.substring(prefix.length());
+            int slash = relative.indexOf('/');
+            if (slash <= 0) {
+                continue;
+            }
+            String skillId = relative.substring(0, slash);
+
+            try {
+                String content = client.readFile(filePath);
+                Skill skill = parseSkillMd(skillId, content, /* localPath= */ null);
+                skill.setSource(Skill.Source.SANDBOX);
+                result.add(skill);
+            } catch (Exception e) {
+                log.warn("沙箱发现 skill 解析失败 sessionId={} skillId={}: {}", sessionId, skillId, e.getMessage());
+            }
+        }
+        log.debug("沙箱发现 skill 数量 sessionId={} count={}", sessionId, result.size());
+        return result;
+    }
+
     /**
-     * 从路径加载单个技能
+     * 从本地路径加载单个技能到 {@link #skillCache}。
      *
-     * @return true 如果加载成功
+     * @param skillPath 本地 skill 目录
+     * @return 加载成功返回 true
      */
     private boolean loadSkillFromPath(Path skillPath) {
         Path skillFile = skillPath.resolve("SKILL.md");
@@ -113,9 +189,8 @@ public class SkillServiceImpl implements SkillService {
             String content = Files.readString(skillFile);
             String skillId = skillPath.getFileName().toString();
             Skill skill = parseSkillMd(skillId, content, skillPath);
-
             skillCache.put(skillId, skill);
-            log.debug("Loaded skill: {} from {}", skill.getId(), skillPath);
+            log.debug("Loaded local skill: {} from {}", skill.getId(), skillPath);
             return true;
         } catch (IOException e) {
             log.error("Failed to load skill from: {}", skillPath, e);
@@ -124,15 +199,20 @@ public class SkillServiceImpl implements SkillService {
     }
 
     /**
-     * 解析 SKILL.md 内容
+     * 解析 SKILL.md 内容（含 YAML frontmatter）。
+     *
+     * @param skillId   技能 ID（目录名）
+     * @param content   文件全文
+     * @param localPath 本地路径；沙箱发现传 null
+     * @return 解析得到的技能
      */
-    private Skill parseSkillMd(String skillId, String content, Path skillPath) {
+    private Skill parseSkillMd(String skillId, String content, Path localPath) {
         String name = "";
         String description = "";
         Map<String, Object> frontmatterMap = Collections.emptyMap();
 
         // 提取并解析 YAML frontmatter
-        if (content.startsWith("---")) {
+        if (content != null && content.startsWith("---")) {
             String frontmatterText = extractFrontmatterText(content);
             if (frontmatterText != null) {
                 try {
@@ -149,16 +229,18 @@ public class SkillServiceImpl implements SkillService {
             }
         }
 
-        // 如果 frontmatter 没有 description，尝试从内容提取
-        if (description.isEmpty()) {
+        if (description.isEmpty() && content != null) {
             description = extractDescriptionFromContent(content);
         }
 
-        return new Skill(skillId, name, description, skillPath, frontmatterMap);
+        return new Skill(skillId, name, description, localPath, frontmatterMap);
     }
 
     /**
-     * 从内容中提取 YAML frontmatter 文本（两个 --- 独占行之间的部分）
+     * 从内容中提取 YAML frontmatter 文本（两个 --- 独占行之间的部分）。
+     *
+     * @param content SKILL.md 全文
+     * @return frontmatter 段落文本；缺失结束分隔符时返回 null
      */
     private String extractFrontmatterText(String content) {
         String[] lines = content.split("\n");
@@ -173,7 +255,11 @@ public class SkillServiceImpl implements SkillService {
     }
 
     /**
-     * 从 Map 中安全取字符串值
+     * 从 Map 中安全取字符串值。
+     *
+     * @param map frontmatter Map
+     * @param key 键
+     * @return 字符串值；缺失返回空串
      */
     private String getStr(Map<String, Object> map, String key) {
         Object v = map.get(key);
@@ -181,7 +267,10 @@ public class SkillServiceImpl implements SkillService {
     }
 
     /**
-     * 从 Markdown 内容提取描述（标题后的第一段）
+     * 从 Markdown 内容提取描述（标题后的第一段）。
+     *
+     * @param content SKILL.md 全文
+     * @return 提取到的描述
      */
     private String extractDescriptionFromContent(String content) {
         // 跳过 frontmatter：找到第二个独占 --- 行，取其后的内容
@@ -204,11 +293,9 @@ public class SkillServiceImpl implements SkillService {
             }
         }
 
-        // 提取第一个非空行作为描述
         for (String line : body.split("\n")) {
             line = line.trim();
             if (!line.isEmpty() && !line.startsWith("#")) {
-                // 取第一句话（以句号结尾或整行）
                 int dotIndex = line.indexOf("。");
                 if (dotIndex > 0) {
                     return line.substring(0, dotIndex + 1);

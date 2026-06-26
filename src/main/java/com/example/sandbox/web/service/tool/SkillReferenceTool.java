@@ -54,7 +54,9 @@ public class SkillReferenceTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "读取技能的引用文件。当技能指令中提到某个参考文档、模板或示例时，使用此工具获取内容。",
+                "读取技能的引用文件（来自沙箱 /home/gem/skills/<id>/<path>）。"
+                        + "path 必须是相对于 skill 目录的路径，禁止 ../ 或绝对路径。"
+                        + "当技能指令中提到某个参考文档、模板或示例时，使用此工具获取内容。",
                 parameters,
                 "ALL"
         );

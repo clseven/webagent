@@ -256,6 +256,8 @@ function createApiClient() {
 
         // 技能（会话）
         getEnabledSkills: (sessionId) => request('GET', `/api/sessions/${sessionId}/skills`),
+        // 融合视图：本地仓库 ∪ 当前会话沙箱发现，每项带 source（local/sandbox/both）与 enabled
+        listSessionSkills: (sessionId) => request('GET', `/api/sessions/${sessionId}/skills/available`),
         enableSkill: (sessionId, skillId) => request('POST', `/api/sessions/${sessionId}/skills/${skillId}/enable`),
         disableSkill: (sessionId, skillId) => request('POST', `/api/sessions/${sessionId}/skills/${skillId}/disable`),
 

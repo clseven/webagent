@@ -2,6 +2,7 @@ package com.example.sandbox.web.service;
 
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.Skill;
+import com.example.sandbox.web.model.response.SkillView;
 
 import java.util.List;
 import java.util.Map;
@@ -150,4 +151,14 @@ public interface ConversationService {
      * @return 文件内容
      */
     String getSkillReference(String sessionId, String skillId, String path);
+
+    /**
+     * 列出当前会话可见的所有技能（融合本地仓库与沙箱发现）。
+     *
+     * <p>每项标注来源（local / sandbox / both）与是否启用。前端 Skills 页面使用此接口刷新列表。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return 融合视图列表，按 id 排序
+     */
+    List<SkillView> listSessionSkills(String sessionId);
 }

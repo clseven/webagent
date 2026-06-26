@@ -52,7 +52,9 @@ public class SkillActivateTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "激活一个技能：加载该技能的完整指令内容。当你判断某个技能与当前任务相关时，调用此工具获取详细指导。",
+                "激活一个技能：加载该技能的完整指令内容（来自沙箱 /home/gem/skills/<id>/SKILL.md）。"
+                        + "返回内容会附带沙箱绝对路径、可用 scripts 与 references 清单，方便后续直接调用。"
+                        + "当你判断某个技能与当前任务相关时，调用此工具获取详细指导。",
                 parameters,
                 "ALL"
         );
