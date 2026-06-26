@@ -162,19 +162,24 @@ public class ReactAgent {
             1. 安装目标始终是当前 WebAgent。不要询问用户要安装到 VS Code、Claude Desktop、
                Claude Code、Cursor、Codex 或其他外部客户端；官方 README 中这些客户端的
                配置示例只用于确认协议和地址，不是当前任务的目标环境。
-            2. 尚未核实 MCP 信息时，先使用 web_search 查找服务商官方文档，确认它是
-               Streamable HTTP MCP，并核实精确 endpoint URL、主要能力和是否需要认证。
-               URL 必须是官方客户端配置中可直接使用的地址，不能把官网、base URL 或根路径
-               自动猜成 /mcp，也不能擅自添加、删除或替换路径。
-            3. 安装前向用户展示来源、URL、可获得的能力和限制，等待用户明确确认。
+            2. 尚未核实 MCP 信息时，先使用 web_search 查找服务商官方文档，确认它支持的
+               transport、主要能力和是否需要认证。远程托管服务优先使用 Streamable HTTP，
+               URL 必须是官方客户端配置中可直接使用的精确 endpoint，不能把官网、base URL
+               或根路径自动猜成 /mcp，也不能擅自添加、删除或替换路径。
+               用户明确要求 stdio 或官方只提供 stdio 配置时，使用 shell transport，
+               让 stdio MCP 在用户 Sandbox 内运行，不要使用宿主机 stdio。
+               官方 filesystem stdio MCP 的 shell 配置固定为 command=npx，
+               args=["-y","@modelcontextprotocol/server-filesystem","/home/gem/workspace"]；
+               不得省略或留空 npm 包名。
+            3. 安装前向用户展示来源、连接方式、可获得的能力和限制，等待用户明确确认。
             4. 如果对话历史中已经展示了最近一个待安装 MCP 的官方来源、URL、能力和限制，
                当前用户回复“确认”“可以”“安装吧”“就这个”等肯定表达，应直接视为确认该方案。
                使用历史中已经核实的信息立即调用 mcp_add_or_update_server，不要重复搜索，
                不要再次询问目标环境，也不要只用文字承诺稍后安装。
             5. 安装工具返回成功后调用 mcp_list_servers，验证连接状态和实际工具列表；
                验证失败时如实说明，不得宣称安装成功。
-            6. 不要自行安装 stdio MCP，不要把 Token、API Key 或 Authorization headers
-               写入沙箱配置。使用 mcp_reload 重新加载用户手动修改的配置。
+            6. shell transport 只适合无需明文凭据的 stdio MCP；不要把 Token、API Key
+               或 Authorization headers 写入沙箱配置。使用 mcp_reload 重新加载用户手动修改的配置。
             7. 新增 MCP 工具从下一条用户消息开始可用；当前执行轮次不要假设能立即调用。
             8. 如果 MCP 管理工具返回”客户端未启用”（即 agent.mcp.enabled=false），
                说明这是当前 WebAgent 后端进程的启动配置，不能通过用户沙箱修改。
@@ -184,8 +189,8 @@ public class ReactAgent {
                说明 MCP 客户端已启用但连接目标 Server 失败。这是配置或网络问题，不是”未启用”。
                根据错误码向用户如实说明原因。HTTP 404/405 优先检查精确 endpoint；
                AUTH_REQUIRED 表示当前无认证版本不能安装；PROTOCOL_ERROR 表示目标不是兼容的
-               Streamable HTTP MCP。修正 URL 后必须继续使用原 Server ID 更新配置，
-               不得为了重试创建另一个 ID。
+               MCP endpoint；SUPERGATEWAY_START_FAILED 通常表示 shell 命令、npx 下载或端口监听失败。
+               修正配置后必须继续使用原 Server ID 更新配置，不得为了重试创建另一个 ID。
             10. 只有 initialize 和 tools/list 都成功，且 mcp_list_servers 显示已连接和真实工具列表，
                 才能宣称安装成功。curl 或浏览器能访问 URL 只能证明网络可达，不能替代 MCP Client 验证。
 

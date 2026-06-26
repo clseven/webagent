@@ -60,6 +60,16 @@ public class ShellExecResult {
         return data != null && data.getExitCode() != null ? data.getExitCode() : -1;
     }
 
+    /** @return 命令执行状态；无执行数据时返回空字符串 */
+    public String getStatus() {
+        return data != null && data.getStatus() != null ? data.getStatus() : "";
+    }
+
+    /** @return Shell 会话 ID；无执行数据时返回空字符串 */
+    public String getSessionId() {
+        return data != null && data.getSessionId() != null ? data.getSessionId() : "";
+    }
+
     /**
      * Shell 命令执行的 data 字段。
      */

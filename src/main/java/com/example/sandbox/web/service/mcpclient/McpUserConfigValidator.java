@@ -8,6 +8,7 @@ import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -17,8 +18,8 @@ import java.util.regex.Pattern;
 /**
  * 用户 MCP 配置校验器。
  *
- * <p>用户动态配置仅允许 Streamable HTTP，不允许 stdio、环境变量或自定义 headers。
- * 这些限制避免用户配置在主应用主机执行命令，也避免凭据以明文写入沙箱配置文件。</p>
+ * <p>用户动态配置允许远程 Streamable HTTP，以及在用户 Sandbox 内运行的 shell transport。
+ * 仍然不允许用户动态配置宿主机 stdio，也不允许 headers，避免凭据明文写入沙箱配置。</p>
  */
 @Component
 public class McpUserConfigValidator {
@@ -32,6 +33,19 @@ public class McpUserConfigValidator {
     /** 用户 Server ID 允许的格式。 */
     private static final Pattern SERVER_ID_PATTERN =
             Pattern.compile("[a-z0-9][a-z0-9._-]{0,63}");
+
+    /** shell 环境变量名允许的格式。 */
+    private static final Pattern ENV_NAME_PATTERN =
+            Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+
+    /** 单个 shell 命令和参数允许的最大长度。 */
+    private static final int MAX_SHELL_TEXT_LENGTH = 512;
+
+    /** 单个 shell Server 最多允许的参数数量。 */
+    private static final int MAX_SHELL_ARGS = 64;
+
+    /** 单个 shell Server 最多允许的环境变量数量。 */
+    private static final int MAX_SHELL_ENV = 32;
 
     /** MCP 安全配置属性。 */
     private final McpClientProperties properties;
@@ -83,11 +97,13 @@ public class McpUserConfigValidator {
             if (!seen.add(safe.getId())) {
                 throw new IllegalArgumentException("MCP Server ID 重复: " + safe.getId());
             }
-            String previousId = endpointOwners.putIfAbsent(safe.getUrl(), safe.getId());
-            if (previousId != null) {
-                throw new IllegalArgumentException(
-                        "MCP endpoint 重复: " + safe.getUrl()
-                                + " 已由 " + previousId + " 配置");
+            if (safe.getUrl() != null) {
+                String previousId = endpointOwners.putIfAbsent(safe.getUrl(), safe.getId());
+                if (previousId != null) {
+                    throw new IllegalArgumentException(
+                            "MCP endpoint 重复: " + safe.getUrl()
+                                    + " 已由 " + previousId + " 配置");
+                }
             }
             validated.add(safe);
         }
@@ -122,17 +138,23 @@ public class McpUserConfigValidator {
         String type = server.getType() != null
                 ? server.getType().trim().toLowerCase(Locale.ROOT)
                 : "";
-        if (!"streamable-http".equals(type) && !"http".equals(type)) {
+        boolean httpType = "streamable-http".equals(type) || "http".equals(type);
+        boolean shellType = "shell".equals(type);
+        if (!httpType && !shellType) {
             throw new IllegalArgumentException(
-                    "用户动态 MCP 只允许 streamable-http，不允许 stdio");
-        }
-        if (server.getCommand() != null && !server.getCommand().isBlank()
-                || !server.getArgs().isEmpty() || !server.getEnv().isEmpty()) {
-            throw new IllegalArgumentException("用户动态 MCP 不允许配置 command、args 或 env");
+                    "用户动态 MCP 只允许 streamable-http 或 shell，不允许宿主机 stdio");
         }
         if (!server.getHeaders().isEmpty()) {
             throw new IllegalArgumentException(
                     "用户动态 MCP 暂不允许 headers，避免凭据明文写入沙箱配置");
+        }
+
+        if (shellType) {
+            return validateShellServer(id, server);
+        }
+        if (server.getCommand() != null && !server.getCommand().isBlank()
+                || !server.getArgs().isEmpty() || !server.getEnv().isEmpty()) {
+            throw new IllegalArgumentException("streamable-http MCP 不允许配置 command、args 或 env");
         }
 
         String normalizedUrl = validateUrl(server.getUrl());
@@ -142,6 +164,71 @@ public class McpUserConfigValidator {
         safe.setType("streamable-http");
         safe.setUrl(normalizedUrl);
         return safe;
+    }
+
+    /**
+     * 校验用户 Sandbox 内 shell transport 配置。
+     *
+     * <p>shell transport 的命令只会在用户自己的 Sandbox 内运行，不会在 WebAgent 主机运行。
+     * 仍然限制字段长度和环境变量格式，避免异常配置造成命令构造失败；不会自动重试，
+     * 因为 stdio MCP Server 可能在启动时产生副作用。</p>
+     *
+     * @param id     已规范化的 Server ID
+     * @param server 原始 Server 配置
+     * @return 规范化后的 shell 配置
+     */
+    private McpServerConfig validateShellServer(String id, McpServerConfig server) {
+        if (server.getUrl() != null && !server.getUrl().isBlank()) {
+            throw new IllegalArgumentException("shell MCP 不允许配置 url");
+        }
+        String command = requireShellText(server.getCommand(), "shell MCP 必须配置 command");
+        if (server.getArgs().size() > MAX_SHELL_ARGS) {
+            throw new IllegalArgumentException("shell MCP args 数量超过上限 " + MAX_SHELL_ARGS);
+        }
+        List<String> args = new ArrayList<>();
+        for (String arg : server.getArgs()) {
+            args.add(requireShellText(arg, "shell MCP args 不能包含空值"));
+        }
+
+        if (server.getEnv().size() > MAX_SHELL_ENV) {
+            throw new IllegalArgumentException("shell MCP env 数量超过上限 " + MAX_SHELL_ENV);
+        }
+        Map<String, String> env = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : server.getEnv().entrySet()) {
+            String name = entry.getKey() != null ? entry.getKey().trim() : "";
+            if (!ENV_NAME_PATTERN.matcher(name).matches()) {
+                throw new IllegalArgumentException("shell MCP env 名称不合法: " + name);
+            }
+            env.put(name, requireShellText(entry.getValue(), "shell MCP env 值不能为空"));
+        }
+
+        McpServerConfig safe = new McpServerConfig();
+        safe.setId(id);
+        safe.setEnabled(server.isEnabled());
+        safe.setType("shell");
+        safe.setCommand(command);
+        safe.setArgs(args);
+        safe.setEnv(env);
+        return safe;
+    }
+
+    /**
+     * 校验 shell 文本字段。
+     *
+     * @param value        原始字段值
+     * @param emptyMessage 字段为空时的错误说明
+     * @return 去除首尾空白后的字段值
+     */
+    private String requireShellText(String value, String emptyMessage) {
+        String text = value != null ? value.trim() : "";
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException(emptyMessage);
+        }
+        if (text.length() > MAX_SHELL_TEXT_LENGTH) {
+            throw new IllegalArgumentException(
+                    "shell MCP 字段长度超过上限 " + MAX_SHELL_TEXT_LENGTH);
+        }
+        return text;
     }
 
     /**

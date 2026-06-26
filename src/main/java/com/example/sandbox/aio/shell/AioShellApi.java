@@ -1,6 +1,7 @@
 package com.example.sandbox.aio.shell;
 
 import com.example.sandbox.aio.core.AioHttpClient;
+import com.example.sandbox.aio.shell.model.ShellExecRequest;
 import com.example.sandbox.aio.shell.model.ShellExecResult;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -8,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -60,13 +60,78 @@ public class AioShellApi {
      * @return 完整执行响应
      */
     public ShellExecResult exec(String command, String sessionId) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("command", command);
+        ShellExecRequest request = new ShellExecRequest();
+        request.setCommand(command);
         if (sessionId != null && !sessionId.isBlank()) {
-            body.put("id", sessionId);
+            request.setId(sessionId);
         }
+        return execInternal(request, true);
+    }
 
-        String rawResponse = http.postText("/v1/shell/exec", body);
+    /**
+     * 在临时 Shell 会话中执行命令，并设置 AIO 命令等待上限。
+     *
+     * <p>本方法不会更新 {@link #shellSessionId}，适合短生命周期诊断命令或
+     * MCP transport 内部 curl 调用，避免把长进程会话污染为后续默认会话。</p>
+     *
+     * @param command        Shell 命令
+     * @param sessionId      可选的 Shell 会话 ID；为空时由 AIO 自动创建临时会话
+     * @param timeoutSeconds AIO 等待命令完成的秒数
+     * @return 完整执行响应
+     */
+    public ShellExecResult exec(String command, String sessionId, int timeoutSeconds) {
+        ShellExecRequest request = new ShellExecRequest();
+        request.setCommand(command);
+        request.setTimeout(timeoutSeconds);
+        if (sessionId != null && !sessionId.isBlank()) {
+            request.setId(sessionId);
+        }
+        return execInternal(request, false);
+    }
+
+    /** 异步启动命令的默认超时秒数。 */
+    private static final int ASYNC_DEFAULT_TIMEOUT_SECONDS = 3;
+
+    /**
+     * 异步启动 Shell 长进程。
+     *
+     * <p>该方法使用 AIO 的 {@code async_mode=true}，立即返回运行中的会话 ID。
+     * 启动结果不会写入默认复用会话，调用方需要自行保存并在结束时 kill。</p>
+     *
+     * @param command Shell 长进程命令
+     * @return 包含会话 ID 和 running 状态的执行响应
+     */
+    public ShellExecResult execAsync(String command) {
+        return execAsync(command, ASYNC_DEFAULT_TIMEOUT_SECONDS);
+    }
+
+    /**
+     * 异步启动 Shell 长进程。
+     *
+     * <p>该方法使用 AIO 的 {@code async_mode=true}，立即返回运行中的会话 ID。
+     * 启动结果不会写入默认复用会话，调用方需要自行保存并在结束时 kill。</p>
+     *
+     * @param command  Shell Shell 长进程命令
+     * @param timeout  AIO 等待命令完成的秒数（超时后立即返回 running 状态）
+     * @return 包含会话 ID 和 running 状态的执行响应
+     */
+    public ShellExecResult execAsync(String command, int timeout) {
+        ShellExecRequest request = new ShellExecRequest();
+        request.setCommand(command);
+        request.setAsyncMode(true);
+        request.setTimeout(timeout);
+        return execInternal(request, false);
+    }
+
+    /**
+     * 执行 Shell 请求并解析响应。
+     *
+     * @param request      Shell 执行请求
+     * @param cacheSession 是否把返回的 session_id 记为默认复用会话
+     * @return 完整执行响应；解析失败时返回 success=false 的响应对象
+     */
+    private ShellExecResult execInternal(ShellExecRequest request, boolean cacheSession) {
+        String rawResponse = http.postText("/v1/shell/exec", request);
         if (rawResponse != null && containsBinary(rawResponse)) {
             log.debug("AIO shell/exec 原始响应（二进制，已省略）: 长度={}", rawResponse.length());
         } else {
@@ -83,7 +148,7 @@ public class AioShellApi {
             result.setMessage("解析响应失败: " + truncate(rawResponse, 500));
         }
 
-        if (result.getData() != null && result.getData().getSessionId() != null) {
+        if (cacheSession && result.getData() != null && result.getData().getSessionId() != null) {
             shellSessionId = result.getData().getSessionId();
         }
         return result;

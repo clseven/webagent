@@ -15,6 +15,8 @@ Java clients under:
 | `AioSandboxApi.getContext` | `GET /v1/sandbox` | Reads the top-level sandbox context |
 | `AioSandboxApi.getNodePackages` | `GET /v1/sandbox/packages/nodejs` | Returns the response envelope |
 | `AioShellApi.exec` | `POST /v1/shell/exec` | Required `command`; optional reusable session `id` |
+| `AioShellApi.exec(command, id, timeout)` | `POST /v1/shell/exec` | Sends `timeout` and does not update the reusable shell session |
+| `AioShellApi.execAsync` | `POST /v1/shell/exec` | Sends `async_mode=true` for long-running processes such as MCP supergateway |
 | `AioShellApi.view` | `POST /v1/shell/view` | Required `id` |
 | `AioShellApi.waitFor` | `POST /v1/shell/wait` | Required `id`; optional `seconds` |
 | `AioShellApi.kill` | `POST /v1/shell/kill` | Required `id` |

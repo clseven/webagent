@@ -93,11 +93,15 @@ public class PlanAgent {
 
             当任务涉及安装或接入 MCP 时，目标客户端固定为当前 WebAgent，
             不需要询问 VS Code、Claude Desktop、Claude Code、Cursor 或其他外部客户端。
-            如果历史中助手已经展示了某个 MCP 的官方来源、URL、能力和限制，
+            如果历史中助手已经展示了某个 MCP 的官方来源、连接方式、能力和限制，
             当前用户回复“确认”“可以”“安装吧”等肯定表达，应视为对最近待安装 MCP 的明确确认；
             初始策略应让执行阶段直接完成当前 WebAgent 的接入和连接验证，不要再次询问目标环境。
-            MCP URL 必须来自官方配置中的精确 Streamable HTTP endpoint，不能把官网或 base URL
-            自动猜成 /mcp；连接失败后修正地址时应更新原 Server ID，不应另建一个重复配置。
+            远程 MCP URL 必须来自官方配置中的精确 Streamable HTTP endpoint，不能把官网或 base URL
+            自动猜成 /mcp；用户明确要求 stdio 或官方只提供 stdio 配置时，应使用用户 Sandbox 内的
+            shell transport。连接失败后修正配置时应更新原 Server ID，不应另建一个重复配置。
+            官方 filesystem stdio MCP 应使用 command=npx 和
+            args=["-y","@modelcontextprotocol/server-filesystem","/home/gem/workspace"]，
+            不要省略或留空 npm 包名。
 
             执行阶段会获得当前会话允许使用的工具，并根据环境反馈选择具体行动。
             规划阶段不需要知道工具名称、调用格式或参数，也不要输出任何工具调用协议。

@@ -42,13 +42,17 @@ agent:
     user-allow-http: ${MCP_USER_ALLOW_HTTP:false}
     # 默认禁止用户动态 MCP 访问环回、私网和链路本地地址，降低 SSRF 风险
     user-allow-private-network: ${MCP_USER_ALLOW_PRIVATE_NETWORK:false}
-    # MCP Server 列表，每项支持 stdio 和 streamable-http 两种 transport
+    # MCP Server 列表，系统级支持 stdio 和 streamable-http；用户动态配置额外支持 shell
     # 示例：
     #   servers:
     #     - id: filesystem
     #       type: stdio
     #       command: npx
     #       args: ["-y", "@modelcontextprotocol/server-filesystem", "D:/workspace"]
+    #     - id: sandbox-filesystem
+    #       type: shell
+    #       command: npx
+    #       args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/gem"]
     #     - id: github
     #       type: streamable-http
     #       url: https://example.com/mcp

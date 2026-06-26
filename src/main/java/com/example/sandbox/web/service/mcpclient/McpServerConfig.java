@@ -12,6 +12,7 @@ import java.util.Objects;
  * <p>type 决定走哪种 transport：</p>
  * <ul>
  *   <li>{@code stdio} — 启动子进程，通过 stdin/stdout 通信，适合本地工具（filesystem/git 等）</li>
+ *   <li>{@code shell} — 在用户 AIO Sandbox 内启动 stdio MCP，再通过 supergateway 转成 HTTP</li>
  *   <li>{@code streamable-http} — 通过 HTTP POST + 可选 SSE 流响应通信，适合远程托管的 MCP Server</li>
  * </ul>
  *
@@ -27,18 +28,18 @@ public class McpServerConfig {
     /** 是否启用该 Server，默认启用。 */
     private boolean enabled = true;
 
-    /** 传输方式：stdio | streamable-http。 */
+    /** 传输方式：stdio | shell | streamable-http。 */
     private String type;
 
     // ===== stdio =====
 
-    /** stdio 启动命令，例如 npx、python、node。 */
+    /** stdio 或 shell 启动命令，例如 npx、python、node。 */
     private String command;
 
-    /** stdio 命令参数。 */
+    /** stdio 或 shell 命令参数。 */
     private List<String> args = List.of();
 
-    /** stdio 子进程附加环境变量，会与系统继承环境合并。 */
+    /** stdio 子进程或 shell 命令附加环境变量。 */
     private Map<String, String> env = Map.of();
 
     // ===== streamable-http =====

@@ -37,6 +37,11 @@ public final class McpConnectionErrorClassifier {
      * @return 可安全展示的 MCP 操作错误
      */
     public static McpOperationError classify(Throwable error, McpConnectionStage stage) {
+        McpConnectionException connectionException = findConnectionException(error);
+        if (connectionException != null) {
+            return connectionException.getOperationError();
+        }
+
         String detail = collectDetail(error);
         Integer httpStatus = findHttpStatus(detail);
 
@@ -87,6 +92,25 @@ public final class McpConnectionErrorClassifier {
                     "目标地址未返回兼容的 MCP initialize 响应", detail);
         }
         return error(McpErrorCode.UNKNOWN, "MCP 连接初始化失败", detail);
+    }
+
+    /**
+     * 从 cause 链中查找已经携带结构化错误的连接异常。
+     *
+     * @param error 原始异常
+     * @return 找到的连接异常；不存在时返回 null
+     */
+    private static McpConnectionException findConnectionException(Throwable error) {
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth < 8) {
+            if (current instanceof McpConnectionException connectionException) {
+                return connectionException;
+            }
+            current = current.getCause();
+            depth++;
+        }
+        return null;
     }
 
     /**

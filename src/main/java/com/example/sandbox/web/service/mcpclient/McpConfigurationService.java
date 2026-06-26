@@ -179,7 +179,7 @@ public class McpConfigurationService {
             if (!replaced) {
                 for (int i = 0; i < servers.size(); i++) {
                     McpServerConfig current = servers.get(i);
-                    if (safeConfig.getUrl().equals(current.getUrl())) {
+                    if (safeConfig.getUrl() != null && safeConfig.getUrl().equals(current.getUrl())) {
                         reusedId = current.getId();
                         safeConfig.setId(reusedId);
                         servers.set(i, safeConfig);
@@ -297,6 +297,10 @@ public class McpConfigurationService {
         List<String> unchanged = new ArrayList<>();
         Map<String, McpOperationError> failed = new LinkedHashMap<>();
         Set<String> desiredEnabledIds = new HashSet<>();
+        AioClient aio = null;
+        if (configs.stream().anyMatch(this::isShellConfig)) {
+            aio = sandboxClientFactory.getAioClientByUserId(userId);
+        }
 
         for (McpServerConfig config : configs) {
             if (!config.isEnabled()) {
@@ -312,7 +316,18 @@ public class McpConfigurationService {
             }
 
             try {
-                manager.addOrReplaceUserServer(userId, config);
+                if (isShellConfig(config)) {
+                    if (aio == null) {
+                        failed.put(config.getId(), new McpOperationError(
+                                McpErrorCode.CONFIG_INVALID,
+                                "shell MCP 需要先创建并恢复用户 Sandbox",
+                                "无法根据 userId 获取 AIO Shell API"));
+                        continue;
+                    }
+                    manager.addOrReplaceUserServer(userId, config, aio.shell());
+                } else {
+                    manager.addOrReplaceUserServer(userId, config);
+                }
                 if (active == null) {
                     added.add(config.getId());
                 } else {
@@ -354,7 +369,7 @@ public class McpConfigurationService {
                 key.scope(),
                 config.getId(),
                 config.getType(),
-                config.getUrl(),
+                connectionInfo(config),
                 config.isEnabled(),
                 manager.isConnected(key),
                 toolNames,
@@ -538,5 +553,36 @@ public class McpConfigurationService {
         return message == null || message.isBlank()
                 ? error.getClass().getSimpleName()
                 : message;
+    }
+
+    /**
+     * 判断配置是否为用户 Sandbox 内运行的 shell transport。
+     *
+     * @param config MCP Server 配置
+     * @return true 表示该配置需要 AIO Shell API
+     */
+    private boolean isShellConfig(McpServerConfig config) {
+        return config != null && "shell".equalsIgnoreCase(config.getType());
+    }
+
+    /**
+     * 生成安全展示的连接信息。
+     *
+     * <p>HTTP Server 展示 URL；shell Server 只展示 command 和 args，
+     * 不展示 env，避免泄露用户可能手写的环境变量。</p>
+     *
+     * @param config MCP Server 配置
+     * @return 可展示的连接信息
+     */
+    private String connectionInfo(McpServerConfig config) {
+        if (!isShellConfig(config)) {
+            return config.getUrl();
+        }
+        List<String> parts = new ArrayList<>();
+        if (config.getCommand() != null && !config.getCommand().isBlank()) {
+            parts.add(config.getCommand());
+        }
+        parts.addAll(config.getArgs());
+        return String.join(" ", parts);
     }
 }

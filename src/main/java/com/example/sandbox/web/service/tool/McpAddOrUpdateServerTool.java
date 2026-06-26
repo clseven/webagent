@@ -7,15 +7,17 @@ import com.example.sandbox.web.service.mcpclient.McpManagementResultFormatter;
 import com.example.sandbox.web.service.mcpclient.McpServerConfig;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 用户远程 MCP 添加或更新工具。
+ * 用户私有 MCP 添加或更新工具。
  *
- * <p>第一版只接受无需 headers 的 Streamable HTTP MCP。模型必须先向用户展示来源、
- * URL 和预期能力，并取得明确确认后才能把 {@code confirmed} 设为 true。</p>
+ * <p>支持无需 headers 的远程 Streamable HTTP MCP，以及在用户 Sandbox 内运行的
+ * shell transport。模型必须先向用户展示来源、连接方式和预期能力，并取得明确确认后
+ * 才能把 {@code confirmed} 设为 true。</p>
  */
 @Component
 public class McpAddOrUpdateServerTool implements Tool {
@@ -27,7 +29,7 @@ public class McpAddOrUpdateServerTool implements Tool {
     private final McpConfigurationService configurationService;
 
     /**
-     * 创建用户远程 MCP 添加或更新工具。
+     * 创建用户私有 MCP 添加或更新工具。
      *
      * @param configurationService MCP 配置编排服务
      */
@@ -36,9 +38,9 @@ public class McpAddOrUpdateServerTool implements Tool {
     }
 
     /**
-     * 返回用户远程 MCP 添加或更新工具定义。
+     * 返回用户私有 MCP 添加或更新工具定义。
      *
-     * @return 带 Server ID、URL、启用状态和确认标记的工具定义
+     * @return 带 Server ID、transport 参数、启用状态和确认标记的工具定义
      */
     @Override
     public ToolDefinition getDefinition() {
@@ -47,9 +49,23 @@ public class McpAddOrUpdateServerTool implements Tool {
                 "type", "string",
                 "description", "小写 Server ID；连接失败后重试必须复用原 ID，不能另建重复配置"
         ));
+        properties.put("type", Map.of(
+                "type", "string",
+                "enum", List.of("streamable-http", "shell"),
+                "description", "transport 类型；省略时按 streamable-http 处理"
+        ));
         properties.put("url", Map.of(
                 "type", "string",
-                "description", "官方配置给出的精确 Streamable HTTP endpoint；不能填写官网或猜测 /mcp"
+                "description", "streamable-http 的精确 endpoint；shell 类型不要填写"
+        ));
+        properties.put("command", Map.of(
+                "type", "string",
+                "description", "shell 类型的 stdio 启动命令，例如 npx、python、node"
+        ));
+        properties.put("args", Map.of(
+                "type", "array",
+                "items", Map.of("type", "string"),
+                "description", "shell 类型的命令参数，不允许空白项；filesystem 例如 [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/home/gem/workspace\"]"
         ));
         properties.put("enabled", Map.of(
                 "type", "boolean",
@@ -62,26 +78,29 @@ public class McpAddOrUpdateServerTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "把远程 MCP Server 添加到当前 WebAgent。若本轮尚未核实配置，必须先搜索官方来源，"
-                        + "向用户展示 URL、能力和限制并获得确认；若对话历史已经完成核实，且用户当前"
+                "把用户私有 MCP Server 添加到当前 WebAgent。远程服务使用 streamable-http；"
+                        + "需要在用户 Sandbox 内运行 stdio MCP 时使用 shell。若本轮尚未核实配置，"
+                        + "必须先搜索或读取官方来源，向用户展示连接方式、能力和限制并获得确认；"
+                        + "若对话历史已经完成核实，且用户当前"
                         + "回复“确认”“可以”“安装吧”等肯定表达，应直接使用历史中的配置调用本工具，"
-                        + "不要再询问 VS Code、Claude Desktop 等目标环境。URL 必须是精确 endpoint，"
-                        + "重试时复用原 server_id；相同 endpoint 会自动复用已有配置。"
-                        + "暂不支持 stdio、headers 或 Token。",
+                        + "不要再询问 VS Code、Claude Desktop 等目标环境。HTTP URL 必须是精确 endpoint，"
+                        + "shell command/args 会在用户 Sandbox 内运行，不会在后端主机运行；"
+                        + "重试时复用原 server_id；相同 HTTP endpoint 会自动复用已有配置。"
+                        + "暂不支持 headers、Token 或 API Key。",
                 Map.of(
                         "type", "object",
                         "properties", properties,
-                        "required", List.of("server_id", "url", "confirmed")
+                        "required", List.of("server_id", "confirmed")
                 ),
                 "AIO"
         );
     }
 
     /**
-     * 保存配置并立即尝试连接远程 MCP。
+     * 保存配置并立即尝试连接 MCP。
      *
      * @param sessionId 当前会话 ID
-     * @param arguments Server ID、URL、启用状态和确认标记
+     * @param arguments Server ID、transport 参数、启用状态和确认标记
      * @return 配置写入与连接结果
      */
     @Override
@@ -91,16 +110,45 @@ public class McpAddOrUpdateServerTool implements Tool {
         }
 
         String serverId = stringValue(arguments.get("server_id"));
-        String url = stringValue(arguments.get("url"));
-        if (serverId == null || url == null) {
-            return "错误：server_id 和 url 不能为空。";
+        if (serverId == null) {
+            return "错误：server_id 不能为空。";
         }
 
+        String type = stringValue(arguments.get("type"));
+        if (type == null) {
+            type = "streamable-http";
+        }
         McpServerConfig config = new McpServerConfig();
         config.setId(serverId);
-        config.setType("streamable-http");
-        config.setUrl(url);
         config.setEnabled(!Boolean.FALSE.equals(arguments.get("enabled")));
+        if ("shell".equalsIgnoreCase(type)) {
+            String command = stringValue(arguments.get("command"));
+            if (command == null) {
+                return "错误：shell 类型必须提供 command。";
+            }
+            config.setType("shell");
+            config.setCommand(command);
+            List<String> args;
+            try {
+                args = stringList(arguments.get("args"));
+            } catch (IllegalArgumentException e) {
+                return "错误：" + e.getMessage();
+            }
+            String validationError = validateShellArgs(serverId, command, args);
+            if (validationError != null) {
+                return validationError;
+            }
+            config.setArgs(args);
+        } else if ("streamable-http".equalsIgnoreCase(type) || "http".equalsIgnoreCase(type)) {
+            String url = stringValue(arguments.get("url"));
+            if (url == null) {
+                return "错误：streamable-http 类型必须提供 url。";
+            }
+            config.setType("streamable-http");
+            config.setUrl(url);
+        } else {
+            return "错误：type 只能是 streamable-http 或 shell。";
+        }
         return McpManagementResultFormatter.formatReload(
                 configurationService.addOrReplaceUserServer(sessionId, config));
     }
@@ -117,5 +165,46 @@ public class McpAddOrUpdateServerTool implements Tool {
         }
         String text = value.toString().trim();
         return text.isEmpty() ? null : text;
+    }
+
+    /**
+     * 将参数转换为字符串列表。
+     *
+     * @param value 原始参数
+     * @return 去除首尾空白后的字符串列表
+     * @throws IllegalArgumentException 参数列表包含空白项时抛出，避免保存不可启动的 shell 配置
+     */
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        List<String> result = new ArrayList<>();
+        for (int i = 0; i < values.size(); i++) {
+            String item = stringValue(values.get(i));
+            if (item == null) {
+                throw new IllegalArgumentException("shell args 第 " + (i + 1)
+                        + " 项不能为空。filesystem MCP 应使用 command=npx，args=[\"-y\",\"@modelcontextprotocol/server-filesystem\",\"/home/gem/workspace\"]。");
+            }
+            result.add(item);
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * 校验 shell MCP 参数中容易由模型遗漏的关键项。
+     *
+     * @param serverId Server ID
+     * @param command  启动命令
+     * @param args     启动参数
+     * @return 错误文本；参数可用时返回 null
+     */
+    private String validateShellArgs(String serverId, String command, List<String> args) {
+        boolean filesystemByNpx = "filesystem".equalsIgnoreCase(serverId)
+                && "npx".equalsIgnoreCase(command);
+        if (filesystemByNpx && !args.contains("@modelcontextprotocol/server-filesystem")) {
+            return "错误：filesystem MCP 缺少 npm 包名 @modelcontextprotocol/server-filesystem。"
+                    + "请使用 command=npx，args=[\"-y\",\"@modelcontextprotocol/server-filesystem\",\"/home/gem/workspace\"]。";
+        }
+        return null;
     }
 }

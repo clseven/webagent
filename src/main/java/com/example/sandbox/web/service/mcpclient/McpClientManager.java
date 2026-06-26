@@ -1,5 +1,6 @@
 package com.example.sandbox.web.service.mcpclient;
 
+import com.example.sandbox.aio.shell.AioShellApi;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
@@ -16,6 +17,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.stereotype.Component;
 
 import java.net.http.HttpRequest;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -63,6 +65,9 @@ public class McpClientManager {
     /** Client 键到最近一次连接错误的映射。 */
     private final ConcurrentMap<McpClientKey, McpOperationError> lastErrors =
             new ConcurrentHashMap<>();
+
+    /** shell transport 首次通过 npx 下载依赖可能较慢，初始化至少保留 90 秒。 */
+    private static final Duration MIN_SHELL_INITIALIZATION_TIMEOUT = Duration.ofSeconds(90);
 
     /**
      * 创建 MCP Client 管理器。
@@ -152,6 +157,23 @@ public class McpClientManager {
     public void addOrReplaceUserServer(Long userId, McpServerConfig config) {
         requireEnabled();
         addOrReplace(McpClientKey.user(userId, requireServerId(config)), config);
+    }
+
+    /**
+     * 新增或替换用户级沙箱 shell MCP Server。
+     *
+     * <p>该入口只供用户级 {@code shell} transport 使用。stdio 命令在用户 Sandbox 内运行，
+     * 后端只通过 AIO Shell API 与 supergateway 通信，不在 WebAgent 主机执行用户命令。</p>
+     *
+     * @param userId   用户 ID
+     * @param config   用户 MCP Server 配置
+     * @param shellApi 当前用户 Sandbox 的 Shell API
+     * @throws IllegalArgumentException 配置缺少必要字段或 transport 不受支持时抛出
+     * @throws IllegalStateException    连接、初始化或工具发现失败时抛出
+     */
+    public void addOrReplaceUserServer(Long userId, McpServerConfig config, AioShellApi shellApi) {
+        requireEnabled();
+        addOrReplace(McpClientKey.user(userId, requireServerId(config)), config, shellApi);
     }
 
     /**
@@ -308,14 +330,25 @@ public class McpClientManager {
      * @param config MCP Server 配置
      */
     private void addOrReplace(McpClientKey key, McpServerConfig config) {
+        addOrReplace(key, config, null);
+    }
+
+    /**
+     * 创建新连接并在成功后替换旧连接。
+     *
+     * @param key      Client 键
+     * @param config   MCP Server 配置
+     * @param shellApi shell transport 使用的 AIO Shell API；其他 transport 为空
+     */
+    private void addOrReplace(McpClientKey key, McpServerConfig config, AioShellApi shellApi) {
         String generation = UUID.randomUUID().toString();
         McpSyncClient replacement = null;
         McpConnectionStage stage = McpConnectionStage.INITIALIZE;
         try {
-            McpClientTransport transport = createTransport(config);
+            McpClientTransport transport = createTransport(config, shellApi);
             replacement = McpClient.sync(transport)
                     .requestTimeout(properties.getRequestTimeout())
-                    .initializationTimeout(properties.getInitializationTimeout())
+                    .initializationTimeout(initializationTimeout(config))
                     .toolsChangeConsumer(tools -> {
                         if (generation.equals(activeGenerations.get(key))) {
                             toolCache.put(key, List.copyOf(tools));
@@ -338,7 +371,9 @@ public class McpClientManager {
             log.info("MCP server 已就绪: server={}, type={}, tools={}",
                     key.displayName(), config.getType(), tools.tools().size());
         } catch (Exception e) {
-            McpOperationError error = McpConnectionErrorClassifier.classify(e, stage);
+            McpOperationError error = e instanceof McpConnectionException connectionException
+                    ? connectionException.getOperationError()
+                    : McpConnectionErrorClassifier.classify(e, stage);
             lastErrors.put(key, error);
             closeQuietly(key, replacement);
             log.warn("MCP server 连接失败: server={}, code={}, 原因={}",
@@ -370,10 +405,22 @@ public class McpClientManager {
      * @return 尚未初始化的 transport
      */
     private McpClientTransport createTransport(McpServerConfig config) {
+        return createTransport(config, null);
+    }
+
+    /**
+     * 根据配置创建 MCP transport。
+     *
+     * @param config   Server 配置
+     * @param shellApi shell transport 使用的 AIO Shell API；其他 transport 为空
+     * @return 尚未初始化的 transport
+     */
+    private McpClientTransport createTransport(McpServerConfig config, AioShellApi shellApi) {
         String type = config.getType() != null ? config.getType().trim().toLowerCase() : "";
         return switch (type) {
             case "stdio" -> createStdioTransport(config);
             case "streamable-http", "http" -> createHttpTransport(config);
+            case "shell" -> createShellTransport(config, shellApi);
             default -> throw new IllegalArgumentException("不支持的 MCP transport 类型: " + config.getType());
         };
     }
@@ -441,6 +488,42 @@ public class McpClientManager {
             builder.requestBuilder(requestBuilder);
         }
         return builder.build();
+    }
+
+    /**
+     * 创建用户 Sandbox 内 stdio MCP 的 shell transport。
+     *
+     * @param config   shell Server 配置
+     * @param shellApi 当前用户 Sandbox 的 Shell API
+     * @return AIO Shell transport
+     */
+    private McpClientTransport createShellTransport(McpServerConfig config, AioShellApi shellApi) {
+        if (shellApi == null) {
+            throw new IllegalArgumentException("shell MCP server 需要当前用户 Sandbox Shell API: " + config.getId());
+        }
+        if (config.getCommand() == null || config.getCommand().isBlank()) {
+            throw new IllegalArgumentException("shell MCP server 必须配置 command: " + config.getId());
+        }
+        int port = AioShellTransport.allocatePort(shellApi);
+        return new AioShellTransport(shellApi, config, port);
+    }
+
+    /**
+     * 获取当前 Server 的 initialize 超时。
+     *
+     * <p>shell transport 首次启动时可能需要通过 npx 下载 supergateway 或 MCP server，
+     * 因此会把初始化超时下限提高到 90 秒；普通 stdio 和 HTTP transport 使用全局配置。</p>
+     *
+     * @param config MCP Server 配置
+     * @return initialize 超时
+     */
+    private Duration initializationTimeout(McpServerConfig config) {
+        String type = config.getType() != null ? config.getType().trim().toLowerCase() : "";
+        if ("shell".equals(type)
+                && properties.getInitializationTimeout().compareTo(MIN_SHELL_INITIALIZATION_TIMEOUT) < 0) {
+            return MIN_SHELL_INITIALIZATION_TIMEOUT;
+        }
+        return properties.getInitializationTimeout();
     }
 
     /**

@@ -33,6 +33,14 @@ public enum McpErrorCode {
     PROTOCOL_ERROR,
     /** initialize 成功后获取工具列表失败。 */
     TOOLS_LIST_FAILED,
+    /** 沙箱内 Shell 命令执行失败。 */
+    SHELL_EXEC_FAILED,
+    /** 沙箱内 supergateway 启动失败或未按时监听端口。 */
+    SUPERGATEWAY_START_FAILED,
+    /** MCP SSE 或 JSON-RPC 响应解析失败。 */
+    SSE_PARSE_ERROR,
+    /** 沙箱内端口分配失败。 */
+    PORT_ALLOCATION_FAILED,
     /** 无法进一步分类的 MCP 错误。 */
     UNKNOWN
 }
