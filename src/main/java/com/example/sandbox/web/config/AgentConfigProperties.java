@@ -58,11 +58,14 @@ public class AgentConfigProperties {
         @Setter
         @Getter
         public static class Executor {
-            private String apiUrl = "https://api.deepseek.com";
+            private String apiUrl = "https://apihub.agnes-ai.com/v1";
             private String apiKey = "";
-            private String model = "deepseek-v4-flash";
+            private String model = "agnes-2.0-flash";
 
-            /** 是否为执行器模型启用思考模式，默认关闭以兼容多轮工具调用。 */
+            /**
+             * 是否为执行器模型启用思考模式（仅 DeepSeek 专有参数，切换回 DeepSeek 时使用）。
+             * Agnes 不使用此字段。
+             */
             private boolean thinkingEnabled = false;
 
         }

@@ -29,7 +29,7 @@ import java.util.Map;
  * @author example
  * @date 2026/05/14
  */
-@Service("executorLlm")
+// @Service("executorLlm") — 已由 GenericLlmServiceImpl 接管，保留此类供需要 thinking 参数时手动切换
 public class DeepSeekLlmServiceImpl extends BaseLlmServiceImpl {
 
     /** 是否在 DeepSeek 请求中启用思考模式。 */

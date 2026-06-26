@@ -7,6 +7,8 @@ server:
 spring:
   application:
     name: sandbox-agent
+  profiles:
+    active: agnes
 
   servlet:
     multipart:
@@ -111,11 +113,6 @@ agent:
       api-url: ${PLANNER_LLM_URL:https://open.bigmodel.cn/api/paas/v4}
       api-key: ${PLANNER_LLM_KEY:}
       model: ${PLANNER_LLM_MODEL:glm-4.7}
-    executor:
-      api-url: ${EXECUTOR_LLM_URL:https://api.deepseek.com}
-      api-key: ${EXECUTOR_LLM_KEY:}
-      model: ${EXECUTOR_LLM_MODEL:deepseek-v4-flash}
-      thinking-enabled: ${EXECUTOR_LLM_THINKING_ENABLED:false}
 
 rag:
   preview:
@@ -165,3 +162,28 @@ baidu:
 logging:
   level:
     com.example.sandbox: DEBUG
+
+---
+spring:
+  config:
+    activate:
+      on-profile: agnes
+agent:
+  llm:
+    executor:
+      api-url: https://apihub.agnes-ai.com/v1
+      api-key: ${AGNES_API_KEY:}
+      model: agnes-2.0-flash
+
+---
+spring:
+  config:
+    activate:
+      on-profile: deepseek
+agent:
+  llm:
+    executor:
+      api-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: deepseek-v4-flash
+      thinking-enabled: false

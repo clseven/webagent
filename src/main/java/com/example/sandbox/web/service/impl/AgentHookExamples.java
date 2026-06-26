@@ -75,6 +75,7 @@ public final class AgentHookExamples {
             if (result != null && result.length() > 50_000) {
                 log.warn("[Hook] 大输出: {} 返回 {} 字符", toolCall.name(), result.length());
             }
+            return null;
         };
     }
 

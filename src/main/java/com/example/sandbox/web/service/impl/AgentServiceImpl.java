@@ -22,6 +22,7 @@ import com.example.sandbox.web.config.SubAgentConfigProperties;
 import com.example.sandbox.web.service.tool.WebSearchTool;
 import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
 import com.example.sandbox.web.service.tool.RunSubagentTool;
+import com.example.sandbox.web.service.tool.ImageBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -120,6 +121,10 @@ public class AgentServiceImpl implements AgentService {
     /** 后台任务管理器（统一调度慢操作后台执行） */
     @Autowired
     private BackgroundTaskManager backgroundTaskManager;
+
+    /** 图片字节缓冲区（view_image 工具与 PostToolUseHook 之间的数据桥梁） */
+    @Autowired
+    private ImageBuffer imageBuffer;
 
     /** 子代理配置（控制 run_subagent 工具的注册和行为） */
     @Autowired
@@ -411,6 +416,7 @@ public class AgentServiceImpl implements AgentService {
         ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
                 null, null, backgroundTaskManager);
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
+        reactAgent.registerPostToolUseHook(viewImageHook());
         // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
         wireSubAgentParent(reactAgent, filteredTools);
         AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
@@ -680,6 +686,7 @@ public class AgentServiceImpl implements AgentService {
                         conversationService, sessionId);
                 reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
                 reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
+                reactAgent.registerPostToolUseHook(viewImageHook());
                 // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
                 wireSubAgentParent(reactAgent, filteredTools);
 
@@ -852,5 +859,30 @@ public class AgentServiceImpl implements AgentService {
                 return;
             }
         }
+    }
+
+    /**
+     * 构建 view_image 工具的 PostToolUseHook。
+     *
+     * <p>当 LLM 调用 {@code view_image} 工具后，从 {@link ImageBuffer} 取出图片字节，
+     * 构造携带图片数据的多模态 user 消息追加到对话历史，使下一轮 LLM 调用能直接看到图片。</p>
+     */
+    private ReactAgent.PostToolUseHook viewImageHook() {
+        return (toolCall, result, sessionId) -> {
+            if (!"view_image".equals(toolCall.name())) {
+                return null;
+            }
+            ImageBuffer.Entry entry = imageBuffer.take(sessionId);
+            if (entry == null) {
+                log.warn("view_image 工具已执行，但 ImageBuffer 中无图片数据，sessionId={}", sessionId);
+                return null;
+            }
+            log.info("PostToolUseHook 注入图片: path={} size={} bytes", entry.path(), entry.bytes().length);
+            return com.example.sandbox.web.model.entity.ChatMessage.userMessageWithImage(
+                    "(图片：" + entry.path() + ")",
+                    entry.bytes(),
+                    entry.mimeType()
+            );
+        };
     }
 }

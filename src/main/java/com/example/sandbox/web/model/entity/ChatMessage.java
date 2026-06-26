@@ -58,9 +58,18 @@ public class ChatMessage {
      */
     private final List<Map<String, Object>> events;
 
+    /**
+     * 多模态内容块（仅内存使用，不持久化）。
+     *
+     * <p>非 null 时对应 OpenAI vision 格式的 content 数组，用于携带图片数据。
+     * 格式与 {@link com.example.sandbox.web.model.llm.LlmMessage#getContentParts()} 一致。
+     * 从数据库恢复的消息此字段始终为 null（图片内容是一次性的，不需要重放）。</p>
+     */
+    private final List<Map<String, Object>> contentParts;
+
     private ChatMessage(String role, String content, String reasoning, Long timestamp,
                         List<FileAttachment> files, String toolCallId, List<LlmToolCall> toolCalls,
-                        List<Map<String, Object>> events) {
+                        List<Map<String, Object>> events, List<Map<String, Object>> contentParts) {
         this.role = role;
         this.content = content;
         this.reasoning = reasoning;
@@ -69,6 +78,7 @@ public class ChatMessage {
         this.toolCallId = toolCallId;
         this.toolCalls = toolCalls != null ? List.copyOf(toolCalls) : List.of();
         this.events = events != null ? List.copyOf(events) : List.of();
+        this.contentParts = contentParts != null ? List.copyOf(contentParts) : null;
     }
 
     /**
@@ -92,42 +102,64 @@ public class ChatMessage {
      */
     public static ChatMessage restore(String role, String content, String reasoning, Long timestamp,
                                       List<Map<String, Object>> events) {
-        return new ChatMessage(role, content, reasoning, timestamp, null, null, null, events);
+        return new ChatMessage(role, content, reasoning, timestamp, null, null, null, events, null);
     }
 
     /**
      * 创建用户消息
      */
     public static ChatMessage userMessage(String content) {
-        return new ChatMessage("user", content, null, Instant.now().toEpochMilli(), null, null, null, null);
+        return new ChatMessage("user", content, null, Instant.now().toEpochMilli(), null, null, null, null, null);
+    }
+
+    /**
+     * 创建携带图片的用户消息（多模态，仅内存使用）。
+     *
+     * @param text       文字说明，可为空字符串
+     * @param imageBytes 图片原始字节
+     * @param mimeType   图片 MIME 类型，如 "image/png"
+     * @return 多模态用户消息
+     */
+    public static ChatMessage userMessageWithImage(String text, byte[] imageBytes, String mimeType) {
+        String b64 = java.util.Base64.getEncoder().encodeToString(imageBytes);
+        List<Map<String, Object>> parts = new java.util.ArrayList<>();
+        if (text != null && !text.isBlank()) {
+            parts.add(Map.of("type", "text", "text", text));
+        }
+        parts.add(Map.of(
+                "type", "image_url",
+                "image_url", Map.of("url", "data:" + mimeType + ";base64," + b64)
+        ));
+        return new ChatMessage("user", text, null, Instant.now().toEpochMilli(),
+                null, null, null, null, parts);
     }
 
     /**
      * 创建助手消息
      */
     public static ChatMessage assistantMessage(String content) {
-        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), null, null, null, null);
+        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), null, null, null, null, null);
     }
 
     /**
      * 创建助手消息（带思考链）
      */
     public static ChatMessage assistantMessage(String content, String reasoning) {
-        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), null, null, null, null);
+        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), null, null, null, null, null);
     }
 
     /**
      * 创建助手消息（带文件附件）
      */
     public static ChatMessage assistantMessage(String content, List<FileAttachment> files) {
-        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), files, null, null, null);
+        return new ChatMessage("assistant", content, null, Instant.now().toEpochMilli(), files, null, null, null, null);
     }
 
     /**
      * 创建助手消息（带思考链和文件附件）
      */
     public static ChatMessage assistantMessage(String content, String reasoning, List<FileAttachment> files) {
-        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), files, null, null, null);
+        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(), files, null, null, null, null);
     }
 
     /**
@@ -135,14 +167,14 @@ public class ChatMessage {
      */
     public static ChatMessage assistantToolCallMessage(LlmToolCall toolCall) {
         return new ChatMessage("assistant", null, null, Instant.now().toEpochMilli(),
-                null, null, List.of(toolCall), null);
+                null, null, List.of(toolCall), null, null);
     }
 
     /**
      * 创建系统消息
      */
     public static ChatMessage systemMessage(String content) {
-        return new ChatMessage("system", content, null, Instant.now().toEpochMilli(), null, null, null, null);
+        return new ChatMessage("system", content, null, Instant.now().toEpochMilli(), null, null, null, null, null);
     }
 
     /**
@@ -152,7 +184,7 @@ public class ChatMessage {
      * @param content    工具执行结果
      */
     public static ChatMessage toolMessage(String toolCallId, String content) {
-        return new ChatMessage("tool", content, null, Instant.now().toEpochMilli(), null, toolCallId, null, null);
+        return new ChatMessage("tool", content, null, Instant.now().toEpochMilli(), null, toolCallId, null, null, null);
     }
 
     /**

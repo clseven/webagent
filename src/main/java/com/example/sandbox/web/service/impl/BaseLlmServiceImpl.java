@@ -262,6 +262,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                     .reasoningContent(msg.getReasoning())
                     .toolCalls(msg.getToolCalls())
                     .toolCallId(msg.getToolCallId())
+                    .contentParts(msg.getContentParts())
                     .build());
         }
 

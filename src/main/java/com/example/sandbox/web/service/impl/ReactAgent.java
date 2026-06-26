@@ -234,11 +234,14 @@ public class ReactAgent {
     }
 
     /**
-     * 工具执行后 Hook：接收工具调用、执行结果和会话 ID，无返回值（副作用型）。
+     * 工具执行后 Hook：接收工具调用、执行结果和会话 ID。
+     *
+     * <p>返回 null 表示无额外消息；返回非 null 的 {@link ChatMessage} 则会被追加到对话历史，
+     * 在下一轮 LLM 调用时可见。适用于需要向 LLM 注入额外上下文的场景，例如图片数据注入。</p>
      */
     @FunctionalInterface
     public interface PostToolUseHook {
-        void run(LlmToolCall toolCall, String result, String sessionId);
+        ChatMessage run(LlmToolCall toolCall, String result, String sessionId);
     }
 
     /**
@@ -296,15 +299,20 @@ public class ReactAgent {
     }
 
     /**
-     * 触发 PostToolUse 事件：遍历所有注册的回调（副作用型，不改变执行结果）。
+     * 触发 PostToolUse 事件：遍历所有注册的回调。
+     *
+     * <p>任一回调返回非 null 的 {@link ChatMessage} 时立即返回该消息（短路）；
+     * 全部返回 null 则返回 null 表示无需注入额外消息。</p>
      */
     @SuppressWarnings("unchecked")
-    private void triggerPostToolUseHooks(LlmToolCall toolCall, String result, String sessionId) {
+    private ChatMessage triggerPostToolUseHooks(LlmToolCall toolCall, String result, String sessionId) {
         List<Object> callbacks = hooks.get("PostToolUse");
-        if (callbacks == null) return;
+        if (callbacks == null) return null;
         for (Object cb : callbacks) {
-            ((PostToolUseHook) cb).run(toolCall, result, sessionId);
+            ChatMessage extra = ((PostToolUseHook) cb).run(toolCall, result, sessionId);
+            if (extra != null) return extra;
         }
+        return null;
     }
 
     /**
@@ -595,9 +603,10 @@ public class ReactAgent {
 
                 long durationMs = System.currentTimeMillis() - startTime;
 
-                // 🪝 PostToolUse Hook：仅在实际执行时触发（副作用型）
+                // 🪝 PostToolUse Hook：仅在实际执行时触发
+                ChatMessage hookInjection = null;
                 if (blocked == null) {
-                    triggerPostToolUseHooks(toolCall, observation, sessionId);
+                    hookInjection = triggerPostToolUseHooks(toolCall, observation, sessionId);
                 }
 
                 log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
@@ -614,6 +623,12 @@ public class ReactAgent {
                 // 追加到消息历史（原生 tool calling 协议）
                 messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
                 messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
+
+                // Hook 注入额外消息（如图片数据）
+                if (hookInjection != null) {
+                    messages.add(hookInjection);
+                    log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
+                }
             } else {
                 String finalContent = response.getContent();
                 if (finalContent != null && !finalContent.isEmpty()) {
@@ -1093,8 +1108,9 @@ public class ReactAgent {
                         long durationMs = System.currentTimeMillis() - startTime;
 
                         // 🪝 PostToolUse Hook：仅在实际执行时触发
+                        ChatMessage hookInjection = null;
                         if (blocked == null) {
-                            triggerPostToolUseHooks(toolCall, observation, sessionId);
+                            hookInjection = triggerPostToolUseHooks(toolCall, observation, sessionId);
                         }
 
                         // 发送工具执行结果事件
@@ -1113,6 +1129,12 @@ public class ReactAgent {
                         // 追加到消息历史（原生 tool calling 协议）
                         messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
                         messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
+
+                        // Hook 注入额外消息（如图片数据）
+                        if (hookInjection != null) {
+                            messages.add(hookInjection);
+                            log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
+                        }
 
                     } else {
                         // LLM 给出最终答案
