@@ -58,7 +58,8 @@ public class ConvertToMarkdownTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "将 URI（网页或文件）转换为 Markdown 格式。适用于：分析网页内容、提取文章正文、转换文档为可读格式。",
+                "直接抓取网页或文档内容并转换为 Markdown。把 URL 给它，一步拿到干净的正文，无需浏览器、无需下载。"
+                        + "适用于：抓取网页文章、API 文档、技术博客、PDF/Word 文档等。自动去除广告、导航、侧栏等噪音，返回纯净可读的 Markdown。",
                 parameters,
                 "AIO"
         );

@@ -26,6 +26,7 @@ application-secret.yaml
 
 ### AI assistant local state ###
 /.codex-remote-attachments/
+/.codebase-memory/
 /.superpowers/
 /.agents/skills/
 /.claude/skills/

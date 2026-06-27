@@ -34,7 +34,7 @@ import java.util.Map;
  * <h3>沙箱限制</h3>
  * <p>此工具仅 AIO 沙箱可用（sandboxType=AIO）。</p>
  */
-@Component
+// @Component — 暂时禁用，避免模型混淆 bg_id 和 shell_session_id
 public class ShellWaitTool implements Tool {
 
     private static final Logger log = LoggerFactory.getLogger(ShellWaitTool.class);

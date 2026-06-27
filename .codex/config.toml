@@ -1,0 +1,5 @@
+[mcp_servers.codebase_memory]
+command = "C:\\Users\\16619\\AppData\\Roaming\\npm\\node_modules\\codebase-memory-mcp\\bin\\codebase-memory-mcp.exe"
+args = []
+startup_timeout_sec = 120
+
