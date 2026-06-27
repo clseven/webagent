@@ -14,14 +14,14 @@ import java.util.List;
 public interface SkillService {
 
     /**
-     * 列出所有技能（仅元数据，不加载 content）
+     * 列出本地仓库中的所有技能（实时扫描文件系统，无缓存）。
      *
      * @return 技能列表
      */
     List<Skill> listSkills();
 
     /**
-     * 获取技能详情（含完整内容）
+     * 从本地仓库获取单个技能详情（实时读文件系统，无缓存）。
      *
      * @param skillId 技能 ID
      * @return 技能详情
@@ -30,14 +30,15 @@ public interface SkillService {
     Skill getSkill(String skillId) throws IOException;
 
     /**
-     * 从目录加载技能（扫描 SKILL.md 文件）
+     * 从目录加载技能（扫描 SKILL.md 文件），直接返回结果不写缓存。
      *
      * @param directory 目录路径
+     * @return 加载到的技能列表
      */
-    void loadSkillsFromDirectory(String directory);
+    List<Skill> loadSkillsFromDirectory(String directory);
 
     /**
-     * 设置技能根目录
+     * 设置技能根目录（仅保存路径，不做缓存预热）。
      *
      * @param rootPath 技能根目录路径
      */

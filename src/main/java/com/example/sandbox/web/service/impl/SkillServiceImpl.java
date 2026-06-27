@@ -19,17 +19,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 技能管理服务实现。
  *
- * <p>本地仓库扫描是<b>种子来源</b>：启动后由前端配置根目录，扫到的 skill 进入 {@link #skillCache}，
- * 用于 {@code FileSyncService.syncSkill} 把文件推到沙箱 {@code /home/gem/skills/<id>/}。</p>
+ * <p>本地仓库扫描是<b>种子来源</b>：启动后由前端配置根目录，扫到的 skill 用于
+ * {@code FileSyncService.syncSkill} 把文件推到沙箱 {@code /home/gem/skills/<id>/}。</p>
  *
- * <p>运行期权威发现走 {@link #discoverFromSandbox(String)}：单次 shell 列目录 + 多次 AIO file/read，
- * 解析 frontmatter 后返回 {@link Skill}（{@code localPath} 为 null）。融合视图由调用方（Controller / Tool）
- * 把本地仓库与沙箱发现的结果按 {@link Skill.Source} 标记后下发。</p>
+ * <p>运行期 skill 发现走 {@link #discoverFromSandbox(String)}：单次 shell 列目录 + 多次 AIO file/read，
+ * 解析 frontmatter 后返回 {@link Skill}。Agent 执行链路统一使用此方法，无缓存，每次实时读取。</p>
+ *
+ * <p>本地仓库查询（{@link #listSkills()} / {@link #getSkill(String)}）每次实时读本地文件系统，无缓存。</p>
  *
  * @author example
  * @date 2026/05/14
@@ -42,9 +42,6 @@ public class SkillServiceImpl implements SkillService {
     /** 沙箱发现允许的子目录深度：{@code /home/gem/skills/<id>/SKILL.md}，深度 2。 */
     private static final int SANDBOX_FIND_MAXDEPTH = 2;
 
-    /** 本地仓库技能缓存：id -> Skill。仅由前端"设置根目录"流程填充。 */
-    private final Map<String, Skill> skillCache = new ConcurrentHashMap<>();
-
     /** 沙箱客户端工厂；用 @Lazy 打破与 {@code SandboxServiceImpl} 的潜在循环依赖。 */
     @Autowired
     @Lazy
@@ -55,54 +52,71 @@ public class SkillServiceImpl implements SkillService {
     @Lazy
     private SandboxService sandboxService;
 
-    /** 启动时不自动加载本地仓库，等待前端用户设置根目录。 */
-    // @PostConstruct intentionally not used; root path is user-driven.
+    /** 本地仓库根路径，由前端 set-root 接口设置。 */
+    private volatile String skillRootPath;
 
     @Override
     public List<Skill> listSkills() {
-        return new ArrayList<>(skillCache.values());
+        if (skillRootPath == null || skillRootPath.isBlank()) {
+            return List.of();
+        }
+        return loadSkillsFromDirectory(skillRootPath);
     }
 
     @Override
     public Skill getSkill(String skillId) throws IOException {
-        Skill skill = skillCache.get(skillId);
-        if (skill == null) {
-            log.warn("技能 {} 未找到（缓存中无此技能）", skillId);
+        if (skillRootPath == null || skillRootPath.isBlank()) {
             throw new SkillNotFoundException(skillId);
         }
-        return skill;
+        Path skillDir = Path.of(skillRootPath, skillId);
+        if (!Files.exists(skillDir)) {
+            throw new SkillNotFoundException(skillId);
+        }
+        Path skillFile = skillDir.resolve("SKILL.md");
+        if (!Files.exists(skillFile)) {
+            throw new SkillNotFoundException(skillId);
+        }
+        String content = Files.readString(skillFile);
+        return parseSkillMd(skillId, content, skillDir);
     }
 
     @Override
-    public void loadSkillsFromDirectory(String directory) {
-        log.info("开始加载本地技能仓库: {}", directory);
+    public List<Skill> loadSkillsFromDirectory(String directory) {
+        log.info("扫描本地技能仓库: {}", directory);
+        List<Skill> result = new ArrayList<>();
         try {
             Path skillDir = Path.of(directory);
             if (!Files.exists(skillDir)) {
                 log.warn("本地技能仓库不存在: {}", directory);
-                return;
+                return result;
             }
 
-            int loadedCount = 0;
-            List<String> loadedSkillIds = new ArrayList<>();
             for (Path path : Files.list(skillDir).filter(Files::isDirectory).toList()) {
-                if (loadSkillFromPath(path)) {
-                    loadedCount++;
-                    loadedSkillIds.add(path.getFileName().toString());
+                Path skillFile = path.resolve("SKILL.md");
+                if (!Files.exists(skillFile)) {
+                    continue;
+                }
+                try {
+                    String content = Files.readString(skillFile);
+                    String skillId = path.getFileName().toString();
+                    Skill skill = parseSkillMd(skillId, content, path);
+                    result.add(skill);
+                } catch (IOException e) {
+                    log.error("读取技能文件失败: {}", path, e);
                 }
             }
 
-            log.info("本地技能仓库加载完成: {} 个 - {}", loadedCount, loadedSkillIds);
+            log.info("本地技能仓库扫描完成: {} 个", result.size());
         } catch (IOException e) {
-            log.error("加载本地技能仓库失败: {}", directory, e);
+            log.error("扫描本地技能仓库失败: {}", directory, e);
         }
+        return result;
     }
 
     @Override
     public void setSkillRootPath(String rootPath) {
-        // 切换根目录时清空旧缓存，避免上一次的本地 skill 残留
-        skillCache.clear();
-        loadSkillsFromDirectory(rootPath);
+        this.skillRootPath = rootPath;
+        log.info("技能根目录已设置: {}", rootPath);
     }
 
     @Override
@@ -170,32 +184,6 @@ public class SkillServiceImpl implements SkillService {
         }
         log.debug("沙箱发现 skill 数量 sessionId={} count={}", sessionId, result.size());
         return result;
-    }
-
-    /**
-     * 从本地路径加载单个技能到 {@link #skillCache}。
-     *
-     * @param skillPath 本地 skill 目录
-     * @return 加载成功返回 true
-     */
-    private boolean loadSkillFromPath(Path skillPath) {
-        Path skillFile = skillPath.resolve("SKILL.md");
-        if (!Files.exists(skillFile)) {
-            log.debug("No SKILL.md found in {}", skillPath);
-            return false;
-        }
-
-        try {
-            String content = Files.readString(skillFile);
-            String skillId = skillPath.getFileName().toString();
-            Skill skill = parseSkillMd(skillId, content, skillPath);
-            skillCache.put(skillId, skill);
-            log.debug("Loaded local skill: {} from {}", skill.getId(), skillPath);
-            return true;
-        } catch (IOException e) {
-            log.error("Failed to load skill from: {}", skillPath, e);
-            return false;
-        }
     }
 
     /**
