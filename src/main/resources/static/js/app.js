@@ -34,6 +34,12 @@
         username: localStorage.getItem('username') || '',
         currentSessionId: localStorage.getItem('agent_session_id') || null,
         toasts: [],
+        // 按会话保存正在进行的流式回复，避免 Chat 页面卸载或切会话后丢失思考链。
+        liveStreams: {},
+        // 记录流式状态变化版本，供页面在跨路由恢复时感知完成事件。
+        liveStreamVersion: 0,
+        // 记录已完成但可能尚未被当前页面消费的流式会话。
+        completedLiveStreams: {},
 
         get isAuthenticated() {
             return !!this.token;
@@ -47,10 +53,12 @@
         },
 
         logout() {
+            Object.keys(this.liveStreams).forEach(sessionId => this.clearLiveStream(sessionId, { stop: true }));
             this.token = null;
             this.username = '';
             this.currentSessionId = null;
             this.toasts = [];
+            this.completedLiveStreams = {};
             localStorage.removeItem('auth_token');
             localStorage.removeItem('username');
             localStorage.removeItem('agent_session_id');
@@ -63,6 +71,76 @@
             } else {
                 localStorage.removeItem('agent_session_id');
             }
+        },
+
+        // 为指定会话创建一份新的流式回复状态；同会话旧流会被停止并替换。
+        createLiveStream(sessionId, initial = {}) {
+            if (!sessionId) return null;
+            this.clearLiveStream(sessionId, { stop: true });
+            delete this.completedLiveStreams[sessionId];
+            const stream = {
+                sessionId,
+                streamId: Date.now() + Math.random().toString(36).slice(2),
+                streaming: true,
+                sending: true,
+                stopStreamFn: null,
+                currentThinking: '',
+                currentReasoning: '',
+                currentToolCall: null,
+                finalAnswer: '',
+                finalAnswerSaved: false,
+                streamPhase: 'idle',
+                currentEvents: [],
+                pendingUserMessage: null,
+                streamBaselineLength: 0,
+                autoFinishTimer: null,
+                streamSyncTimer: null,
+                ...initial
+            };
+            this.liveStreams[sessionId] = stream;
+            this.liveStreamVersion++;
+            return stream;
+        },
+
+        // 获取指定会话的流式回复状态；没有正在进行的流时返回 null。
+        getLiveStream(sessionId) {
+            return sessionId ? this.liveStreams[sessionId] || null : null;
+        },
+
+        // 清理指定会话的流式状态；必要时同时中止底层 SSE 请求。
+        clearLiveStream(sessionId, { stop = false, remove = true } = {}) {
+            const stream = this.getLiveStream(sessionId);
+            if (!stream) return;
+            if (stream.autoFinishTimer) clearTimeout(stream.autoFinishTimer);
+            if (stream.streamSyncTimer) clearInterval(stream.streamSyncTimer);
+            stream.autoFinishTimer = null;
+            stream.streamSyncTimer = null;
+            if (stop && stream.stopStreamFn) stream.stopStreamFn();
+            stream.stopStreamFn = null;
+            stream.streaming = false;
+            stream.sending = false;
+            if (remove) delete this.liveStreams[sessionId];
+            this.liveStreamVersion++;
+        },
+
+        // 标记某个流式会话已完成，让当前或下次进入 Chat 页时决定是否刷新历史。
+        markLiveStreamCompleted(sessionId, { refreshHistory = true } = {}) {
+            if (!sessionId) return;
+            this.clearLiveStream(sessionId);
+            this.completedLiveStreams[sessionId] = {
+                refreshHistory,
+                completedAt: Date.now()
+            };
+            this.liveStreamVersion++;
+        },
+
+        // 读取并移除指定会话的完成标记，避免重复刷新同一段历史。
+        consumeCompletedLiveStream(sessionId) {
+            if (!sessionId || !this.completedLiveStreams[sessionId]) return null;
+            const completed = this.completedLiveStreams[sessionId];
+            delete this.completedLiveStreams[sessionId];
+            this.liveStreamVersion++;
+            return completed;
         },
 
         showToast({ type = 'info', message = '', duration = 3500 } = {}) {

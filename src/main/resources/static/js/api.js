@@ -74,16 +74,17 @@ function createApiClient() {
         deleteSessions: (sessionIds) => request('DELETE', '/api/sessions/batch', { sessionIds }),
 
         // 聊天
-        sendMessage: (sessionId, message, searchEnabled = false) => request('POST', `/api/sessions/${sessionId}/chat`, { message, searchEnabled }),
+        sendMessage: (sessionId, message, searchEnabled = false, planningEnabled = true) => request('POST', `/api/sessions/${sessionId}/chat`, { message, searchEnabled, planningEnabled }),
         getHistory: (sessionId) => request('GET', `/api/sessions/${sessionId}/history`),
 
         // 流式聊天（SSE）
         // 返回 EventSource 和停止函数
-        createChatStream: (sessionId, message, searchEnabled, onEvent) => {
+        createChatStream: (sessionId, message, searchEnabled, planningEnabled, onEvent) => {
             const token = localStorage.getItem('auth_token');
             const url = new URL(API_BASE + `/api/sessions/${sessionId}/chat/stream`, window.location.origin);
             url.searchParams.set('message', message);
             url.searchParams.set('searchEnabled', searchEnabled ? 'true' : 'false');
+            url.searchParams.set('planningEnabled', planningEnabled ? 'true' : 'false');
 
             // 使用 fetch + ReadableStream 实现 SSE（支持 Authorization header）
             let stopped = false;

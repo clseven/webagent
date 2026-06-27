@@ -9,8 +9,10 @@ const apiSource = fs.readFileSync(
 );
 
 let requestedUrl = null;
+const requests = [];
 const sandbox = {
     console,
+    FormData: class FormData {},
     localStorage: {
         getItem(key) {
             return key === 'auth_token' ? 'test-token' : null;
@@ -23,10 +25,12 @@ const sandbox = {
             reload() {},
         },
     },
-    fetch(url) {
+    fetch(url, options = {}) {
         requestedUrl = url;
+        requests.push({ url, options });
         return Promise.resolve({
             ok: true,
+            json: () => Promise.resolve({ code: 200, data: {} }),
             arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)),
         });
     },
@@ -46,4 +50,15 @@ const api = sandbox.createApiClient();
         requestedUrl,
         '/api/sessions/session-1/files/preview?path=%2Fhome%2Fgem%2Fknowledge%2F%E5%BA%84%E5%8D%9A%E7%84%B6(4).pdf'
     );
+
+    await api.sendMessage('session-1', '你好', true, false);
+
+    const chatRequest = requests.find(request => request.url === '/api/sessions/session-1/chat');
+    assert.ok(chatRequest);
+    assert.equal(chatRequest.options.method, 'POST');
+    assert.deepEqual(JSON.parse(chatRequest.options.body), {
+        message: '你好',
+        searchEnabled: true,
+        planningEnabled: false,
+    });
 })();

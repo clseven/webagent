@@ -36,7 +36,7 @@ const ChatPage = {
             <!-- 中间：聊天主区 -->
             <div class="chat-main">
                 <!-- 对话面板 -->
-                <div class="chat-panel" v-if="currentSessionId" style="position:relative;">
+                <div class="chat-panel" v-if="currentSessionId || draftSessionActive" style="position:relative;">
                     <!-- 聊天头部（精简） -->
                     <div class="chat-header">
                         <div class="chat-header-left">
@@ -84,7 +84,7 @@ const ChatPage = {
                         </template>
 
                         <!-- 空状态 -->
-                        <div v-if="!loadingHistory && messages.length === 0" class="empty-state chat-empty">
+                        <div v-if="!loadingHistory && displayMessages.length === 0 && !streaming" class="empty-state chat-empty">
                             <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
                                 <rect x="20" y="30" width="80" height="55" rx="12" stroke="currentColor" stroke-width="2" opacity="0.2"/>
                                 <circle cx="45" cy="57" r="6" fill="currentColor" opacity="0.15"/>
@@ -97,7 +97,7 @@ const ChatPage = {
                         </div>
 
                         <!-- 历史消息 -->
-                        <template v-for="msg in messages" :key="msg.timestamp">
+                        <template v-for="msg in displayMessages" :key="msg.timestamp">
                             <div :class="['chat-message', msg.role, msg.error ? 'has-error' : '']">
                                 <div class="role-label">{{ msg.role === 'user' ? '你' : '助手' }}</div>
                                 <div class="bubble">
@@ -256,6 +256,24 @@ const ChatPage = {
                                     </svg>
                                     <span>{{ searchEnabled ? '联网已开' : '联网搜索' }}</span>
                                 </button>
+
+                                <button
+                                    type="button"
+                                    class="composer-tool-btn"
+                                    :class="{ active: planningEnabled }"
+                                    @click="togglePlanning"
+                                    :title="planningEnabled ? '已启用规划模式' : '启用规划模式'"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M9 6h11"/>
+                                        <path d="M9 12h11"/>
+                                        <path d="M9 18h11"/>
+                                        <path d="M4 6h1"/>
+                                        <path d="M4 12h1"/>
+                                        <path d="M4 18h1"/>
+                                    </svg>
+                                    <span>{{ planningEnabled ? '规划已开' : '规划模式' }}</span>
+                                </button>
                             </div>
 
                             <button v-if="streaming" @click="stopStream" class="composer-send-btn stop-btn" title="停止生成">
@@ -368,7 +386,7 @@ const ChatPage = {
                             </button>
                             <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                             <div class="session-info">
-                                <div class="session-title">会话 {{ s.sessionId.substring(0, 8) }}</div>
+                                <div class="session-title">{{ sessionTitle(s) }}</div>
                                 <div class="session-meta">
                                     <span v-if="s.enabledSkillIds && s.enabledSkillIds.length">{{ s.enabledSkillIds.length }} 技能</span>
                                 </div>
@@ -540,6 +558,7 @@ const ChatPage = {
         const batchDeletePending = Vue.ref(false);
         const batchDeleteError = Vue.ref('');
         const batchDeleting = Vue.ref(false);
+        const DEFAULT_SESSION_TITLE = '新对话';
         // 保存等待用户确认删除的会话，未打开确认框时为 null。
         const sessionPendingDelete = Vue.ref(null);
         // 保存删除失败原因，让错误与当前确认操作保持在同一弹窗内。
@@ -547,38 +566,45 @@ const ChatPage = {
         const deletingSessionId = Vue.ref('');
         const currentAppId = Vue.ref('');
         const currentSessionId = Vue.ref(store.currentSessionId || '');
+        const draftSessionActive = Vue.ref(false);
         const messages = Vue.ref([]);
         const inputText = Vue.ref('');
-        const sending = Vue.ref(false);
         const pendingFiles = Vue.ref([]);
         const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
+        const planningEnabled = Vue.ref(localStorage.getItem('planning_enabled') !== 'false');
 
         const toggleSearch = () => {
             searchEnabled.value = !searchEnabled.value;
             localStorage.setItem('web_search_enabled', searchEnabled.value ? 'true' : 'false');
         };
+        const togglePlanning = () => {
+            planningEnabled.value = !planningEnabled.value;
+            localStorage.setItem('planning_enabled', planningEnabled.value ? 'true' : 'false');
+        };
         const copied = Vue.ref(false);
         const loadingHistory = Vue.ref(false);
         const showScrollBtn = Vue.ref(false);
 
-        const streaming = Vue.ref(false);
-        const stopStreamFn = Vue.ref(null);
-        const currentThinking = Vue.ref('');
-        const currentReasoning = Vue.ref('');
-        const currentToolCall = Vue.ref(null);
-        const finalAnswer = Vue.ref('');
-        const finalAnswerSaved = Vue.ref(false);
-        const streamPhase = Vue.ref('idle');
-        const currentEvents = Vue.ref([]);
+        // 当前会话的流式状态来自全局 store，确保切会话或切页面后思考链不会串线或丢失。
+        const currentLiveStream = Vue.computed(() => store.getLiveStream(currentSessionId.value));
+        const streaming = Vue.computed(() => Boolean(currentLiveStream.value?.streaming));
+        const sending = Vue.computed(() => Boolean(currentLiveStream.value?.sending));
+        const currentThinking = Vue.computed(() => currentLiveStream.value?.currentThinking || '');
+        const currentReasoning = Vue.computed(() => currentLiveStream.value?.currentReasoning || '');
+        const currentToolCall = Vue.computed(() => currentLiveStream.value?.currentToolCall || null);
+        const finalAnswer = Vue.computed(() => currentLiveStream.value?.finalAnswer || '');
+        const finalAnswerSaved = Vue.computed(() => Boolean(currentLiveStream.value?.finalAnswerSaved));
+        const streamPhase = Vue.computed(() => currentLiveStream.value?.streamPhase || 'idle');
+        const currentEvents = Vue.computed(() => currentLiveStream.value?.currentEvents || []);
         const artifactBlobUrls = Vue.reactive({});
         const artifactLoadErrors = Vue.reactive({});
         const artifactLoadPromises = new Map();
-        // 记录最终回答后的兜底收尾计时器，避免 done 事件异常缺失时界面一直转圈。
-        let autoFinishTimer = null;
-        // 记录执行阶段兜底同步计时器，用于 SSE 后续事件未进入页面时自动恢复显示。
-        let streamSyncTimer = null;
-        // 记录本次发送前后的消息长度，用于判断历史里是否已经出现新的助手回复。
-        let streamBaselineLength = 0;
+        const displayMessages = Vue.computed(() => {
+            const stream = currentLiveStream.value;
+            if (!stream?.pendingUserMessage) return messages.value;
+            if (messages.value.length >= stream.streamBaselineLength) return messages.value;
+            return [...messages.value, stream.pendingUserMessage];
+        });
 
         const streamingStatus = Vue.computed(() => {
             switch (streamPhase.value) {
@@ -627,9 +653,53 @@ const ChatPage = {
             } catch (e) { sessions.value = []; }
         };
 
+        const sessionTitle = (session) => {
+            const title = session?.title ? String(session.title).trim() : '';
+            return title || DEFAULT_SESSION_TITLE;
+        };
+
+        // 将新建或刷新的会话合并进列表，避免为了一个标题刷新重拉整页状态。
+        const upsertSession = (session) => {
+            if (!session || !session.sessionId) return;
+            const index = sessions.value.findIndex(s => s.sessionId === session.sessionId);
+            if (index >= 0) {
+                sessions.value.splice(index, 1, { ...sessions.value[index], ...session });
+                return;
+            }
+            sessions.value.unshift(session);
+        };
+
+        const titleRefreshTimers = new Map();
+        // 首轮回复完成后标题在后端异步生成；这里短轮询当前会话，拿到标题后停止。
+        const scheduleSessionTitleRefresh = (sessionId) => {
+            if (!sessionId || titleRefreshTimers.has(sessionId)) return;
+            let attempts = 0;
+            const refresh = async () => {
+                attempts += 1;
+                try {
+                    const session = await api.getSession(sessionId);
+                    upsertSession(session);
+                    if (sessionTitle(session) !== DEFAULT_SESSION_TITLE) {
+                        titleRefreshTimers.delete(sessionId);
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('刷新会话标题失败:', e);
+                }
+                if (attempts >= 8) {
+                    titleRefreshTimers.delete(sessionId);
+                    return;
+                }
+                const timer = setTimeout(refresh, attempts < 3 ? 1000 : 2500);
+                titleRefreshTimers.set(sessionId, timer);
+            };
+            titleRefreshTimers.set(sessionId, setTimeout(refresh, 700));
+        };
+
         const onAppChange = () => {
             sessionManageMode.value = false;
             selectedSessionIds.value = new Set();
+            draftSessionActive.value = false;
             currentSessionId.value = '';
             store.setSession('');
             messages.value = [];
@@ -639,26 +709,27 @@ const ChatPage = {
             sessionManageMode.value = false;
             selectedSessionIds.value = new Set();
             currentAppId.value = appId || '';
+            draftSessionActive.value = false;
             currentSessionId.value = '';
             store.setSession('');
             messages.value = [];
         };
 
         const selectSession = async (sessionId) => {
+            draftSessionActive.value = false;
             currentSessionId.value = sessionId;
             store.setSession(sessionId);
             await loadHistory();
         };
 
-        const createSession = async () => {
-            try {
-                const appId = currentAppId.value ? Number(currentAppId.value) : undefined;
-                const session = await api.createSession(appId);
-                currentSessionId.value = session.sessionId;
-                store.setSession(session.sessionId);
-                await loadSessions();
-                await loadHistory();
-            } catch (e) { alert('创建会话失败: ' + e.message); }
+        const createSession = () => {
+            sessionManageMode.value = false;
+            selectedSessionIds.value = new Set();
+            currentSessionId.value = '';
+            store.setSession('');
+            messages.value = [];
+            draftSessionActive.value = true;
+            Vue.nextTick(() => composerInput.value?.focus());
         };
 
         // 切换会话管理模式；退出时清空选择，避免选择状态跨 Agent 残留。
@@ -710,22 +781,9 @@ const ChatPage = {
 
         // 当前会话被删除后停止流式任务、清空聊天状态，并自动选择同 Agent 下剩余的第一条会话。
         const recoverAfterCurrentSessionDeleted = async (deletedSessionIds) => {
+            deletedSessionIds.forEach(sessionId => store.clearLiveStream(sessionId, { stop: true }));
             if (!deletedSessionIds.has(currentSessionId.value)) return;
-            clearStreamTimers();
-            if (stopStreamFn.value) {
-                stopStreamFn.value();
-                stopStreamFn.value = null;
-            }
-            streaming.value = false;
-            sending.value = false;
             messages.value = [];
-            currentThinking.value = '';
-            currentReasoning.value = '';
-            currentToolCall.value = null;
-            finalAnswer.value = '';
-            finalAnswerSaved.value = false;
-            currentEvents.value = [];
-            streamPhase.value = 'idle';
 
             const next = filteredSessions.value[0];
             if (next) await selectSession(next.sessionId);
@@ -808,10 +866,12 @@ const ChatPage = {
         };
 
         const loadHistory = async () => {
-            if (!currentSessionId.value) return;
+            const sessionId = currentSessionId.value;
+            if (!sessionId) return;
             loadingHistory.value = true;
             try {
-                const history = await api.getHistory(currentSessionId.value);
+                const history = await api.getHistory(sessionId);
+                if (currentSessionId.value !== sessionId) return;
                 messages.value = history || [];
                 scrollToBottom();
             } catch (e) { console.error('加载历史失败:', e); }
@@ -819,38 +879,50 @@ const ChatPage = {
         };
 
         const send = async () => {
-            if (!currentSessionId.value) { alert('请先创建会话'); return; }
             const text = inputText.value.trim();
             if (!text && pendingFiles.value.length === 0) return;
 
-            sending.value = true;
-            streaming.value = true;
+            let sessionId = currentSessionId.value;
+            if (!sessionId) {
+                try {
+                    const appId = currentAppId.value ? Number(currentAppId.value) : undefined;
+                    const session = await api.createSession(appId);
+                    sessionId = session.sessionId;
+                    draftSessionActive.value = false;
+                    currentSessionId.value = sessionId;
+                    store.setSession(sessionId);
+                    upsertSession(session);
+                } catch (e) {
+                    alert('创建会话失败: ' + e.message);
+                    return;
+                }
+            }
+
+            const stream = store.createLiveStream(sessionId, { streamPhase: 'planning' });
+            const streamBaselineLength = messages.value.length + 1;
+            stream.streamBaselineLength = streamBaselineLength;
             inputText.value = '';
             scrollToBottom();
-            currentThinking.value = '';
-            currentReasoning.value = '';
-            currentToolCall.value = null;
-            finalAnswer.value = '';
-            finalAnswerSaved.value = false;
-            currentEvents.value = [];
-            streamPhase.value = 'planning';
-            clearStreamTimers();
 
             let uploadedFiles = [];
             if (pendingFiles.value.length > 0) {
                 for (const file of pendingFiles.value) {
                     try {
-                        const result = await api.uploadFile(currentSessionId.value, file);
+                        const result = await api.uploadFile(sessionId, file);
                         uploadedFiles.push({ name: file.name, path: result });
                     } catch (e) {
                         if (window.DuplicateHandler && window.DuplicateHandler.isDuplicateError(e)) {
+                            let keptFileName = file.name;
                             const handleResult = await window.DuplicateHandler.handle({
                                 file, error: e,
-                                onReplace: () => api.replaceFile(currentSessionId.value, file),
-                                onKeepBoth: (newFile) => api.uploadFile(currentSessionId.value, newFile)
+                                onReplace: () => api.replaceFile(sessionId, file),
+                                onKeepBoth: (newFile) => {
+                                    keptFileName = newFile.name;
+                                    return api.uploadFile(sessionId, newFile);
+                                }
                             });
                             if (handleResult === 'replace-done' || handleResult === 'keep-both-done') {
-                                const name = handleResult === 'keep-both-done' ? (newFile?.name || file.name) : file.name;
+                                const name = handleResult === 'keep-both-done' ? keptFileName : file.name;
                                 uploadedFiles.push({ name, path: '/home/gem/uploads/' + name });
                             }
                         }
@@ -864,166 +936,223 @@ const ChatPage = {
                 fullMessage = (text ? text + '\n\n' : '') + '【上传的文件】\n' + uploadedFiles.map(f => '📎 ' + f.name).join('\n');
             }
 
-            messages.value.push({ role: 'user', content: fullMessage, timestamp: Date.now() });
-            streamBaselineLength = messages.value.length;
-            scrollToBottom();
-            const stop = api.createChatStream(currentSessionId.value, fullMessage, searchEnabled.value, handleStreamEvent);
-            stopStreamFn.value = stop;
-            startStreamHistorySync();
-        };
-
-        // 清理兜底收尾计时器，新的流或主动停止时不能沿用旧计时。
-        const clearAutoFinishTimer = () => {
-            if (autoFinishTimer) {
-                clearTimeout(autoFinishTimer);
-                autoFinishTimer = null;
+            const userMessage = { role: 'user', content: fullMessage, timestamp: Date.now(), _optimistic: true };
+            stream.pendingUserMessage = userMessage;
+            if (currentSessionId.value === sessionId) {
+                messages.value.push(userMessage);
+                scrollToBottom();
             }
+            const stop = api.createChatStream(sessionId, fullMessage, searchEnabled.value, planningEnabled.value, event => handleStreamEvent(event, sessionId, stream.streamId));
+            stream.stopStreamFn = stop;
+            startStreamHistorySync(sessionId, stream.streamId);
         };
 
-        // 清理所有流式兜底计时器，避免旧请求影响新的对话。
-        const clearStreamTimers = () => {
-            clearAutoFinishTimer();
-            if (streamSyncTimer) {
-                clearInterval(streamSyncTimer);
-                streamSyncTimer = null;
+        // 校验事件是否属于当前仍有效的流，避免旧 SSE 回调污染新会话或新请求。
+        const streamForRun = (sessionId, streamId) => {
+            const stream = store.getLiveStream(sessionId);
+            if (!stream || (streamId && stream.streamId !== streamId)) return null;
+            return stream;
+        };
+
+        // 当前会话历史尚未返回用户消息时，先用 live stream 里的本地消息维持对话上下文显示。
+        const ensurePendingUserMessageVisible = (stream, sessionId) => {
+            if (currentSessionId.value !== sessionId || !stream?.pendingUserMessage) return;
+            if (messages.value.length >= stream.streamBaselineLength) return;
+            messages.value.push(stream.pendingUserMessage);
+        };
+
+        // 清理指定流的兜底收尾计时器，新的流或主动停止时不能沿用旧计时。
+        const clearAutoFinishTimer = (sessionId, streamId) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream || !stream.autoFinishTimer) return;
+            clearTimeout(stream.autoFinishTimer);
+            stream.autoFinishTimer = null;
+        };
+
+        // 清理指定流的所有兜底计时器，避免旧请求影响新的对话。
+        const clearStreamTimers = (sessionId, streamId) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream) return;
+            clearAutoFinishTimer(sessionId, streamId);
+            if (stream.streamSyncTimer) {
+                clearInterval(stream.streamSyncTimer);
+                stream.streamSyncTimer = null;
             }
         };
 
         // 后端已保存最终助手消息但 SSE 终止事件未到达时，通过历史接口自动收尾。
-        const startStreamHistorySync = () => {
-            if (streamSyncTimer) clearInterval(streamSyncTimer);
-            streamSyncTimer = setInterval(syncStreamHistory, 2500);
+        const startStreamHistorySync = (sessionId, streamId) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream) return;
+            if (stream.streamSyncTimer) clearInterval(stream.streamSyncTimer);
+            stream.streamSyncTimer = setInterval(() => syncStreamHistory(sessionId, streamId), 2500);
         };
 
-        // 静默拉取历史，只在检测到新的助手回复时替换界面并停止转圈。
-        const syncStreamHistory = async () => {
-            if (!streaming.value || !currentSessionId.value) return;
+        // 静默拉取指定会话历史，只在检测到新的助手回复时替换当前会话界面并停止转圈。
+        const syncStreamHistory = async (sessionId, streamId) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream || !stream.streaming) return;
             try {
-                const history = await api.getHistory(currentSessionId.value);
-                if (!Array.isArray(history) || history.length <= streamBaselineLength) return;
-                const newMessages = history.slice(streamBaselineLength);
+                const history = await api.getHistory(sessionId);
+                const latestStream = streamForRun(sessionId, streamId);
+                if (!latestStream || !Array.isArray(history) || history.length <= latestStream.streamBaselineLength) return;
+                const newMessages = history.slice(latestStream.streamBaselineLength);
                 const hasAssistantReply = newMessages.some(msg => msg && msg.role === 'assistant' && msg.content);
                 if (!hasAssistantReply) return;
-                const stop = stopStreamFn.value;
-                stopStreamFn.value = null;
-                clearStreamTimers();
+                const stop = latestStream.stopStreamFn;
+                latestStream.stopStreamFn = null;
+                clearStreamTimers(sessionId, streamId);
                 if (stop) stop();
-                streaming.value = false;
-                sending.value = false;
-                finalAnswerSaved.value = true;
-                currentThinking.value = '';
-                currentReasoning.value = '';
-                currentToolCall.value = null;
-                currentEvents.value = [];
-                streamPhase.value = 'idle';
-                messages.value = history;
-                scrollToBottom();
+                if (currentSessionId.value === sessionId) {
+                    messages.value = history;
+                    scrollToBottom();
+                }
+                store.markLiveStreamCompleted(sessionId, { refreshHistory: true });
+                scheduleSessionTitleRefresh(sessionId);
             } catch (e) {
                 console.warn('流式历史同步失败:', e);
             }
         };
 
         // 在收到最终回答后短暂等待 done；若没有等到，就用已有回答直接完成前端状态。
-        const scheduleAutoFinish = () => {
-            clearAutoFinishTimer();
+        const scheduleAutoFinish = (sessionId, streamId) => {
+            clearAutoFinishTimer(sessionId, streamId);
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream) return;
             // answer 是后端最终回答事件；done 偶发丢失时，前端也要及时收尾。
-            autoFinishTimer = setTimeout(() => {
-                if (streaming.value && finalAnswer.value) finishStream();
+            stream.autoFinishTimer = setTimeout(() => {
+                const latestStream = streamForRun(sessionId, streamId);
+                if (latestStream?.streaming && latestStream.finalAnswer) finishStream(sessionId, streamId, { refreshHistory: true });
             }, 1200);
         };
 
         // 计算同类步骤的展示序号，支持 toolCall 被替换成 toolResult 后仍连续编号。
-        const nextStepIndex = (type) => currentEvents.value.filter(e => e.type === type || e.originalType === type).length + 1;
+        const nextStepIndex = (stream, type) => stream.currentEvents.filter(e => e.type === type || e.originalType === type).length + 1;
 
         // 将工具调用开始事件立即加入时间线，让用户能实时看到正在执行的工具和参数。
-        const appendToolCallEvent = (data) => {
+        const appendToolCallEvent = (stream, data) => {
             const event = {
                 type: 'toolCall',
                 tool: data.tool,
                 args: data.args || {},
                 elapsed: data.elapsed || 0,
                 status: 'running',
-                stepIndex: data.stepIndex || nextStepIndex('toolCall')
+                stepIndex: data.stepIndex || nextStepIndex(stream, 'toolCall')
             };
-            currentEvents.value.push(event);
-            currentToolCall.value = { ...event, eventIndex: currentEvents.value.length - 1 };
+            stream.currentEvents.push(event);
+            stream.currentToolCall = { ...event, eventIndex: stream.currentEvents.length - 1 };
         };
 
         // 将工具结果合并回对应的运行中步骤；如果开始事件丢失，则补一条完整结果。
-        const completeToolCallEvent = (data) => {
-            let eventIndex = currentToolCall.value && currentToolCall.value.eventIndex != null
-                ? currentToolCall.value.eventIndex
+        const completeToolCallEvent = (stream, data) => {
+            let eventIndex = stream.currentToolCall && stream.currentToolCall.eventIndex != null
+                ? stream.currentToolCall.eventIndex
                 : -1;
             if (eventIndex < 0) {
-                for (let i = currentEvents.value.length - 1; i >= 0; i--) {
-                    const event = currentEvents.value[i];
+                for (let i = stream.currentEvents.length - 1; i >= 0; i--) {
+                    const event = stream.currentEvents[i];
                     if (event.type === 'toolCall' && event.status === 'running' && (!data.tool || event.tool === data.tool)) {
                         eventIndex = i;
                         break;
                     }
                 }
             }
-            const previous = eventIndex >= 0 ? currentEvents.value[eventIndex] : null;
+            const previous = eventIndex >= 0 ? stream.currentEvents[eventIndex] : null;
             const completed = {
                 type: 'toolResult',
                 originalType: 'toolCall',
-                tool: data.tool || previous?.tool || currentToolCall.value?.tool || '',
-                args: previous?.args || currentToolCall.value?.args || {},
+                tool: data.tool || previous?.tool || stream.currentToolCall?.tool || '',
+                args: previous?.args || stream.currentToolCall?.args || {},
                 result: data.result || '',
                 duration: data.duration,
                 elapsed: data.duration || previous?.elapsed || 0,
                 status: 'completed',
-                stepIndex: previous?.stepIndex || nextStepIndex('toolCall')
+                stepIndex: previous?.stepIndex || nextStepIndex(stream, 'toolCall')
             };
-            if (eventIndex >= 0) currentEvents.value.splice(eventIndex, 1, completed);
-            else currentEvents.value.push(completed);
-            currentToolCall.value = null;
+            if (eventIndex >= 0) stream.currentEvents.splice(eventIndex, 1, completed);
+            else stream.currentEvents.push(completed);
+            stream.currentToolCall = null;
         };
 
-        const handleStreamEvent = (event) => {
+        // 处理某个会话的 SSE 事件；所有写入都限定在该会话对应的 live stream 上。
+        const handleStreamEvent = (event, sessionId, streamId) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream) return;
             const { type, data = {} } = event || {};
             switch (type) {
-                case 'plan': currentEvents.value.push({ type: 'plan', content: data.content }); streamPhase.value = 'plan_ready'; scrollToBottom(); break;
-                case 'thinking_start': currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'thinking'; scrollToBottom(); break;
-                case 'token': currentThinking.value += data.content || ''; streamPhase.value = 'generating'; scrollToBottom(); break;
-                case 'reasoning_token': currentReasoning.value += data.content || ''; streamPhase.value = 'thinking'; scrollToBottom(); break;
+                case 'plan': stream.currentEvents.push({ type: 'plan', content: data.content }); stream.streamPhase = 'plan_ready'; scrollToBottom(); break;
+                case 'thinking_start': stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'thinking'; scrollToBottom(); break;
+                case 'token': stream.currentThinking += data.content || ''; stream.streamPhase = 'generating'; scrollToBottom(); break;
+                case 'reasoning_token': stream.currentReasoning += data.content || ''; stream.streamPhase = 'thinking'; scrollToBottom(); break;
                 case 'thinking_end':
-                    if (currentThinking.value) currentEvents.value.push({ type: 'thinking', content: currentThinking.value, stepIndex: nextStepIndex('thinking') });
-                    if (currentReasoning.value) currentEvents.value.push({ type: 'reasoning', content: currentReasoning.value, stepIndex: nextStepIndex('reasoning') });
-                    currentThinking.value = ''; currentReasoning.value = ''; streamPhase.value = 'processing'; scrollToBottom(); break;
-                case 'tool_call': appendToolCallEvent(data); streamPhase.value = 'tool'; scrollToBottom(); break;
+                    if (stream.currentThinking) stream.currentEvents.push({ type: 'thinking', content: stream.currentThinking, stepIndex: nextStepIndex(stream, 'thinking') });
+                    if (stream.currentReasoning) stream.currentEvents.push({ type: 'reasoning', content: stream.currentReasoning, stepIndex: nextStepIndex(stream, 'reasoning') });
+                    stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'processing'; scrollToBottom(); break;
+                case 'tool_call': appendToolCallEvent(stream, data); stream.streamPhase = 'tool'; scrollToBottom(); break;
                 case 'tool_executing':
-                    if (currentToolCall.value) {
-                        currentToolCall.value.elapsed = data.elapsed || 0;
-                        const eventIndex = currentToolCall.value.eventIndex;
-                        if (eventIndex != null && currentEvents.value[eventIndex]) currentEvents.value[eventIndex].elapsed = currentToolCall.value.elapsed;
+                    if (stream.currentToolCall) {
+                        stream.currentToolCall.elapsed = data.elapsed || 0;
+                        const eventIndex = stream.currentToolCall.eventIndex;
+                        if (eventIndex != null && stream.currentEvents[eventIndex]) stream.currentEvents[eventIndex].elapsed = stream.currentToolCall.elapsed;
                     }
-                    streamPhase.value = 'tool'; break;
+                    stream.streamPhase = 'tool'; break;
                 case 'observation':
-                    completeToolCallEvent(data); streamPhase.value = 'tool_done'; scrollToBottom(); break;
+                    completeToolCallEvent(stream, data); stream.streamPhase = 'tool_done'; scrollToBottom(); break;
                 case 'answer':
-                    finalAnswer.value = data.content || ''; streamPhase.value = 'answer';
-                    const idx = currentEvents.value.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(finalAnswer.value);
-                    if (idx >= 0) currentEvents.value.splice(idx, 1);
-                    scheduleAutoFinish();
+                    stream.finalAnswer = data.content || ''; stream.streamPhase = 'answer';
+                    const idx = stream.currentEvents.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(stream.finalAnswer);
+                    if (idx >= 0) stream.currentEvents.splice(idx, 1);
+                    scheduleAutoFinish(sessionId, streamId);
                     scrollToBottom(); break;
-                case 'done': finishStream({ refreshIfEmpty: true }); break;
-                case 'interrupted': finishStream(); messages.value.push({ role: 'assistant', content: '⚠️ 中断: ' + data.reason, timestamp: Date.now(), error: '任务中断' }); break;
-                case 'error': finishStream(); messages.value.push({ role: 'assistant', content: '❌ 错误: ' + (data.message || '未知'), timestamp: Date.now(), error: data.message || '未知错误', _lastText: '' }); break;
+                case 'done': finishStream(sessionId, streamId, { refreshIfEmpty: true, refreshHistory: true }); break;
+                case 'interrupted':
+                    finishStream(sessionId, streamId, { refreshHistory: false });
+                    if (currentSessionId.value === sessionId) messages.value.push({ role: 'assistant', content: '⚠️ 中断: ' + data.reason, timestamp: Date.now(), error: '任务中断' });
+                    break;
+                case 'error':
+                    finishStream(sessionId, streamId, { refreshHistory: false });
+                    if (currentSessionId.value === sessionId) messages.value.push({ role: 'assistant', content: '❌ 错误: ' + (data.message || '未知'), timestamp: Date.now(), error: data.message || '未知错误', _lastText: '' });
+                    break;
+                case 'status':
+                    stream.currentEvents.push({ type: 'status', content: data.message || '', stepIndex: stream.currentEvents.length + 1 });
+                    stream.streamPhase = 'processing';
+                    scrollToBottom();
+                    break;
                 case 'heartbeat': break;
             }
         };
 
-        const finishStream = (options = {}) => {
-            clearStreamTimers();
-            streaming.value = false; sending.value = false; stopStreamFn.value = null;
-            if (!finalAnswer.value && currentThinking.value) finalAnswer.value = currentThinking.value;
-            if (finalAnswer.value && !finalAnswerSaved.value) { messages.value.push({ role: 'assistant', content: finalAnswer.value, events: [...currentEvents.value], timestamp: Date.now() }); finalAnswerSaved.value = true; }
-            if (!finalAnswer.value && options.refreshIfEmpty) loadHistory();
-            currentThinking.value = ''; currentReasoning.value = ''; currentToolCall.value = null; currentEvents.value = []; streamPhase.value = 'idle'; scrollToBottom();
+        // 完成指定会话的流式状态，必要时把最终回答落到当前消息列表，并通知页面刷新历史。
+        const finishStream = (sessionId, streamId, options = {}) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream) return;
+            clearStreamTimers(sessionId, streamId);
+            stream.streaming = false;
+            stream.sending = false;
+            stream.stopStreamFn = null;
+            if (!stream.finalAnswer && stream.currentThinking) stream.finalAnswer = stream.currentThinking;
+            ensurePendingUserMessageVisible(stream, sessionId);
+            if (stream.finalAnswer && !stream.finalAnswerSaved && currentSessionId.value === sessionId) {
+                messages.value.push({ role: 'assistant', content: stream.finalAnswer, events: [...stream.currentEvents], timestamp: Date.now() });
+                stream.finalAnswerSaved = true;
+            }
+            const shouldRefreshHistory = Boolean(options.refreshHistory || (!stream.finalAnswer && options.refreshIfEmpty));
+            store.markLiveStreamCompleted(sessionId, { refreshHistory: shouldRefreshHistory });
+            if (shouldRefreshHistory) scheduleSessionTitleRefresh(sessionId);
+            if (currentSessionId.value === sessionId) scrollToBottom();
         };
 
-        const stopStream = () => { clearStreamTimers(); if (stopStreamFn.value) { stopStreamFn.value(); stopStreamFn.value = null; } };
+        // 停止当前会话的流式回复，只影响当前会话，不会清理其他会话仍在进行的思考链。
+        const stopStream = () => {
+            const sessionId = currentSessionId.value;
+            const stream = store.getLiveStream(sessionId);
+            if (!stream) return;
+            const stop = stream.stopStreamFn;
+            stream.stopStreamFn = null;
+            if (stop) stop();
+            ensurePendingUserMessageVisible(stream, sessionId);
+            store.markLiveStreamCompleted(sessionId, { refreshHistory: false });
+        };
         const retryMessage = (msg) => { inputText.value = msg._lastText || ''; };
 
         const parseSandboxFileUrl = (href) => {
@@ -1184,7 +1313,7 @@ const ChatPage = {
         const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : escapeHtml(msg.content || '');
         const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
         const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
-        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolCall': return `工具 ${e.tool || ''}`; case 'toolResult': return `工具 ${e.tool || ''}`; default: return '处理'; } };
+        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolCall': return `工具 ${e.tool || ''}`; case 'toolResult': return `工具 ${e.tool || ''}`; case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新'); default: return '处理'; } };
         const processPreview = (e) => {
             if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
             if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
@@ -1223,12 +1352,44 @@ const ChatPage = {
             document.addEventListener('mousemove', m); document.addEventListener('mouseup', u);
         };
 
-        Vue.watch(currentSessionId, () => { vncUrl.value = ''; vncStatus.value = '未连接'; vncPlaceholder.value = '请先创建会话'; });
+        // 消费全局流式完成标记，确保跨页面回来时能拉到后端已保存的最终消息。
+        const consumeCompletedStream = async () => {
+            const sessionId = currentSessionId.value;
+            if (!sessionId) return;
+            const completed = store.consumeCompletedLiveStream(sessionId);
+            if (completed?.refreshHistory) await loadHistory();
+        };
+
+        Vue.watch(currentSessionId, () => {
+            vncUrl.value = '';
+            vncStatus.value = '未连接';
+            vncPlaceholder.value = '请先创建会话';
+            consumeCompletedStream();
+        });
+
+        Vue.watch(() => store.liveStreamVersion, () => {
+            consumeCompletedStream();
+        });
+
+        Vue.watch(
+            () => [
+                currentSessionId.value,
+                currentLiveStream.value?.streamPhase,
+                currentLiveStream.value?.currentEvents?.length || 0,
+                currentLiveStream.value?.currentThinking || '',
+                currentLiveStream.value?.currentReasoning || '',
+                currentLiveStream.value?.finalAnswer || ''
+            ],
+            () => { if (streaming.value) scrollToBottom(); }
+        );
 
         Vue.onMounted(() => {
             marked.setOptions({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : hljs.highlightAuto(c).value, breaks: true, gfm: true });
             const p = new URLSearchParams(window.location.hash.split('?')[1] || ''); const aid = p.get('appId'); if (aid) currentAppId.value = aid;
-            Promise.all([loadApps(), loadSessions()]).then(() => { if (currentSessionId.value) loadHistory(); });
+            Promise.all([loadApps(), loadSessions()]).then(async () => {
+                if (currentSessionId.value) await loadHistory();
+                await consumeCompletedStream();
+            });
             Vue.nextTick(() => { if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition); });
         });
 
@@ -1236,12 +1397,15 @@ const ChatPage = {
             Object.values(artifactBlobUrls).forEach(url => {
                 if (url) URL.revokeObjectURL(url);
             });
+            titleRefreshTimers.forEach(timer => clearTimeout(timer));
+            titleRefreshTimers.clear();
         });
 
         return {
             store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
-            messages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
-            searchEnabled, toggleSearch, composerInput, autoResize,
+            draftSessionActive, sessionTitle,
+            messages, displayMessages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
+            searchEnabled, toggleSearch, planningEnabled, togglePlanning, composerInput, autoResize,
             sessionManageMode, selectedSessionCount, allFilteredSessionsSelected,
             batchDeletePending, batchDeleteError, batchDeleting,
             sessionPendingDelete, deleteSessionError, deletingSessionId,
