@@ -12,6 +12,10 @@ import java.util.Set;
 public class SessionResponse {
 
     private String sessionId;
+    /**
+     * 会话列表展示标题。
+     */
+    private String title;
     private String sandboxId;
     private Long appId;
     private Set<String> enabledSkillIds;
@@ -24,6 +28,24 @@ public class SessionResponse {
 
     public void setSessionId(String sessionId) {
         this.sessionId = sessionId;
+    }
+
+    /**
+     * 获取会话列表展示标题。
+     *
+     * @return 当前会话标题
+     */
+    public String getTitle() {
+        return title;
+    }
+
+    /**
+     * 设置会话列表展示标题。
+     *
+     * @param title 当前会话标题
+     */
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public String getSandboxId() {

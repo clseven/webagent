@@ -105,6 +105,12 @@ public class EntityConverter {
             sandboxIdField.setAccessible(true);
             sandboxIdField.set(session, entity.getSandboxId());
 
+            var titleField = ConversationSession.class.getDeclaredField("title");
+            titleField.setAccessible(true);
+            titleField.set(session, entity.getTitle() == null || entity.getTitle().isBlank()
+                    ? ConversationSession.DEFAULT_TITLE
+                    : entity.getTitle());
+
             var createdAtField = ConversationSession.class.getDeclaredField("createdAt");
             createdAtField.setAccessible(true);
             createdAtField.set(session, entity.getCreatedAt());

@@ -111,6 +111,7 @@ public class AgentController {
     @PostMapping("/{id}/chat")
     public ApiResponse<ChatMessage> chat(@PathVariable String id, @RequestBody ChatRequest request) {
         UserContext.setWebSearchEnabled(request.isSearchEnabled());
+        UserContext.setPlanningEnabled(request.isPlanningEnabled());
         try {
             ChatMessage response = agentService.chat(id, request.getMessage());
             return ApiResponse.success(response);
@@ -134,6 +135,7 @@ public class AgentController {
             @PathVariable String id,
             @RequestParam String message,
             @RequestParam(defaultValue = "false") boolean searchEnabled,
+            @RequestParam(defaultValue = "true") boolean planningEnabled,
             HttpServletResponse response) {
 
         Long userId = UserContext.getCurrentUserId();
@@ -154,6 +156,7 @@ public class AgentController {
             try {
                 UserContext.setCurrentUserId(userId);
                 UserContext.setWebSearchEnabled(searchEnabled);
+                UserContext.setPlanningEnabled(planningEnabled);
                 agentService.chatStream(id, message)
                         .doFinally(signalType -> UserContext.clear())
                         .subscribe(
@@ -241,6 +244,7 @@ public class AgentController {
     private SessionResponse toSessionResponse(ConversationSession session) {
         SessionResponse response = new SessionResponse();
         response.setSessionId(session.getSessionId());
+        response.setTitle(session.getTitle());
         response.setSandboxId(session.getSandboxId());
         response.setAppId(session.getAppId());
         response.setEnabledSkillIds(session.getEnabledSkillIds());

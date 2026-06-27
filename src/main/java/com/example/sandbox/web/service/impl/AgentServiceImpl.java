@@ -5,6 +5,7 @@ import com.example.sandbox.web.exception.UnauthorizedException;
 import com.example.sandbox.web.model.entity.*;
 import com.example.sandbox.web.model.llm.AgentEventMapper;
 import com.example.sandbox.web.model.llm.AgentResponse;
+import com.example.sandbox.web.model.llm.LlmResponse;
 import com.example.sandbox.web.model.llm.LlmUsage;
 import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.sse.SseEvent;
@@ -66,6 +67,21 @@ import java.util.stream.Collectors;
 public class AgentServiceImpl implements AgentService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentServiceImpl.class);
+
+    /**
+     * 会话标题生成时发送给模型的用户消息最大字符数。
+     */
+    private static final int TITLE_USER_MESSAGE_MAX_CODE_POINTS = 600;
+
+    /**
+     * 会话标题生成时发送给模型的助手回复最大字符数。
+     */
+    private static final int TITLE_ASSISTANT_MESSAGE_MAX_CODE_POINTS = 900;
+
+    /**
+     * 自动生成标题在会话列表中的最大字符数。
+     */
+    private static final int GENERATED_TITLE_MAX_CODE_POINTS = 24;
 
     /** 会话服务（管理消息历史、Session 生命周期） */
     @Autowired
@@ -129,6 +145,10 @@ public class AgentServiceImpl implements AgentService {
     /** 子代理配置（控制 run_subagent 工具的注册和行为） */
     @Autowired
     private SubAgentConfigProperties subAgentConfig;
+
+    /** 轻量对话路由器（命中时绕过规划、执行模型和工具链路） */
+    @Autowired
+    private LightweightChatRouter lightweightChatRouter;
 
     /**
      * 创建新会话（无关联应用）
@@ -271,15 +291,20 @@ public class AgentServiceImpl implements AgentService {
         ConversationSession session = conversationService.getSession(sessionId);
         validateSessionOwnership(session);
 
-        // 0. 确保沙箱已创建（异步可能还没完成）
+        // 0. 加载当前会话的历史消息（存储前获取，不含本轮消息）
+        List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
+        log.info("【历史消息】会话: {} 条数: {}", sessionId, history.size());
+
+        boolean skipPlanningByLightweightRoute = lightweightChatRouter.shouldSkipPlanning(userMessage, history);
+        boolean shouldRunPlanAgent = UserContext.isPlanningEnabled() && !skipPlanningByLightweightRoute;
+
+        // 1. 确保沙箱已创建（异步可能还没完成）
         if (!sandboxService.hasSandbox(sessionId)) {
             log.info("Sandbox not ready for session {}, creating now...", sessionId);
             sandboxService.createSandbox(sessionId);
         }
 
-        // 1. 加载当前会话的历史消息（存储前获取，不含本轮消息）
-        List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
-        log.info("【历史消息】会话: {} 条数: {}", sessionId, history.size());
+        boolean firstTurn = history.isEmpty();
 
         // 2. 存储用户消息
         conversationService.addUserMessage(sessionId, userMessage);
@@ -385,31 +410,37 @@ public class AgentServiceImpl implements AgentService {
             }
         }
 
-        // 6. Phase 1: PlanAgent 规划
-        List<Skill> skills = skillService.listSkills();
+        // 6. Phase 1: 按请求开关和轻量判断决定是否调用 PlanAgent
+        String plan = null;
+        if (shouldRunPlanAgent) {
+            List<Skill> skills = skillService.discoverFromSandbox(sessionId);
 
-        // Skill 过滤：如果应用配置了 skill，只使用应用关联的 skill
-        if (app != null && !app.getSkillIds().isEmpty()) {
-            Set<String> appSkillIds = app.getSkillIds();
-            skills = skills.stream()
-                    .filter(s -> appSkillIds.contains(s.getId()))
-                    .toList();
-            log.info("【Skill 过滤】应用: {}, 可用技能: {}", appId,
-                    skills.stream().map(Skill::getId).toList());
-        }
+            // Skill 过滤：如果应用配置了 skill，只使用应用关联的 skill
+            if (app != null && !app.getSkillIds().isEmpty()) {
+                Set<String> appSkillIds = app.getSkillIds();
+                skills = skills.stream()
+                        .filter(s -> appSkillIds.contains(s.getId()))
+                        .toList();
+                log.info("【Skill 过滤】应用: {}, 可用技能: {}", appId,
+                        skills.stream().map(Skill::getId).toList());
+            }
 
-        String sessionContext = buildSessionContext(session, enhancedContext);
-        PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
-        PlanResult planResult = planAgent.plan(userMessage, history);
-        String plan = planResult.getPlan();
-        log.info("【规划结果】{}", plan.length() > 300 ? plan.substring(0, 300) + "..." : plan);
+            String sessionContext = buildSessionContext(session, enhancedContext);
+            PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
+            PlanResult planResult = planAgent.plan(userMessage, history);
+            plan = planResult.getPlan();
+            log.info("【规划结果】{}", plan.length() > 300 ? plan.substring(0, 300) + "..." : plan);
 
-        // 保存规划阶段的 token 用量
-        if (planResult.getTokenUsage() != null) {
-            LlmUsage planUsage = planResult.getTokenUsage();
-            tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
-                    planUsage.completionTokens(), planUsage.cacheHitTokens(),
-                    planUsage.totalTokens(), "planner", "plan");
+            // 保存规划阶段的 token 用量
+            if (planResult.getTokenUsage() != null) {
+                LlmUsage planUsage = planResult.getTokenUsage();
+                tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
+                        planUsage.completionTokens(), planUsage.cacheHitTokens(),
+                        planUsage.totalTokens(), "planner", "plan");
+            }
+        } else {
+            log.info("【规划跳过】会话: {}, planningEnabled={}, lightweight={}",
+                    sessionId, UserContext.isPlanningEnabled(), skipPlanningByLightweightRoute);
         }
 
         // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
@@ -432,6 +463,7 @@ public class AgentServiceImpl implements AgentService {
 
         // 7. 存储助手响应，并保存本轮可恢复展示的执行过程事件
         conversationService.addAssistantMessage(sessionId, response, reasoning, events);
+        scheduleGeneratedTitle(sessionId, userId, firstTurn, userMessage, response);
         log.info("【助手输出】会话: {} 内容长度: {}, 思考链长度: {}",
                 sessionId, response != null ? response.length() : 0, reasoning != null ? reasoning.length() : 0);
 
@@ -456,18 +488,142 @@ public class AgentServiceImpl implements AgentService {
     }
 
     /**
+     * 在首轮对话完成后异步生成会话标题。
+     *
+     * <p>标题生成失败时只记录日志，不影响会话保存；会话会继续保留默认标题。</p>
+     *
+     * @param sessionId         会话 ID
+     * @param userId            当前用户 ID，用于记录标题生成的 token 用量
+     * @param firstTurn         是否为当前会话第一轮对话
+     * @param userMessage       第一条用户消息
+     * @param assistantResponse 第一条助手回复
+     */
+    private void scheduleGeneratedTitle(String sessionId, Long userId, boolean firstTurn,
+                                        String userMessage, String assistantResponse) {
+        if (!firstTurn || assistantResponse == null || assistantResponse.isBlank()) {
+            return;
+        }
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                String title = generateSessionTitle(sessionId, userId, userMessage, assistantResponse);
+                if (title.isBlank()) {
+                    return;
+                }
+                conversationService.updateGeneratedTitle(sessionId, title);
+                log.info("会话标题生成成功: sessionId={}, title={}", sessionId, title);
+            } catch (Exception e) {
+                log.warn("会话标题生成失败: sessionId={}", sessionId, e);
+            }
+        });
+    }
+
+    /**
+     * 调用规划模型生成短会话标题。
+     *
+     * @param sessionId         会话 ID
+     * @param userId            当前用户 ID
+     * @param userMessage       第一条用户消息
+     * @param assistantResponse 第一条助手回复
+     * @return 清洗后的短标题；不可用时返回空字符串
+     */
+    private String generateSessionTitle(String sessionId, Long userId, String userMessage, String assistantResponse) {
+        String systemPrompt = """
+                你是会话标题生成器。请根据第一轮用户输入和助手回复生成一个中文短标题。
+                要求：只输出标题本身；不要解释；不要加引号；不要超过 20 个汉字或 24 个字符；避免使用“新对话”。
+                """;
+        String prompt = "第一条用户输入：\n"
+                + truncateForTitle(userMessage, TITLE_USER_MESSAGE_MAX_CODE_POINTS)
+                + "\n\n第一条助手回复：\n"
+                + truncateForTitle(assistantResponse, TITLE_ASSISTANT_MESSAGE_MAX_CODE_POINTS);
+
+        LlmResponse response = plannerLlm.chatWithSystemResponse(systemPrompt, List.of(ChatMessage.userMessage(prompt)));
+        recordTitleTokenUsage(userId, sessionId, response.getTokenUsage());
+        return sanitizeGeneratedTitle(response.getContent());
+    }
+
+    /**
+     * 记录标题生成消耗的 token；无用量信息时跳过。
+     *
+     * @param userId    当前用户 ID
+     * @param sessionId 会话 ID
+     * @param usage     模型返回的 token 用量
+     */
+    private void recordTitleTokenUsage(Long userId, String sessionId, LlmUsage usage) {
+        if (userId == null || usage == null) {
+            return;
+        }
+        tokenUsageService.record(userId, sessionId, usage.promptTokens(),
+                usage.completionTokens(), usage.cacheHitTokens(),
+                usage.totalTokens(), "planner", "title");
+    }
+
+    /**
+     * 截断标题生成上下文，控制额外模型调用成本。
+     *
+     * @param content       原始内容
+     * @param maxCodePoints 最大字符数
+     * @return 截断后的内容
+     */
+    private String truncateForTitle(String content, int maxCodePoints) {
+        if (content == null) {
+            return "";
+        }
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        int count = normalized.codePointCount(0, normalized.length());
+        if (count <= maxCodePoints) {
+            return normalized;
+        }
+        int endIndex = normalized.offsetByCodePoints(0, maxCodePoints);
+        return normalized.substring(0, endIndex);
+    }
+
+    /**
+     * 清洗模型返回的标题，避免把解释文字或错误提示写入会话列表。
+     *
+     * @param rawTitle 模型原始输出
+     * @return 可保存标题；不可用时返回空字符串
+     */
+    private String sanitizeGeneratedTitle(String rawTitle) {
+        if (rawTitle == null) {
+            return "";
+        }
+        String title = rawTitle.replaceAll("\\s+", " ").trim();
+        title = title.replaceFirst("(?i)^title\\s*[:：]\\s*", "");
+        title = title.replaceFirst("^标题\\s*[:：]\\s*", "");
+        title = title.replaceAll("^[\"'`“”‘’《]+|[\"'`“”‘’》]+$", "").trim();
+        if (title.isBlank()
+                || title.startsWith("抱歉")
+                || title.startsWith("错误")
+                || title.contains("AI 服务暂时不可用")) {
+            return "";
+        }
+        int count = title.codePointCount(0, title.length());
+        if (count <= GENERATED_TITLE_MAX_CODE_POINTS) {
+            return title;
+        }
+        int endIndex = title.offsetByCodePoints(0, GENERATED_TITLE_MAX_CODE_POINTS);
+        return title.substring(0, endIndex);
+    }
+
+    /**
      * 构建会话上下文（已启用技能描述 + 知识库增强上下文）
      */
     private String buildSessionContext(ConversationSession session, String enhancedContext) {
         StringBuilder sb = new StringBuilder();
         if (session.getEnabledSkillIds() != null && !session.getEnabledSkillIds().isEmpty()) {
+            // 直接从沙箱发现技能，无缓存
+            Map<String, Skill> sandboxSkills = new java.util.LinkedHashMap<>();
+            for (Skill s : skillService.discoverFromSandbox(session.getSessionId())) {
+                sandboxSkills.put(s.getId(), s);
+            }
             sb.append("## 已启用技能\n\n");
             for (String skillId : session.getEnabledSkillIds()) {
-                try {
-                    Skill skill = skillService.getSkill(skillId);
+                Skill skill = sandboxSkills.get(skillId);
+                if (skill != null) {
                     sb.append(skill.toMetadataLine()).append("\n");
-                } catch (Exception e) {
-                    log.warn("构建会话上下文时获取技能 {} 失败: {}", skillId, e.getMessage());
+                } else {
+                    log.warn("构建会话上下文时技能 {} 在沙箱中未找到", skillId);
                     sb.append("- ").append(skillId).append("\n");
                 }
             }
@@ -539,19 +695,25 @@ public class AgentServiceImpl implements AgentService {
         return Flux.create(emitter -> {
             var sink = emitter;
             AtomicReference<KnowledgeSearchTool> knowledgeSearchToolRef = new AtomicReference<>();
+            AtomicReference<String> streamAnswerRef = new AtomicReference<>("");
 
             try {
                 // 0. 前置处理
                 ConversationSession session = conversationService.getSession(sessionId);
                 validateSessionOwnership(session);
 
+                List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
+                log.info("【Stream 历史消息】会话: {} 条数: {}", sessionId, history.size());
+
+                boolean skipPlanningByLightweightRoute = lightweightChatRouter.shouldSkipPlanning(userMessage, history);
+                boolean shouldRunPlanAgent = UserContext.isPlanningEnabled() && !skipPlanningByLightweightRoute;
+
                 if (!sandboxService.hasSandbox(sessionId)) {
                     log.info("Sandbox not ready for session {}, creating now...", sessionId);
                     sandboxService.createSandbox(sessionId);
                 }
 
-                List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
-                log.info("【Stream 历史消息】会话: {} 条数: {}", sessionId, history.size());
+                boolean firstTurn = history.isEmpty();
 
                 // 存储用户消息
                 conversationService.addUserMessage(sessionId, userMessage);
@@ -647,31 +809,37 @@ public class AgentServiceImpl implements AgentService {
                     }
                 }
 
-                // Phase 1: 规划
-                List<Skill> skills = skillService.listSkills();
+                // Phase 1: 按请求开关和轻量判断决定是否调用 PlanAgent
+                String plan = null;
+                if (shouldRunPlanAgent) {
+                    List<Skill> skills = skillService.listSkills();
 
-                if (app != null && !app.getSkillIds().isEmpty()) {
-                    Set<String> appSkillIds = app.getSkillIds();
-                    skills = skills.stream()
-                            .filter(s -> appSkillIds.contains(s.getId()))
-                            .toList();
-                }
+                    if (app != null && !app.getSkillIds().isEmpty()) {
+                        Set<String> appSkillIds = app.getSkillIds();
+                        skills = skills.stream()
+                                .filter(s -> appSkillIds.contains(s.getId()))
+                                .toList();
+                    }
 
-                String sessionContext = buildSessionContext(session, enhancedContext);
-                PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
-                PlanResult planResult = planAgent.plan(userMessage, history);
-                String plan = planResult.getPlan();
+                    String sessionContext = buildSessionContext(session, enhancedContext);
+                    PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
+                    PlanResult planResult = planAgent.plan(userMessage, history);
+                    plan = planResult.getPlan();
 
-                // 发送规划事件
-                sink.next(SseEvent.plan(plan));
-                log.info("【Stream 规划结果】{}", plan.length() > 200 ? plan.substring(0, 200) + "..." : plan);
+                    // 发送规划事件
+                    sink.next(SseEvent.plan(plan));
+                    log.info("【Stream 规划结果】{}", plan.length() > 200 ? plan.substring(0, 200) + "..." : plan);
 
-                // 记录规划 token
-                if (planResult.getTokenUsage() != null) {
-                    LlmUsage planUsage = planResult.getTokenUsage();
-                    tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
-                            planUsage.completionTokens(), planUsage.cacheHitTokens(),
-                            planUsage.totalTokens(), "planner", "plan_stream");
+                    // 记录规划 token
+                    if (planResult.getTokenUsage() != null) {
+                        LlmUsage planUsage = planResult.getTokenUsage();
+                        tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
+                                planUsage.completionTokens(), planUsage.cacheHitTokens(),
+                                planUsage.totalTokens(), "planner", "plan_stream");
+                    }
+                } else {
+                    log.info("【Stream 规划跳过】会话: {}, planningEnabled={}, lightweight={}",
+                            sessionId, UserContext.isPlanningEnabled(), skipPlanningByLightweightRoute);
                 }
 
                 // 检查是否中断
@@ -683,7 +851,7 @@ public class AgentServiceImpl implements AgentService {
 
                 // Phase 2: 执行
                 ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
-                        conversationService, sessionId);
+                        conversationService, sessionId, backgroundTaskManager);
                 reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
                 reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
                 reactAgent.registerPostToolUseHook(viewImageHook());
@@ -699,6 +867,10 @@ public class AgentServiceImpl implements AgentService {
                             sink.next(event);
 
                             // 解析 token 用量并记录
+                            if ("answer".equals(event.type())) {
+                                Object content = event.data().get("content");
+                                streamAnswerRef.set(content != null ? content.toString() : "");
+                            }
                             if ("done".equals(event.type())) {
                                 Object usage = event.data().get("tokenUsage");
                                 if (usage != null && userId != null) {
@@ -717,6 +889,8 @@ public class AgentServiceImpl implements AgentService {
                                         log.warn("解析 tokenUsage 失败: {}", e.getMessage());
                                     }
                                 }
+                                scheduleGeneratedTitle(sessionId, userId, firstTurn,
+                                        userMessage, streamAnswerRef.get());
                             }
                         }
                     })

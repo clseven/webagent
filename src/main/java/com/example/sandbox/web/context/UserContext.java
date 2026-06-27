@@ -6,6 +6,7 @@ public class UserContext {
 
     private static final ThreadLocal<Long> currentUserId = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> webSearchEnabled = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> planningEnabled = new ThreadLocal<>();
 
     public static void setCurrentUserId(Long userId) {
         currentUserId.set(userId);
@@ -29,8 +30,19 @@ public class UserContext {
         return Boolean.TRUE.equals(webSearchEnabled.get());
     }
 
+    /** 设置当前请求是否启用规划模型 */
+    public static void setPlanningEnabled(boolean enabled) {
+        planningEnabled.set(enabled);
+    }
+
+    /** 获取当前请求的规划模型开关状态，未设置时默认 true */
+    public static boolean isPlanningEnabled() {
+        return !Boolean.FALSE.equals(planningEnabled.get());
+    }
+
     public static void clear() {
         currentUserId.remove();
         webSearchEnabled.remove();
+        planningEnabled.remove();
     }
 }

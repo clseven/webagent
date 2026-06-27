@@ -18,6 +18,11 @@ public class ChatRequest {
      */
     private boolean searchEnabled;
 
+    /**
+     * 是否启用规划模型（前端开关），默认开启以保持复杂任务的既有行为。
+     */
+    private boolean planningEnabled = true;
+
     public String getMessage() {
         return message;
     }
@@ -32,5 +37,13 @@ public class ChatRequest {
 
     public void setSearchEnabled(boolean searchEnabled) {
         this.searchEnabled = searchEnabled;
+    }
+
+    public boolean isPlanningEnabled() {
+        return planningEnabled;
+    }
+
+    public void setPlanningEnabled(boolean planningEnabled) {
+        this.planningEnabled = planningEnabled;
     }
 }

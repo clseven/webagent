@@ -34,6 +34,12 @@ public class ConversationSessionEntity {
     private String sandboxId;
 
     /**
+     * 会话在列表中展示的标题。
+     */
+    @Column(name = "title", length = 120)
+    private String title = ConversationSession.DEFAULT_TITLE;
+
+    /**
      * 会话所属用户 ID。
      */
     @Column(name = "user_id")
@@ -89,6 +95,16 @@ public class ConversationSessionEntity {
      */
     public void setSandboxId(String sandboxId) {
         this.sandboxId = sandboxId;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    /**
+     * 设置会话列表标题，并刷新会话更新时间。
+     *
+     * @param title 新的会话标题
+     */
+    public void setTitle(String title) {
+        this.title = title;
         this.updatedAt = LocalDateTime.now();
     }
 

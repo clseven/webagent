@@ -16,6 +16,11 @@ import java.util.UUID;
 public class ConversationSession {
 
     /**
+     * 新会话在生成标题前使用的默认标题。
+     */
+    public static final String DEFAULT_TITLE = "新对话";
+
+    /**
      * 会话唯一标识
      */
     private final String sessionId;
@@ -29,6 +34,11 @@ public class ConversationSession {
      * 关联的沙盒实例 ID
      */
     private String sandboxId;
+
+    /**
+     * 会话在列表中展示的标题。
+     */
+    private String title;
 
     /**
      * 启用的技能 ID 集合
@@ -59,6 +69,7 @@ public class ConversationSession {
         this.sessionId = UUID.randomUUID().toString();
         this.messages = new ArrayList<>();
         this.enabledSkillIds = new HashSet<>();
+        this.title = DEFAULT_TITLE;
         this.createdAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
     }
@@ -73,6 +84,25 @@ public class ConversationSession {
 
     public String getSandboxId() {
         return sandboxId;
+    }
+
+    /**
+     * 获取会话列表展示标题。
+     *
+     * @return 会话标题，未生成时为 {@link #DEFAULT_TITLE}
+     */
+    public String getTitle() {
+        return title;
+    }
+
+    /**
+     * 设置会话列表展示标题，并刷新会话更新时间。
+     *
+     * @param title 新的会话标题
+     */
+    public void setTitle(String title) {
+        this.title = title;
+        this.updatedAt = LocalDateTime.now();
     }
 
     public void setSandboxId(String sandboxId) {

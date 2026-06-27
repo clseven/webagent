@@ -179,4 +179,13 @@ public record SseEvent(
     public static SseEvent heartbeat() {
         return new SseEvent("heartbeat", Map.of());
     }
+
+    /**
+     * 状态消息（如等待后台任务等）
+     *
+     * @param message 状态描述
+     */
+    public static SseEvent status(String message) {
+        return new SseEvent("status", Map.of("message", message));
+    }
 }

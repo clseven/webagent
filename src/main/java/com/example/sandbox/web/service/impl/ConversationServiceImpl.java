@@ -42,6 +42,11 @@ public class ConversationServiceImpl implements ConversationService {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationServiceImpl.class);
 
+    /**
+     * 数据库存储标题的最大字符数，和实体列长度保持一致。
+     */
+    private static final int SESSION_TITLE_MAX_CODE_POINTS = 120;
+
     private static final Pattern SAFE_SKILL_ID = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9_.\\-]{0,63}$");
 
     private final ConversationSessionRepository sessionRepository;
@@ -74,6 +79,35 @@ public class ConversationServiceImpl implements ConversationService {
 
         ChatMessageEntity message = EntityConverter.toChatMessageEntity(session, "user", content);
         messageRepository.save(message);
+    }
+
+    /**
+     * 更新由模型自动生成的会话标题。
+     *
+     * <p>只覆盖空标题或默认标题，避免异步标题任务晚到时覆盖用户已确认的标题。
+     * 标题为空或清洗后为空时直接跳过，不影响会话保留。</p>
+     *
+     * @param sessionId 会话 ID
+     * @param title     模型生成的标题
+     */
+    @Override
+    @Transactional
+    public void updateGeneratedTitle(String sessionId, String title) {
+        String normalizedTitle = normalizeGeneratedTitle(title);
+        if (normalizedTitle.isEmpty()) {
+            return;
+        }
+
+        ConversationSessionEntity session = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new SessionNotFoundException(sessionId));
+        String currentTitle = session.getTitle();
+        if (currentTitle != null && !currentTitle.isBlank()
+                && !ConversationSession.DEFAULT_TITLE.equals(currentTitle)) {
+            return;
+        }
+
+        session.setTitle(normalizedTitle);
+        sessionRepository.save(session);
     }
 
     @Override
@@ -175,22 +209,15 @@ public class ConversationServiceImpl implements ConversationService {
      */
     private Map<String, Skill> collectEnabledSkills(String sessionId, Set<String> enabledSkillIds) {
         Map<String, Skill> result = new java.util.LinkedHashMap<>();
-        java.util.Set<String> missing = new java.util.LinkedHashSet<>();
-        for (String skillId : enabledSkillIds) {
-            try {
-                result.put(skillId, skillService.getSkill(skillId));
-            } catch (SkillNotFoundException e) {
-                missing.add(skillId);
-            } catch (IOException e) {
-                log.error("读取技能 {} 元数据失败: {}", skillId, e.getMessage());
-                missing.add(skillId);
-            }
+        // 直接从沙箱发现，无缓存；未在沙箱中找到的技能静默跳过
+        Map<String, Skill> sandboxById = new java.util.LinkedHashMap<>();
+        for (Skill s : skillService.discoverFromSandbox(sessionId)) {
+            sandboxById.put(s.getId(), s);
         }
-        if (!missing.isEmpty()) {
-            for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-                if (missing.contains(s.getId())) {
-                    result.put(s.getId(), s);
-                }
+        for (String skillId : enabledSkillIds) {
+            Skill found = sandboxById.get(skillId);
+            if (found != null) {
+                result.put(skillId, found);
             }
         }
         return result;
@@ -291,6 +318,7 @@ public class ConversationServiceImpl implements ConversationService {
         ConversationSessionEntity entity = new ConversationSessionEntity();
         entity.setId(UUID.randomUUID().toString());
         entity.setUserId(userId);
+        entity.setTitle(ConversationSession.DEFAULT_TITLE);
         entity = sessionRepository.save(entity);
         return EntityConverter.toConversationSession(entity);
     }
@@ -305,6 +333,7 @@ public class ConversationServiceImpl implements ConversationService {
         entity.setId(UUID.randomUUID().toString());
         entity.setUserId(userId);
         entity.setAppId(appId);
+        entity.setTitle(ConversationSession.DEFAULT_TITLE);
         entity = sessionRepository.save(entity);
         return EntityConverter.toConversationSession(entity);
     }
@@ -400,29 +429,41 @@ public class ConversationServiceImpl implements ConversationService {
     }
 
     /**
-     * 解析会话上下文中的 skill：先看本地仓库（含 frontmatter），再回退到沙箱发现。
-     *
-     * <p>本地仓库找到的 skill 携带本地 frontmatter，但运行期 IO 仍走沙箱；沙箱独有的 skill 由
-     * {@code SkillServiceImpl.discoverFromSandbox} 实时扫描得到，所有 IO 同样走沙箱。</p>
+     * 解析会话上下文中的 skill：直接从沙箱发现，无缓存。
      *
      * @param sessionId 会话 ID
      * @param skillId   技能 ID
      * @return 解析到的技能；找不到时抛 {@link RuntimeException}
      */
     private Skill resolveSessionSkill(String sessionId, String skillId) {
-        try {
-            return skillService.getSkill(skillId);
-        } catch (SkillNotFoundException e) {
-            // 退回到沙箱发现
-            for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-                if (skillId.equals(s.getId())) {
-                    return s;
-                }
+        for (Skill s : skillService.discoverFromSandbox(sessionId)) {
+            if (skillId.equals(s.getId())) {
+                return s;
             }
-            throw new RuntimeException("Skill not found: " + skillId);
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to load skill: " + skillId, e);
         }
+        throw new RuntimeException("Skill not found: " + skillId);
+    }
+
+    /**
+     * 规整自动生成标题，避免空白、换行或超长内容进入会话列表。
+     *
+     * @param title 原始标题
+     * @return 可持久化标题；不可用时返回空字符串
+     */
+    private String normalizeGeneratedTitle(String title) {
+        if (title == null) {
+            return "";
+        }
+        String normalized = title.replaceAll("\\s+", " ").trim();
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        int codePointCount = normalized.codePointCount(0, normalized.length());
+        if (codePointCount <= SESSION_TITLE_MAX_CODE_POINTS) {
+            return normalized;
+        }
+        int endIndex = normalized.offsetByCodePoints(0, SESSION_TITLE_MAX_CODE_POINTS);
+        return normalized.substring(0, endIndex);
     }
 
     @Override

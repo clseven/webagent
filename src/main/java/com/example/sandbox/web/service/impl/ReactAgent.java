@@ -76,12 +76,29 @@ public class ReactAgent {
     /** 用户中断标记（固定文本，有利于缓存命中） */
     private static final String INTERRUPTED_MARKER = "【用户手动暂停】任务被中断。";
 
+    /** 压缩摘要消息前缀，用于识别由上下文压缩生成的 user 消息。 */
+    private static final String COMPACTED_SUMMARY_PREFIX = "[Compacted conversation summary]\n\n";
+
+    /** 摘要输入中单条长内容保留的头部字符数。 */
+    private static final int SUMMARY_CONTENT_HEAD_CHARS = 350;
+
+    /** 摘要输入中单条长内容保留的尾部字符数。 */
+    private static final int SUMMARY_CONTENT_TAIL_CHARS = 350;
+
     private static final String SUMMARIZE_PROMPT = """
-            请用中文将以下对话历史压缩为一段简洁摘要（不超过 500 字），保留：
-            - 用户的核心目标和意图
-            - 已完成的关键操作和结果
-            - 重要的发现或结论
-            不要逐条复述，只提取关键信息。
+            请用中文将以下对话历史压缩为一段可继续执行任务的上下文摘要（不超过 500 字）。
+            只输出摘要正文，不要调用工具，不要输出分析过程。
+
+            必须保留：
+            - 用户当前请求、目标和关键约束
+            - 已完成的重要操作、观察结果和结论
+            - 已读取或修改过的文件、路径、配置和命令
+            - 工具调用产生的关键结果，尤其是仍会影响下一步的结果
+            - 未完成事项、阻塞点和下一步建议
+            - 用户明确表达的偏好、禁止事项和项目规则
+
+            如果已有摘要，请合并更新，不要重复堆叠。
+            如果信息不确定，请标记为“未确认”，不要编造。
 
             %s
 
@@ -134,19 +151,21 @@ public class ReactAgent {
 
             ## 子代理（run_subagent）
 
-            **重要：网络访问、搜索、多步骤耗时操作，必须使用 run_subagent。
-            直接调用 web_search、browser_* 会导致主循环阻塞，浪费你的 token 和时间。**
+            **重要：多步骤耗时操作（需要多次工具调用配合才能完成的复杂任务），使用 run_subagent。
+            convert_to_markdown、web_search 等单次工具调用可直接使用，不会阻塞主循环。**
 
             子代理拥有完整工作能力，内部过程不进入主对话，完成后返回结构化摘要。
             多个子代理可设置 run_in_background=true 并行执行——同时启动它们，
             你继续处理其他事务，等通知回来后综合所有结果。
 
             ### 必须使用子代理的场景
-            - 网络请求（搜索、抓取网页、访问在线文档）
             - 多步骤复杂操作（安装依赖、编译构建、代码审查、数据分析）
+            - 需要浏览器多次交互的网页操作（浏览、填表、截图序列）
+            - 需要搜索引擎多次检索、对比多个来源的网络调研
             - 用户要求同时处理多个独立任务
 
             ### 不需要子代理的场景
+            - 单次工具调用（convert_to_markdown 获取网页内容、web_search 搜索、read_file、write_file 等）
             - 单次文件读写、简单命令等一步完成的轻量操作
 
             ## 文件目录
@@ -228,7 +247,7 @@ public class ReactAgent {
     /** 规划阶段产出的执行计划（注入到 system prompt 中指导执行） */
     private final String plan;
 
-    /** 对话摘要（当历史消息超出 token 预算时，压缩旧消息生成），追加到 system prompt 前 */
+    /** 对话摘要（当历史消息超出 token 预算时生成），实际作为 user 消息保留在 messages 中 */
     private String conversationSummary;
 
     // ==================== Hook 系统 ====================
@@ -663,20 +682,19 @@ public class ReactAgent {
     }
 
     /**
-     * 构建有效的系统提示词（如有摘要则拼接在前面）
+     * 构建有效的系统提示词。
+     *
+     * <p>对话摘要属于会话历史，不混入 system prompt，避免上游模型认为请求中缺少 user query。</p>
      */
     private String effectiveSystemPrompt() {
-        if (conversationSummary == null || conversationSummary.isEmpty()) {
-            return systemPrompt;
-        }
-        return "## 早期对话摘要\n" + conversationSummary + "\n\n" + systemPrompt;
+        return systemPrompt;
     }
 
     /**
      * 如果消息总 token 超过阈值，把最旧的消息压缩为摘要。
      *
      * <p>保留最近 ~40% 的消息作为原始上下文，被压缩的消息从数组中移除，
-     * 生成的摘要追加到 system prompt 前面，让 LLM 仍然能获取早期对话的关键信息。</p>
+     * 生成的摘要作为一条 user 消息放回 messages，确保上游请求仍包含用户查询。</p>
      */
     private void compressIfNeeded(List<ChatMessage> messages) {
         int totalTokens = estimateTokens(messages);
@@ -711,6 +729,7 @@ public class ReactAgent {
 
         String newSummary = summarizeMessages(oldMessages);
         conversationSummary = newSummary;
+        messages.add(0, ChatMessage.userMessage(COMPACTED_SUMMARY_PREFIX + newSummary));
 
         log.info("压缩 {} 条旧消息为摘要 ({} 字符)，剩余 {} 条",
                 oldMessages.size(), newSummary.length(), messages.size());
@@ -721,12 +740,14 @@ public class ReactAgent {
      */
     private String summarizeMessages(List<ChatMessage> oldMessages) {
         StringBuilder history = new StringBuilder();
+        int messageIndex = 1;
         for (ChatMessage msg : oldMessages) {
-            String content = messageContentForContext(msg);
-            String shortContent = content.length() > 500
-                    ? content.substring(0, 500) + "..."
-                    : content;
-            history.append(msg.getRole()).append(": ").append(shortContent).append("\n\n");
+            String structuredMessage = structuredMessageForSummary(messageIndex, msg);
+            if (structuredMessage.isEmpty()) {
+                continue;
+            }
+            history.append(structuredMessage).append("\n");
+            messageIndex++;
         }
 
         String existingNote = conversationSummary != null
@@ -742,6 +763,111 @@ public class ReactAgent {
             log.warn("摘要生成失败，保留原始文本", e);
             return history.toString();
         }
+    }
+
+    /**
+     * 将单条消息转换为给摘要模型读取的强结构文本。
+     *
+     * <p>结构中显式保留序号、角色、工具调用 ID、工具名称和参数，避免摘要模型只靠自然语言顺序猜测消息边界。</p>
+     *
+     * @param index   消息在本次摘要输入中的序号
+     * @param message 待格式化的对话消息
+     * @return 结构化文本；如果消息是旧压缩摘要且应跳过，则返回空字符串
+     */
+    private String structuredMessageForSummary(int index, ChatMessage message) {
+        String content = message.getContent();
+        if ("user".equals(message.getRole()) && content != null && content.startsWith(COMPACTED_SUMMARY_PREFIX)) {
+            return "";
+        }
+
+        StringBuilder entry = new StringBuilder();
+        entry.append("[").append(index).append("]\n");
+        entry.append("role: ").append(message.getRole()).append("\n");
+
+        if (message.getToolCallId() != null && !message.getToolCallId().isBlank()) {
+            entry.append("tool_call_id: ").append(message.getToolCallId()).append("\n");
+        }
+
+        if (!message.getToolCalls().isEmpty()) {
+            entry.append("tool_calls:\n");
+            for (LlmToolCall toolCall : message.getToolCalls()) {
+                entry.append("  - id: ").append(valueOrUnknown(toolCall.id())).append("\n");
+                entry.append("    name: ").append(valueOrUnknown(toolCall.name())).append("\n");
+                entry.append("    arguments: ")
+                        .append(compactSummaryContent(String.valueOf(toolCall.arguments())))
+                        .append("\n");
+            }
+        }
+
+        String summaryContent = summaryContent(message);
+        if (!summaryContent.isEmpty()) {
+            entry.append("content:\n");
+            entry.append(indentSummaryBlock(compactSummaryContent(summaryContent))).append("\n");
+        }
+
+        return entry.toString();
+    }
+
+    /**
+     * 提取单条消息在摘要输入中的正文。
+     *
+     * <p>工具调用消息的结构字段由 {@link #structuredMessageForSummary(int, ChatMessage)} 单独输出；
+     * 这里主要处理普通 content、任务通知过滤和多模态内容提示。</p>
+     *
+     * @param message 待提取正文的消息
+     * @return 可放入摘要输入的正文，可能为空字符串
+     */
+    private String summaryContent(ChatMessage message) {
+        if (message.getContent() != null) {
+            if (message.getContent().startsWith("<task_notification>")) {
+                return "";
+            }
+            return message.getContent();
+        }
+        if (message.getContentParts() != null && !message.getContentParts().isEmpty()) {
+            return "[多模态内容块数量: " + message.getContentParts().size() + "]";
+        }
+        return "";
+    }
+
+    /**
+     * 压缩单条摘要输入内容，长文本保留头尾并标明中间省略长度。
+     *
+     * @param content 原始内容
+     * @return 适合放入摘要提示词的短内容
+     */
+    private String compactSummaryContent(String content) {
+        if (content == null) {
+            return "";
+        }
+        int maxLength = SUMMARY_CONTENT_HEAD_CHARS + SUMMARY_CONTENT_TAIL_CHARS;
+        if (content.length() <= maxLength) {
+            return content;
+        }
+        int omitted = content.length() - maxLength;
+        return content.substring(0, SUMMARY_CONTENT_HEAD_CHARS)
+                + "\n...[中间省略 " + omitted + " 字符]...\n"
+                + content.substring(content.length() - SUMMARY_CONTENT_TAIL_CHARS);
+    }
+
+    /**
+     * 为多行摘要正文增加缩进，使结构化消息更容易被模型区分字段和值。
+     *
+     * @param content 待缩进内容
+     * @return 每行前缀两个空格的内容
+     */
+    private String indentSummaryBlock(String content) {
+        return "  " + content.replace("\n", "\n  ");
+    }
+
+    /**
+     * 将空白技术标识符转换为占位文本，避免摘要输入中出现不可辨认的空字段。
+     *
+     * @param value 原始标识符
+     * @return 原值或 unknown 占位
+     */
+    private String valueOrUnknown(String value) {
+        return value == null || value.isBlank() ? "unknown" : value;
     }
 
     /**
@@ -1022,6 +1148,18 @@ public class ReactAgent {
                     // 发送思考开始事件
                     sink.next(SseEvent.thinkingStart(iteration.get()));
 
+                    // 注入后台任务完成通知
+                    if (backgroundTaskManager != null) {
+                        String notification = backgroundTaskManager.collect(sessionId);
+                        if (notification != null) {
+                            log.info("[后台子代理] 收集到通知并注入消息循环: {} 字符", notification.length());
+                            messages.add(ChatMessage.userMessage(notification));
+                            sink.next(SseEvent.status("后台子代理已完成，结果已注入对话"));
+                            log.debug("[后台子代理] 通知内容预览: {}",
+                                    notification.length() > 200 ? notification.substring(0, 200) + "..." : notification);
+                        }
+                    }
+
                     // 压缩历史消息（如果需要）
                     compressIfNeeded(messages);
 
@@ -1080,6 +1218,10 @@ public class ReactAgent {
 
                     // 检查是否被中断
                     if (sink.isCancelled()) {
+                        // 取消后台任务
+                        if (backgroundTaskManager != null) {
+                            backgroundTaskManager.cancelAll(sessionId);
+                        }
                         // 保存中断时的 partial 内容
                         saveInterruptedMessages(currentThinking.toString(), currentReasoning.toString());
                         sink.next(SseEvent.interrupted("用户手动暂停"));
@@ -1157,6 +1299,69 @@ public class ReactAgent {
                             log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
                             messages.add(ChatMessage.userMessage(forceContinue));
                             continue;
+                        }
+
+                        // 最终返回前等待遗留后台任务
+                        if (backgroundTaskManager != null && backgroundTaskManager.isPending(sessionId)) {
+                            log.info("[后台子代理] 最终返回前等待后台任务完成...");
+                            sink.next(SseEvent.status("等待后台子代理完成..."));
+
+                            String remaining = backgroundTaskManager.awaitPending(sessionId, 30_000);
+                            int digestRound = 0;
+                            while (remaining != null && !remaining.isEmpty()) {
+                                digestRound++;
+                                log.info("[后台子代理] 第 {} 轮消化: 通知长度 {} 字符",
+                                        digestRound, remaining.length());
+                                messages.add(ChatMessage.userMessage(remaining));
+                                sink.next(SseEvent.status("后台子代理结果已返回，正在消化..."));
+
+                                // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮
+                                for (int digest = 0; digest < 6; digest++) {
+                                    if (sink.isCancelled()) break;
+
+                                    log.info("[后台子代理] 消化步骤 {}/{} 开始", digest + 1, 6);
+
+                                    LlmResponse digestResponse = llmService.chatWithTools(
+                                            effectiveSystemPrompt(), messages, toolDefinitions);
+                                    if (digestResponse.getTokenUsage() != null) {
+                                        LlmUsage usage = digestResponse.getTokenUsage();
+                                        totalPromptTokens.addAndGet(usage.promptTokens());
+                                        totalCompletionTokens.addAndGet(usage.completionTokens());
+                                        totalCacheHitTokens.addAndGet(usage.cacheHitTokens());
+                                        totalTokens.addAndGet(usage.totalTokens());
+                                    }
+                                    if (digestResponse.isFinished()) {
+                                        finalContent = digestResponse.getContent() != null
+                                                ? digestResponse.getContent() : finalContent;
+                                        finalReasoning = digestResponse.getReasoningContent() != null
+                                                ? digestResponse.getReasoningContent() : finalReasoning;
+                                        log.info("[后台子代理] 消化步骤 {}/{} LLM 返回最终答案，消化结束",
+                                                digest + 1, 6);
+                                        break;
+                                    }
+                                    if (digestResponse.hasToolCall()) {
+                                        LlmToolCall tc = digestResponse.getToolCall();
+                                        log.info("[后台子代理] 消化步骤 {}/{} 调用工具: {}",
+                                                digest + 1, 6, tc.name());
+
+                                        int digestStep = currentStep + digest + 1;
+                                        sink.next(SseEvent.toolCall(tc.name(), tc.arguments(), digestStep));
+
+                                        String obs = executeTool(sessionId, tc.name(), tc.arguments());
+                                        LlmToolCall historyTc = ensureToolCallId(tc);
+                                        messages.add(ChatMessage.assistantToolCallMessage(historyTc));
+                                        messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
+
+                                        sink.next(SseEvent.observation(tc.name(), obs, 0));
+                                        log.info("[后台子代理] 消化步骤 {}/{} 工具 {} 结果: {} 字符",
+                                                digest + 1, 6, tc.name(),
+                                                obs != null ? obs.length() : 0);
+                                    }
+                                }
+                                // 继续收集可能在此期间完成的新通知
+                                remaining = backgroundTaskManager.collect(sessionId);
+                            }
+                            log.info("[后台子代理] 所有后台任务处理完毕");
                         }
 
                         // 保存完成的助手消息

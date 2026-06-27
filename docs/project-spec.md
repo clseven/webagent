@@ -349,3 +349,17 @@ String path = arguments.get("path");
 **决策**：executorLlm 从 DeepSeek 切换为 Agnes（`agnes-2.0-flash`）。
 
 **理由**：Agnes 免费且支持多模态视觉输入，与 `view_image` 工具链路天然匹配。`DeepSeekLlmServiceImpl` 保留但不注册为 Bean，切换回 DeepSeek 时恢复 `@Service("executorLlm")` 注解即可。
+
+---
+
+### ADR-005 轻量输入可跳过 PlanAgent
+
+**时间**：2026-06
+
+**决策**：对“你好”“谢谢”“再见”等确定无需规划模型的纯社交输入，在 `AgentServiceImpl` 前置调用 `LightweightChatRouter`。命中后跳过 `PlanAgent`，但仍进入 `ReactAgent` 生成最终回复。前端提供“规划模式”开关，非轻量请求按该开关决定是否调用 `PlanAgent`。
+
+**排除方案**：
+- 命中后本地固定回复：成本最低，但会绕过执行器模型，回复风格和上下文处理不一致。
+- 在前端短路：会绕过后端历史保存、权限校验和多端一致性。
+
+**理由**：`PlanAgent` 与 `ReactAgent` 已通过 `plan` 参数解耦，`plan=null` 时 `ReactAgent` 可以独立执行。轻量路由只做保守的确定性匹配，可以减少不必要的规划模型调用，同时不影响“继续”“确认”“安装吧”等依赖上下文或需要工具观察的请求继续走完整 Agent 链路。

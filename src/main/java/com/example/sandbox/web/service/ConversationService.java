@@ -52,6 +52,16 @@ public interface ConversationService {
     void addAssistantMessage(String sessionId, String content, String reasoning, List<Map<String, Object>> events);
 
     /**
+     * 更新自动生成的会话标题。
+     *
+     * <p>该方法只应覆盖空标题或默认标题，避免后台标题生成任务误覆盖用户已有标题。</p>
+     *
+     * @param sessionId 会话 ID
+     * @param title     生成后的标题；为空时不更新
+     */
+    void updateGeneratedTitle(String sessionId, String title);
+
+    /**
      * 获取消息历史
      *
      * @param sessionId 会话 ID
