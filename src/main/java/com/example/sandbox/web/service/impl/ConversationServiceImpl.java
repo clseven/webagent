@@ -180,8 +180,8 @@ public class ConversationServiceImpl implements ConversationService {
 
             if (!available.isEmpty()) {
                 prompt.append("## 已启用技能\n\n");
-                prompt.append("以下技能已为当前会话启用。所有技能都住在沙箱 ")
-                      .append(Skill.SANDBOX_SKILL_ROOT).append("/<id>/。\n");
+                prompt.append("以下技能已为当前会话启用。技能文件来自当前会话沙箱 ")
+                      .append(Skill.SANDBOX_SKILL_ROOT).append(" 下发现到的真实技能目录。\n");
                 prompt.append("调用 `skill_activate(skill_id=\"技能ID\")` 获取详细指令。\n\n");
                 for (String skillId : enabledSkillIds) {
                     Skill skill = available.get(skillId);
@@ -291,7 +291,17 @@ public class ConversationServiceImpl implements ConversationService {
         if (sandboxService != null && sandboxService.hasSandbox(sessionId)) {
             try {
                 AioClient client = sandboxClientFactory.getAioClient(sessionId);
-                client.execCommand("rm -rf /home/gem/skills/" + skillId);
+                Skill sandboxSkill = null;
+                for (Skill s : skillService.discoverFromSandbox(sessionId)) {
+                    if (skillId.equals(s.getId())) {
+                        sandboxSkill = s;
+                        break;
+                    }
+                }
+                String skillPath = sandboxSkill != null
+                        ? sandboxSkill.sandboxBasePath()
+                        : Skill.SANDBOX_SKILL_ROOT + "/" + skillId;
+                client.execCommand("rm -rf " + shellQuote(skillPath));
                 log.info("已从沙箱移除技能文件: {}", skillId);
             } catch (Exception e) {
                 log.warn("清理沙箱技能文件失败: {}", skillId, e);
@@ -554,6 +564,16 @@ public class ConversationServiceImpl implements ConversationService {
         sb.append("\n=== SKILL.md ===\n");
         sb.append(body != null ? body : "");
         return sb.toString();
+    }
+
+    /**
+     * 把字符串包装成单引号 shell 参数，避免真实技能路径中出现特殊字符时破坏清理命令。
+     *
+     * @param value 原始路径
+     * @return 转义后的 shell 参数
+     */
+    private String shellQuote(String value) {
+        return "'" + value.replace("'", "'\"'\"'") + "'";
     }
 
     /**

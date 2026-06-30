@@ -867,7 +867,7 @@ public class AgentServiceImpl implements AgentService {
                 // Phase 1: 按请求开关和轻量判断决定是否调用 PlanAgent
                 String plan = null;
                 if (shouldRunPlanAgent) {
-                    List<Skill> skills = skillService.listSkills();
+                    List<Skill> skills = skillService.discoverFromSandbox(sessionId);
 
                     if (app != null && !app.getSkillIds().isEmpty()) {
                         Set<String> appSkillIds = app.getSkillIds();

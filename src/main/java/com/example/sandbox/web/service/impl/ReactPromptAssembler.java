@@ -41,7 +41,7 @@ final class ReactPromptAssembler {
             - /home/gem/uploads/ - 用户上传文件
             - /home/gem/workspace/ - 工作目录
             - /home/gem/output/ - 输出结果
-            - /home/gem/skills/{id}/ - 技能文件
+            - /home/gem/skills/ - 技能包根目录，系统会递归发现其中的 SKILL.md/skill.md
             - /home/gem/temp/ - 临时文件
             """;
 
@@ -61,7 +61,9 @@ final class ReactPromptAssembler {
             ## 技能系统
 
             技能补充特定任务的工作方法，只在相关时才加载，不遍历全部。
-            所有 skill（包括新建和下载安装的）都必须放到 /home/gem/skills/<id>/，否则不会被 skill_list 发现。
+            新建或下载安装 skill 时，将包含 SKILL.md/skill.md 的真实技能目录放在 /home/gem/skills 下；
+            可以是 /home/gem/skills/<id>/，也可以是技能包内部的 /home/gem/skills/<package>/skill/<id>/。
+            系统会从当前沙箱自动发现这些技能，skill_list 只用于查看已启用和已发现的结果，不负责触发发现。
 
             - skill_list：列出可用技能（已启用 + 沙箱发现）
             - skill_activate：激活技能，获取完整指令、scripts 和 references
