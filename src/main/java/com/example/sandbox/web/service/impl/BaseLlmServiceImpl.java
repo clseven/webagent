@@ -611,9 +611,9 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      */
     private void logRequest(int messageCount, int toolCount) {
         if (toolCount > 0) {
-            log.info("【LLM 请求】messages: {} tools: {}", messageCount, toolCount);
+            log.debug("【LLM 请求准备】businessMessages={} tools={}", messageCount, toolCount);
         } else {
-            log.info("【LLM 请求】messages: {}", messageCount);
+            log.debug("【LLM 请求准备】businessMessages={}", messageCount);
         }
     }
 
@@ -626,37 +626,129 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             int msgCount = messages != null ? messages.size() : 0;
             int toolCount = tools != null ? tools.size() : 0;
 
-            // 取最后一条消息的 role + 内容摘要
             String latestInfo = "";
             if (messages != null && !messages.isEmpty()) {
-                Map<String, Object> last = messages.get(messages.size() - 1);
-                String role = (String) last.getOrDefault("role", "?");
-                String content = (String) last.getOrDefault("content", "");
-                // tool_calls 消息没有 content，取 tool_calls 信息
-                if (content == null || content.isEmpty()) {
-                    List<Map<String, Object>> tcList = (List<Map<String, Object>>) last.get("tool_calls");
-                    if (tcList != null && !tcList.isEmpty()) {
-                        String tcName = "?";
-                        Map<String, Object> fn = (Map<String, Object>) tcList.get(0).get("function");
-                        if (fn != null) {
-                            tcName = (String) fn.getOrDefault("name", "?");
-                        }
-                        content = "[tool_call: " + tcName + "]";
-                    } else {
-                        content = "(empty)";
-                    }
-                }
-                // 截断过长内容
-                if (content.length() > 100) {
-                    content = content.substring(0, 100) + "...";
-                }
-                latestInfo = " latest=" + role + "(\"" + content + "\")";
+                latestInfo = buildLatestMessageLogInfo(messages.get(messages.size() - 1));
             }
 
-            log.info("【LLM 请求】model={} messages={} tools={}{}", model, msgCount, toolCount, latestInfo);
+            log.info("【LLM 请求摘要】model={} apiMessages={} tools={}{}", model, msgCount, toolCount, latestInfo);
         } catch (Exception e) {
-            log.warn("【LLM 请求】摘要生成失败", e);
+            log.warn("【LLM 请求摘要】生成失败", e);
         }
+    }
+
+    /**
+     * 构建最后一条消息的日志字段，帮助判断进入模型的是文本、工具结果还是多模态内容。
+     *
+     * @param latestMessage API 请求体中的最后一条 messages[] 元素
+     * @return 可直接追加到请求摘要日志的字段串
+     */
+    @SuppressWarnings("unchecked")
+    private String buildLatestMessageLogInfo(Map<String, Object> latestMessage) {
+        if (latestMessage == null || latestMessage.isEmpty()) {
+            return " latestRole=? hasContentParts=false latestContentChars=0 latestContentFull=\"(empty)\"";
+        }
+
+        String role = String.valueOf(latestMessage.getOrDefault("role", "?"));
+        Object content = latestMessage.get("content");
+
+        if (content instanceof List<?> contentParts) {
+            return buildContentPartsLogInfo(role, contentParts);
+        }
+
+        String latestContent;
+        if (content instanceof String text && !text.isEmpty()) {
+            latestContent = text;
+        } else {
+            latestContent = summarizeToolCallContent((List<Map<String, Object>>) latestMessage.get("tool_calls"));
+        }
+
+        return " latestRole=" + role
+                + " hasContentParts=false"
+                + " latestContentChars=" + latestContent.length()
+                + " latestContentFull=\"" + latestContent + "\"";
+    }
+
+    /**
+     * 构建多模态 content 数组的安全日志字段，只记录结构信息，不输出图片 base64 或远程 URL 全量。
+     *
+     * @param role         最新消息角色
+     * @param contentParts OpenAI vision 格式的 content 数组
+     * @return 多模态结构摘要字段
+     */
+    private String buildContentPartsLogInfo(String role, List<?> contentParts) {
+        List<String> types = new ArrayList<>();
+        List<String> imageUrlKinds = new ArrayList<>();
+        int imageParts = 0;
+
+        for (Object part : contentParts) {
+            if (!(part instanceof Map<?, ?> partMap)) {
+                types.add("?");
+                continue;
+            }
+
+            Object typeValue = partMap.get("type");
+            String type = typeValue != null ? String.valueOf(typeValue) : "?";
+            types.add(type);
+
+            if ("image_url".equals(type)) {
+                imageParts++;
+                imageUrlKinds.add(classifyImageUrlKind(partMap.get("image_url")));
+            }
+        }
+
+        return " latestRole=" + role
+                + " hasContentParts=true"
+                + " contentParts=" + contentParts.size()
+                + " contentPartTypes=" + types
+                + " imageParts=" + imageParts
+                + " imageUrlKinds=" + imageUrlKinds;
+    }
+
+    /**
+     * 从 assistant tool_calls 消息中提取工具名，作为没有 content 字段时的可读占位文本。
+     *
+     * @param toolCalls tool_calls 数组，可为 null
+     * @return 工具调用摘要或空消息占位文本
+     */
+    private String summarizeToolCallContent(List<Map<String, Object>> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return "(empty)";
+        }
+
+        Map<String, Object> firstToolCall = toolCalls.get(0);
+        Object functionValue = firstToolCall.get("function");
+        if (!(functionValue instanceof Map<?, ?> function)) {
+            return "[tool_call: ?]";
+        }
+
+        Object nameValue = function.get("name");
+        String toolName = nameValue != null ? String.valueOf(nameValue) : "?";
+        return "[tool_call: " + toolName + "]";
+    }
+
+    /**
+     * 分类图片 URL 来源，避免日志记录图片正文、base64 或完整外部地址。
+     *
+     * @param imageUrlValue image_url 字段，通常是包含 url 的对象
+     * @return 图片 URL 类型
+     */
+    private String classifyImageUrlKind(Object imageUrlValue) {
+        if (!(imageUrlValue instanceof Map<?, ?> imageUrl)) {
+            return "unknown";
+        }
+
+        Object urlValue = imageUrl.get("url");
+        if (!(urlValue instanceof String url) || url.isBlank()) {
+            return "empty";
+        }
+        if (url.startsWith("data:")) {
+            return "data-url";
+        }
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+            return "http-url";
+        }
+        return "other";
     }
 
     @SuppressWarnings("unchecked")
