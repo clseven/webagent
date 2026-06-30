@@ -58,8 +58,7 @@ public class BrowserScreenshotTool implements Tool {
         properties.put("url", Map.of(
                 "type", "string",
                 "description", """
-                        可选。提供时先通过地址栏导航到该 URL，固定等待 1 秒后截图；
-                        不提供时直接截取当前页面。复杂导航优先使用 browser_execute 的 page.goto。
+                        可选。提供时先导航到该 URL 再截图；省略则截取当前页面。
                         """
         ));
 
@@ -73,11 +72,8 @@ public class BrowserScreenshotTool implements Tool {
         return new ToolDefinition(
                 NAME,
                 """
-                        截取当前浏览器视口并返回可查看的图片链接，用于视觉核对、验证码、
-                        Canvas 或 DOM 语义信息不足的页面。此工具不能理解图片内容或返回 DOM。
-                        需要页面文本和交互元素时使用 browser_inspect。
-                        坐标点击前先截图，页面变化后重新截图，避免使用过期坐标。
-                        当页面包含用户需要看到的内容（二维码、验证码、图形验证等）时，截图结果会以图片形式展示给用户，务必截图让用户查看。
+                        截取当前浏览器视口，返回可在聊天窗口展示的图片链接。
+                        当用户需要亲眼看到页面视觉内容时使用。
                         """,
                 parameters,
                 "AIO"
@@ -139,7 +135,8 @@ public class BrowserScreenshotTool implements Tool {
             String downloadUrl = baseUrl + "/api/sessions/" + sessionId + "/files/download?path=" + encodedPath;
             return "截图成功！文件路径: " + filePath + "，大小: " + screenshot.length + " bytes\n\n" +
                    "![截图](" + downloadUrl + ")\n\n" +
-                   "下载链接: " + downloadUrl;
+                   "下载链接: " + downloadUrl + "\n\n" +
+                   "如果需要理解截图内容，请继续调用 view_image，参数 path 使用: " + filePath;
         } catch (Exception e) {
             log.error("截图失败", e);
             return "截图失败：" + e.getMessage();

@@ -73,8 +73,7 @@ public class KnowledgeSearchTool implements Tool {
 
         Map<String, Object> queryProp = new LinkedHashMap<>();
         queryProp.put("type", "string");
-        queryProp.put("description", "搜索查询内容。必须是基于完整对话上下文的独立可搜关键词，" +
-                "不能使用代词（它/这/那）。例如：将\"它怎么用\"改为\"Spring Bean的使用方法\"");
+        queryProp.put("description", "用于向量检索的关键词或问题。请使用自包含表述，不依赖对话代词。");
         properties.put("query", queryProp);
 
         Map<String, Object> topKProp = new LinkedHashMap<>();

@@ -14,7 +14,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -119,7 +118,8 @@ public class RunSubagentTool implements Tool {
 
             ## 重要规则
             1. 直接执行操作，不要询问用户问题
-            2. 截图会自动保存，你只需要在摘要中说明截图内容
+            2. 截图只会保存图片文件；如果需要根据截图内容判断页面状态，
+               必须继续调用 view_image 读取刚生成的图片路径后再分析
             3. 执行完成后，按以下格式输出摘要：
 
             ## 操作摘要
@@ -163,23 +163,6 @@ public class RunSubagentTool implements Tool {
             4. 整体输出保持在 500 字以内
             5. 如果任务无法完成，如实说明原因
             """;
-
-    // ==================== 各类型子代理的工具白名单 ====================
-
-    private static final Set<String> ANALYZER_TOOLS = Set.of(
-            "read_file", "list_files", "file_search", "execute_command",
-            "write_file", "str_replace_editor", "file_replace",
-            "download_file", "convert_to_markdown", "document_parser"
-    );
-
-    private static final Set<String> SEARCHER_TOOLS = Set.of(
-            "knowledge_search"
-    );
-
-    private static final Set<String> BROWSER_TOOLS = Set.of(
-            "browser_action", "browser_screenshot", "browser_info",
-            "browser_execute", "browser_inspect"
-    );
 
     // ==================== Tool 接口实现 ====================
 
@@ -325,11 +308,11 @@ public class RunSubagentTool implements Tool {
      * 根据类型获取受限工具列表。
      *
      * <p>工具从父 Agent 的工具集中按名称过滤。父 Agent 的工具实例
-     * 已经包含了正确的 sessionId 绑定。</p>
+     * 已经包含了正确的 sessionId 绑定。子代理默认继承父 Agent 当前可用的全部工具，
+     * 只排除 run_subagent 自身，避免递归创建子代理。具体类型只影响子代理提示词，
+     * 不再维护独立白名单，防止新增工具遗漏。</p>
      */
     private List<Tool> getRestrictedTools(String type) {
-        Set<String> allowedNames = getAllowedToolNames(type);
-
         List<Tool> allTools = parentAgent.getTools();
         List<Tool> filtered = new ArrayList<>();
         for (Tool tool : allTools) {
@@ -338,25 +321,9 @@ public class RunSubagentTool implements Tool {
             if (NAME.equals(name)) {
                 continue;
             }
-            // general 类型：包含所有工具（除 run_subagent）
-            if (allowedNames == null || allowedNames.contains(name)) {
-                filtered.add(tool);
-            }
+            filtered.add(tool);
         }
         return filtered;
-    }
-
-    /**
-     * 根据类型返回允许的工具名称集合。
-     */
-    private Set<String> getAllowedToolNames(String type) {
-        return switch (type) {
-            case "analyzer" -> ANALYZER_TOOLS;
-            case "searcher" -> SEARCHER_TOOLS;
-            case "browser" -> BROWSER_TOOLS;
-            case "general" -> null; // null 表示"除 run_subagent 外的所有工具"
-            default -> ANALYZER_TOOLS; // 未知类型默认 analyzer
-        };
     }
 
     /**

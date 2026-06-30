@@ -47,12 +47,12 @@ public class McpAddOrUpdateServerTool implements Tool {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("server_id", Map.of(
                 "type", "string",
-                "description", "小写 Server ID；连接失败后重试必须复用原 ID，不能另建重复配置"
+                "description", "小写 Server ID；重试时复用，不另建"
         ));
         properties.put("type", Map.of(
                 "type", "string",
                 "enum", List.of("streamable-http", "shell"),
-                "description", "transport 类型；省略时按 streamable-http 处理"
+                "description", "streamable-http | shell；省略时按 streamable-http 处理"
         ));
         properties.put("url", Map.of(
                 "type", "string",
@@ -65,7 +65,7 @@ public class McpAddOrUpdateServerTool implements Tool {
         properties.put("args", Map.of(
                 "type", "array",
                 "items", Map.of("type", "string"),
-                "description", "shell 类型的命令参数，不允许空白项；filesystem 例如 [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/home/gem/workspace\"]"
+                "description", "shell 类型的命令参数列表，需完整填写不留空"
         ));
         properties.put("enabled", Map.of(
                 "type", "boolean",
@@ -73,20 +73,13 @@ public class McpAddOrUpdateServerTool implements Tool {
         ));
         properties.put("confirmed", Map.of(
                 "type", "boolean",
-                "description", "只有在用户已明确确认该 MCP 来源、URL 和能力后才能设为 true"
+                "description", "用户已确认安装方案后设为 true"
         ));
 
         return new ToolDefinition(
                 NAME,
-                "把用户私有 MCP Server 添加到当前 WebAgent。远程服务使用 streamable-http；"
-                        + "需要在用户 Sandbox 内运行 stdio MCP 时使用 shell。若本轮尚未核实配置，"
-                        + "必须先搜索或读取官方来源，向用户展示连接方式、能力和限制并获得确认；"
-                        + "若对话历史已经完成核实，且用户当前"
-                        + "回复“确认”“可以”“安装吧”等肯定表达，应直接使用历史中的配置调用本工具，"
-                        + "不要再询问 VS Code、Claude Desktop 等目标环境。HTTP URL 必须是精确 endpoint，"
-                        + "shell command/args 会在用户 Sandbox 内运行，不会在后端主机运行；"
-                        + "重试时复用原 server_id；相同 HTTP endpoint 会自动复用已有配置。"
-                        + "暂不支持 headers、Token 或 API Key。",
+                "添加或更新当前用户的私有 MCP Server。支持 streamable-http（远程 endpoint）"
+                        + "和 shell（在用户沙箱内 stdio 启动）。需要 confirmed=true 才会执行。",
                 Map.of(
                         "type", "object",
                         "properties", properties,

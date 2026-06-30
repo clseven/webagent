@@ -50,10 +50,7 @@ public class BrowserInfoTool implements Tool {
         return new ToolDefinition(
                 NAME,
                 """
-                        查询 AIO 浏览器运行状态，返回是否可连接、User-Agent 和视口大小。
-                        此工具不读取网页 DOM、当前 URL 或页面内容，也不会返回内部 CDP 地址。
-                        通常不必在每次操作前调用；页面观察请使用 browser_inspect，
-                        视觉核对请使用 browser_screenshot。
+                        查询浏览器连接状态、User-Agent 和视口大小。
                         """,
                 parameters,
                 "AIO"

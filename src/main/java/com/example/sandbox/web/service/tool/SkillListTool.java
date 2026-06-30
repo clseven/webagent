@@ -55,9 +55,7 @@ public class SkillListTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "【首先使用此工具】列出当前会话已启用的技能；同时报告沙箱 /home/gem/skills/ 下存在但尚未启用的技能"
-                        + "（通常是后下载的，需要用户在前端启用）。返回每个技能的 ID 和一句话描述。"
-                        + "在调用 skill_activate 之前必须先调用此工具，了解有哪些可用技能。",
+                "列出当前可用的技能（已启用 + 沙箱中发现）。返回每个技能的 ID 和一行描述。",
                 parameters,
                 "ALL"
         );

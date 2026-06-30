@@ -61,20 +61,8 @@ public class BrowserActionTool implements Tool {
     @Override
     public ToolDefinition getDefinition() {
         String description = """
-                执行一个原子的键盘或鼠标动作。适合坐标点击、滚动、快捷键等简单操作，
-                也是 browser_execute 无法使用 DOM 定位时的视觉兜底。
-
-                使用规则：
-                - 每次调用只执行一个动作；
-                - 坐标以当前浏览器视口左上角为 (0,0)，单位为 CSS 像素；
-                - 坐标操作前先调用 browser_screenshot，页面变化后重新截图；
-                - SCROLL 中 dy > 0 向下滚动，dy < 0 向上滚动；
-                - WAIT 的 duration 单位是秒且必须大于 0；
-                - 需要理解页面结构、按文本定位或连续完成多步操作时，优先使用
-                  browser_inspect + browser_execute。
-
-                导航可使用 HOTKEY(ctrl+l) → TYPING(url) → PRESS(enter)，
-                但更推荐 browser_execute 中的 page.goto(url)。
+                在浏览器中执行一个原子动作（点击、输入、按键、滚动、悬停等）。
+                每次只能执行一个。
                 """;
 
         Map<String, Object> properties = new LinkedHashMap<>();

@@ -47,7 +47,7 @@ public class ConvertToMarkdownTool implements Tool {
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("uri", Map.of(
                 "type", "string",
-                "description", "要转换的 URI，支持网页 URL（如 https://example.com）或文件路径"
+                "description", "URL 或沙箱内文件路径"
         ));
 
         Map<String, Object> parameters = Map.of(
@@ -58,8 +58,7 @@ public class ConvertToMarkdownTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "直接抓取网页或文档内容并转换为 Markdown。把 URL 给它，一步拿到干净的正文，无需浏览器、无需下载。"
-                        + "适用于：抓取网页文章、API 文档、技术博客、PDF/Word 文档等。自动去除广告、导航、侧栏等噪音，返回纯净可读的 Markdown。",
+                "将网页 URL 或本地文档（HTML/PDF/Word 等）转换为 Markdown 文本。",
                 parameters,
                 "AIO"
         );

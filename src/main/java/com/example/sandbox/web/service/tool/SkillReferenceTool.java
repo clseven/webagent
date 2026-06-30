@@ -43,7 +43,7 @@ public class SkillReferenceTool implements Tool {
         ));
         properties.put("path", Map.of(
                 "type", "string",
-                "description", "要读取的引用文件路径"
+                "description", "相对于该 skill 目录的路径"
         ));
 
         Map<String, Object> parameters = Map.of(
@@ -54,9 +54,7 @@ public class SkillReferenceTool implements Tool {
 
         return new ToolDefinition(
                 NAME,
-                "读取技能的引用文件（来自沙箱 /home/gem/skills/<id>/<path>）。"
-                        + "path 必须是相对于 skill 目录的路径，禁止 ../ 或绝对路径。"
-                        + "当技能指令中提到某个参考文档、模板或示例时，使用此工具获取内容。",
+                "读取已激活技能的附属引用文件（模板、示例等）。",
                 parameters,
                 "ALL"
         );

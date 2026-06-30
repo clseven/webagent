@@ -60,16 +60,10 @@ public class BrowserExecuteTool implements Tool {
                 "type", "string",
                 "minLength", 1,
                 "description", """
-                        JavaScript async 函数体。运行时已提供 Playwright 的 page 变量。
-                        优先使用 page.getByRole/getByLabel/getByPlaceholder/getByText，
-                        selector 不稳定时先调用 browser_inspect。
-                        最后 return 一个可 JSON 序列化的简短结果，例如：
-                        await page.getByRole('button', {name: '登录'}).click();
-                        await page.waitForLoadState('domcontentloaded');
-                        return {url: page.url(), title: await page.title()};
-
-                        不要 import/require，不要访问 process、文件系统或 shell，
-                        不要启动新浏览器、新建或关闭 page/context。
+                        要执行的 JavaScript 代码。可用全局变量：page（当前页面）。
+                        可以使用 page.goto、page.evaluate、page.locator 等 Playwright API。
+                        不要 require/import，不要新建或关闭 page/context，不要访问 process。
+                        最后 return 一个可 JSON 序列化的简短结果。
                         """
         ));
         properties.put("timeout_seconds", Map.of(
@@ -87,20 +81,8 @@ public class BrowserExecuteTool implements Tool {
                 "additionalProperties", false
         );
         String description = """
-                在当前 AIO 浏览器标签页中执行一段 Playwright JavaScript。
-                适合语义定位、读取 DOM、导航、填写表单、点击和等待页面状态；
-                比 browser_action 的坐标操作更通用、更可靠。
-
-                调用前通常先使用 browser_inspect。代码中直接使用预先提供的 page，
-                不需要也不能处理 CDP、Playwright 导入或浏览器生命周期。
-                一次调用应完成一组紧密相关的操作，并 return 简短的结构化结果。
-                执行后使用 browser_inspect 或 browser_screenshot 验证页面状态。
-
-                不要在未经用户确认时完成支付、发布、删除、发送消息等不可逆操作。
-
-                搜索兜底限制：当 web_search 返回 SEARCH_SOURCE_BLOCKED 时，
-                浏览器搜索兜底最多访问一个明确新闻源（如 Google News），
-                不要连续尝试百度、Bing、Google 多个搜索页，避免 token 消耗过大。
+                在浏览器中执行 Playwright JavaScript 代码。代码运行在 page 全局上下文中，
+                可以使用 page.goto、page.evaluate、page.locator 等 Playwright API。
                 """;
         return new ToolDefinition(NAME, description, parameters, "AIO");
     }
