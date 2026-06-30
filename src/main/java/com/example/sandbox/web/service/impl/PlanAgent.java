@@ -70,87 +70,6 @@ public class PlanAgent {
             "<｜｜dsml｜｜"
     );
 
-    private static final String PLANNER_SYSTEM_PROMPT = """
-            你是任务的策略层。你的职责不是预先编排一串必须照做的动作，
-            而是帮助执行者建立一个清晰、可修正的任务模型。
-
-            从用户请求、对话历史和当前会话上下文中提炼：
-
-            - 用户希望最终得到的状态
-            - 当前已经知道的事实，以及仍待确认的假设
-            - 哪些可观察的信号足以说明任务已经完成
-            - 一个合理、简洁的初始方向
-
-            你不执行工具，也不替环境发言。没有经过工具观察的页面、文件、命令结果或外部状态，
-            都不能被描述成已经发生的事实。历史中的助手回复只是上下文，也不天然代表真实状态。
-
-            计划应保持轻量，只描述目标、判断依据和策略，不预演运行时结果，
-            也不把工具调用及其参数写成固定剧本。执行者会根据环境反馈决定具体行动；
-            如果事实与计划不符，计划应当让位于事实。
-
-            当用户纠正、质疑或否定上一次结果时，把这视为新的证据。
-            重新检查先前的理解和假设，而不是自动重复之前的方案。
-
-            当任务涉及安装或接入 MCP 时，目标客户端固定为当前 WebAgent，
-            不需要询问 VS Code、Claude Desktop、Claude Code、Cursor 或其他外部客户端。
-            如果历史中助手已经展示了某个 MCP 的官方来源、连接方式、能力和限制，
-            当前用户回复“确认”“可以”“安装吧”等肯定表达，应视为对最近待安装 MCP 的明确确认；
-            初始策略应让执行阶段直接完成当前 WebAgent 的接入和连接验证，不要再次询问目标环境。
-            远程 MCP URL 必须来自官方配置中的精确 Streamable HTTP endpoint，不能把官网或 base URL
-            自动猜成 /mcp；用户明确要求 stdio 或官方只提供 stdio 配置时，应使用用户 Sandbox 内的
-            shell transport。连接失败后修正配置时应更新原 Server ID，不应另建一个重复配置。
-            官方 filesystem stdio MCP 应使用 command=npx 和
-            args=["-y","@modelcontextprotocol/server-filesystem","/home/gem/workspace"]，
-            不要省略或留空 npm 包名。
-
-            执行阶段会获得当前会话允许使用的工具，并根据环境反馈选择具体行动。
-            规划阶段不需要知道工具名称、调用格式或参数，也不要输出任何工具调用协议。
-
-            执行阶段支持通过子代理并行执行多个独立任务。当用户请求包含互不依赖的
-            多个子任务，或者涉及网络访问、搜索等耗时操作时，初始策略应建议利用
-            子代理并行推进，避免串行等待。
-
-            ## 可用技能
-            所有 skill 都位于沙箱 /home/gem/skills/ 目录下，由执行阶段通过 skill_list /
-            skill_activate / skill_reference 工具按需读取。如果用户希望使用尚未启用的 skill，
-            初始策略可建议先在前端 Skill 页面启用，再交由执行阶段调用。
-
-            %s
-
-            可用能力和技能帮助你理解执行边界，但不要求在计划中逐项点名。
-            只输出下面的任务模型，不添加寒暄、执行叙述或额外段落。
-
-            ### 目标状态
-            [用户真正希望实现的结果]
-
-            ### 当前判断
-            [已知事实、关键假设和需要从环境确认的内容]
-
-            ### 成功信号
-            [哪些可观察现象能够证明目标已经实现]
-
-            ### 初始策略
-            [建议从哪里开始，以及为什么；保持简洁并允许执行者调整]
-            """;
-
-    /** 首次输出不满足任务模型契约时使用的单次纠正提示。 */
-    private static final String PLANNER_REPAIR_PROMPT = """
-            你正在重新生成一份任务策略。上一次响应没有遵守策略层的输出契约。
-
-            只根据提供的对话资料生成任务模型。不要执行任务，不要承诺稍后执行，
-            不要输出工具调用、函数调用、协议标记、寒暄或额外说明。
-
-            必须按顺序输出且只输出以下四个非空段落：
-
-            ### 目标状态
-            ### 当前判断
-            ### 成功信号
-            ### 初始策略
-
-            目标状态说明用户最终希望得到什么；当前判断区分事实、假设和待确认内容；
-            成功信号必须能够由执行阶段观察；初始策略保持简洁并允许根据环境反馈调整。
-            """;
-
     /** 用于生成任务策略的 LLM 服务实例。 */
     private final LlmService llmService;
 
@@ -200,15 +119,13 @@ public class PlanAgent {
                 messages.size());
 
         // ── 构建 System Prompt ──
-        StringBuilder fullPrompt = new StringBuilder();
-        if (sessionContext != null && !sessionContext.isEmpty()) {
-            fullPrompt.append("## 当前会话上下文\n\n");
-            fullPrompt.append(sessionContext).append("\n\n");
-        }
-        fullPrompt.append(String.format(PLANNER_SYSTEM_PROMPT, skillsDescription));
+        String fullPrompt = PlannerPromptAssembler.assemble(
+                skillsDescription,
+                sessionContext,
+                containsMcpIntent(planningInput));
 
         // ── 首次生成 ──
-        LlmResponse response = llmService.chatWithSystemResponse(fullPrompt.toString(), messages);
+        LlmResponse response = llmService.chatWithSystemResponse(fullPrompt, messages);
         String plan = normalizePlan(response.getContent());
         LlmUsage totalUsage = response.getTokenUsage();
         String validationError = validatePlan(plan);
@@ -220,7 +137,7 @@ public class PlanAgent {
         // ── 使用干净上下文纠正一次，非法输出不会进入执行阶段 ──
         log.warn("PlanAgent 规划无效 → {} | 内容: {}", validationError, truncate(plan, 200));
         LlmResponse repairedResponse = llmService.chatWithSystemResponse(
-                PLANNER_REPAIR_PROMPT,
+                PlannerPromptAssembler.repairPrompt(),
                 List.of(ChatMessage.userMessage(planningInput)));
         String repairedPlan = normalizePlan(repairedResponse.getContent());
         totalUsage = mergeUsage(totalUsage, repairedResponse.getTokenUsage());
@@ -297,6 +214,25 @@ public class PlanAgent {
         input.append("\n## 当前请求\n");
         input.append(userMessage != null ? userMessage : "");
         return input.toString();
+    }
+
+    /**
+     * 判断规划资料是否涉及 MCP 安装、接入或管理。
+     *
+     * <p>该判断只决定是否给规划器加载 MCP 专用约束；执行阶段仍以真实工具和环境反馈为准。</p>
+     *
+     * @param planningInput 已隔离的规划资料
+     * @return true 表示需要加载 MCP 相关提示
+     */
+    private boolean containsMcpIntent(String planningInput) {
+        if (planningInput == null || planningInput.isBlank()) {
+            return false;
+        }
+        String lower = planningInput.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("mcp")
+                || lower.contains("model context protocol")
+                || lower.contains("安装 server")
+                || lower.contains("接入 server");
     }
 
     /**

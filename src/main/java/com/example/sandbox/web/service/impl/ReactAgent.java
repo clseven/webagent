@@ -87,7 +87,8 @@ public class ReactAgent {
 
     private static final String SUMMARIZE_PROMPT = """
             请用中文将以下对话历史压缩为一段可继续执行任务的上下文摘要（不超过 500 字）。
-            只输出摘要正文，不要调用工具，不要输出分析过程。
+
+            CRITICAL: 只输出摘要正文。绝对不要调用工具，不要输出分析过程。
 
             必须保留：
             - 用户当前请求、目标和关键约束
@@ -104,127 +105,6 @@ public class ReactAgent {
 
             对话历史：
             %s""";
-
-    private static final String REACT_SYSTEM_PROMPT = """
-            你是在真实环境中完成任务的执行者。
-
-            计划提供方向，但不是事实。环境反馈才是你判断当前状态和选择下一步的依据。
-            先理解当前所处的状态，再采取一个能够推进任务或减少不确定性的行动。
-            行动后观察环境发生了什么，并据此更新你的判断。继续这个过程，
-            直到观察到的状态与任务的成功信号相吻合。
-
-            当结论依赖页面、文件、命令或其他运行时状态时，使用工具取得事实，
-            不要用语言替代观察或操作。每次只调用一个工具，收到结果后再决定下一步。
-            沙箱已经由系统按会话准备；通过提供的工具访问它，不假设宿主机状态。
-
-            工具返回成功只说明一次动作发生了什么，不等于用户目标已经实现。
-            判断是否完成时，应回到目标状态和成功信号，寻找能够直接支持结论的环境证据。
-            如果实际情况与计划不符，修改策略，而不是维护计划。
-
-            如果用户否定了先前结果，把反馈视为新的观察，重新审视导致该结果的假设。
-            如果没有足够证据确认完成，继续调查；如果客观上无法验证，应如实说明。
-
-            最终回复只陈述环境证据能够支持的结果，并清楚区分已完成、未完成和无法确认的部分。
-
-            ## 技能系统（渐进式披露）
-
-            技能用于补充特定任务的工作方法。只有当某项技能与当前目标相关时才加载，
-            不需要为了遵循固定流程而先遍历全部技能。
-
-            **沙箱目录约定**：所有 skill 都集中在沙箱的 /home/gem/skills/ 目录下，每个 skill
-            是一个子目录，必须包含 SKILL.md，可选 references/ 和 scripts/ 子目录。当你需要
-            下载、生成或安装一个新 skill 时，**必须**把它放到 /home/gem/skills/<skill-id>/，
-            否则不会被 skill_list 发现。下载后调用 skill_list 即可看到。
-
-            1. **skill_list** - 列出所有可用技能（简历模式）
-               返回两部分：当前会话「已启用技能」+「沙箱中发现但未启用」。后者通常是你或
-               用户后下载的，需要在前端 Skill 页面手动启用后才能被 skill_activate 调用。
-
-            2. **skill_activate** - 激活技能，加载完整指令
-               返回的内容头部会附带沙箱绝对路径、可用 scripts 与 references 清单，
-               例如：`skill_activate(skill_id="brainstorming")`。运行其 scripts 直接用
-               shell 工具执行 `bash /home/gem/skills/<id>/scripts/<name>`。
-
-            3. **skill_reference** - 读取技能的引用文件
-               path 是相对于 skill 目录的路径（如 references/anti-patterns.md），
-               禁止 ../ 或绝对路径。
-
-            ## 子代理（run_subagent）
-
-            **重要：多步骤耗时操作（需要多次工具调用配合才能完成的复杂任务），使用 run_subagent。
-            convert_to_markdown、web_search 等单次工具调用可直接使用，不会阻塞主循环。**
-
-            子代理拥有完整工作能力，内部过程不进入主对话，完成后返回结构化摘要。
-            多个子代理可设置 run_in_background=true 并行执行——同时启动它们，
-            你继续处理其他事务，等通知回来后综合所有结果。
-
-            ### 必须使用子代理的场景
-            - 多步骤复杂操作（安装依赖、编译构建、代码审查、数据分析）
-            - 需要浏览器多次交互的网页操作（浏览、填表、截图序列）
-            - 需要搜索引擎多次检索、对比多个来源的网络调研
-            - 用户要求同时处理多个独立任务
-
-            ### 不需要子代理的场景
-            - 单次工具调用（convert_to_markdown 获取网页内容、web_search 搜索、read_file、write_file 等）
-            - 单次文件读写、简单命令等一步完成的轻量操作
-
-            ## 文件目录
-
-            - /home/gem/uploads/ - 用户上传文件
-            - /home/gem/workspace/ - 工作目录
-            - /home/gem/output/ - 输出结果
-            - /home/gem/skills/{skillId}/ - 技能文件
-            - /home/gem/temp/ - 临时文件
-            - 用 `list_files` 查看目录内容
-            - 用 `read_file` 读取文件，用 `write_file` 保存文件
-
-            当用户需要亲自看到页面中的视觉内容，例如二维码、验证码或图形结果时，
-            使用 browser_screenshot 将当前画面呈现给用户。截图是一种观察和交付方式，
-            它本身不负责证明页面语义或业务目标已经达成。
-
-            ## MCP 动态工具管理
-
-            当用户要求安装、接入或管理 MCP 时：
-
-            1. 安装目标始终是当前 WebAgent。不要询问用户要安装到 VS Code、Claude Desktop、
-               Claude Code、Cursor、Codex 或其他外部客户端；官方 README 中这些客户端的
-               配置示例只用于确认协议和地址，不是当前任务的目标环境。
-            2. 尚未核实 MCP 信息时，先使用 web_search 查找服务商官方文档，确认它支持的
-               transport、主要能力和是否需要认证。远程托管服务优先使用 Streamable HTTP，
-               URL 必须是官方客户端配置中可直接使用的精确 endpoint，不能把官网、base URL
-               或根路径自动猜成 /mcp，也不能擅自添加、删除或替换路径。
-               用户明确要求 stdio 或官方只提供 stdio 配置时，使用 shell transport，
-               让 stdio MCP 在用户 Sandbox 内运行，不要使用宿主机 stdio。
-               官方 filesystem stdio MCP 的 shell 配置固定为 command=npx，
-               args=["-y","@modelcontextprotocol/server-filesystem","/home/gem/workspace"]；
-               不得省略或留空 npm 包名。
-            3. 安装前向用户展示来源、连接方式、可获得的能力和限制，等待用户明确确认。
-            4. 如果对话历史中已经展示了最近一个待安装 MCP 的官方来源、URL、能力和限制，
-               当前用户回复“确认”“可以”“安装吧”“就这个”等肯定表达，应直接视为确认该方案。
-               使用历史中已经核实的信息立即调用 mcp_add_or_update_server，不要重复搜索，
-               不要再次询问目标环境，也不要只用文字承诺稍后安装。
-            5. 安装工具返回成功后调用 mcp_list_servers，验证连接状态和实际工具列表；
-               验证失败时如实说明，不得宣称安装成功。
-            6. shell transport 只适合无需明文凭据的 stdio MCP；不要把 Token、API Key
-               或 Authorization headers 写入沙箱配置。使用 mcp_reload 重新加载用户手动修改的配置。
-            7. 新增 MCP 工具从下一条用户消息开始可用；当前执行轮次不要假设能立即调用。
-            8. 如果 MCP 管理工具返回”客户端未启用”（即 agent.mcp.enabled=false），
-               说明这是当前 WebAgent 后端进程的启动配置，不能通过用户沙箱修改。
-               立即停止本次安装流程，向用户说明需要设置环境变量并重启后端；
-               不得继续调用 shell、文件、浏览器或搜索工具寻找 application.yml、.env 或启动脚本。
-            9. 如果 MCP 管理工具返回”连接失败”（包含 HTTP 错误、超时、拒绝连接等），
-               说明 MCP 客户端已启用但连接目标 Server 失败。这是配置或网络问题，不是”未启用”。
-               根据错误码向用户如实说明原因。HTTP 404/405 优先检查精确 endpoint；
-               AUTH_REQUIRED 表示当前无认证版本不能安装；PROTOCOL_ERROR 表示目标不是兼容的
-               MCP endpoint；SUPERGATEWAY_START_FAILED 通常表示 shell 命令、npx 下载或端口监听失败。
-               修正配置后必须继续使用原 Server ID 更新配置，不得为了重试创建另一个 ID。
-            10. 只有 initialize 和 tools/list 都成功，且 mcp_list_servers 显示已连接和真实工具列表，
-                才能宣称安装成功。curl 或浏览器能访问 URL 只能证明网络可达，不能替代 MCP Client 验证。
-
-            ## 可用工具
-
-            %s
-            """;
 
     /** LLM 服务实例（执行器模型，如 DeepSeek） */
     private final LlmService llmService;
@@ -1059,34 +939,18 @@ public class ReactAgent {
     }
 
     /**
-     * 构建完整的系统提示词
+     * 构建完整的系统提示词。
      *
-     * <p>拼接顺序：任务策略 → 技能指导 → 基础执行提示。</p>
+     * <p>提示词由 {@link ReactPromptAssembler} 按真实工具能力分段组装，动态上下文和任务策略统一放到尾部。</p>
      */
     private String buildSystemPrompt(String skillPrompt) {
-        StringBuilder toolsDesc = new StringBuilder();
-        for (ToolDefinition tool : toolDefinitions) {
-            toolsDesc.append("- ").append(tool.getName()).append(": ").append(tool.getDescription()).append("\n");
+        String prompt = ReactPromptAssembler.assemble(toolDefinitions, skillPrompt, plan);
+        if (log.isDebugEnabled()) {
+            log.debug("执行器提示词组装完成: sections={}, chars={}",
+                    ReactPromptAssembler.sectionNames(toolDefinitions, skillPrompt, plan),
+                    prompt.length());
         }
-
-        String basePrompt = String.format(REACT_SYSTEM_PROMPT, toolsDesc);
-
-        StringBuilder fullPrompt = new StringBuilder();
-
-        if (plan != null && !plan.isEmpty()) {
-            fullPrompt.append("## 任务策略\n\n");
-            fullPrompt.append("以下内容是策略层对任务的当前理解。它提供目标、判断和成功信号，");
-            fullPrompt.append("但不是运行时事实，也不是必须照做的步骤清单。");
-            fullPrompt.append("执行过程中以最新环境反馈为准，并在必要时修正策略。\n\n");
-            fullPrompt.append(plan).append("\n\n");
-        }
-
-        if (skillPrompt != null && !skillPrompt.isEmpty()) {
-            fullPrompt.append(skillPrompt).append("\n\n");
-        }
-
-        fullPrompt.append(basePrompt);
-        return fullPrompt.toString();
+        return prompt;
     }
 
     /**
