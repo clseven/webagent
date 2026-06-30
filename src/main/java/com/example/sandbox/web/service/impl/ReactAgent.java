@@ -1248,7 +1248,20 @@ public class ReactAgent {
                 // 达到最大迭代次数
                 if (!sink.isCancelled()) {
                     log.warn("ReAct Stream 达到最大迭代次数 ({})", MAX_ITERATIONS);
-                    sink.next(SseEvent.error("达到最大迭代次数，任务未完成"));
+                    String limitMessage = "已达到最大执行次数，任务未完成。上方已保留本次执行过程。";
+                    persistedEvents.add(Map.of(
+                            "type", "status",
+                            "content", limitMessage));
+
+                    saveAssistantMessage(limitMessage, null, persistedEvents);
+                    sink.next(SseEvent.status(limitMessage));
+                    sink.next(SseEvent.answer(limitMessage, null));
+                    LlmUsage totalUsage = new LlmUsage(
+                            totalPromptTokens.get(),
+                            totalCompletionTokens.get(),
+                            totalTokens.get(),
+                            totalCacheHitTokens.get());
+                    sink.next(SseEvent.done(iteration.get(), totalUsage));
                     sink.complete();
                 }
 
