@@ -14,6 +14,7 @@ import io.milvus.param.collection.LoadCollectionParam;
 import io.milvus.param.index.CreateIndexParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Bean;
@@ -28,6 +29,7 @@ import org.springframework.context.event.EventListener;
  * @date 2026/05/31
  */
 @Configuration
+@ConditionalOnProperty(prefix = "rag.milvus", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class MilvusConfig {
 
     private static final Logger log = LoggerFactory.getLogger(MilvusConfig.class);

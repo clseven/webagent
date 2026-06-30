@@ -12,6 +12,7 @@ import io.milvus.param.dml.SearchParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -26,6 +27,7 @@ import java.util.Map;
  * @date 2026/05/31
  */
 @Service
+@ConditionalOnProperty(prefix = "rag.milvus", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class VectorStoreServiceImpl implements VectorStoreService {
 
     private static final Logger log = LoggerFactory.getLogger(VectorStoreServiceImpl.class);

@@ -46,6 +46,8 @@ public class RagConfigProperties {
     @Setter
     @Getter
     public static class Milvus {
+        /** 是否启用 Milvus 向量库；关闭后仅保留知识库正文存储和空检索降级。 */
+        private boolean enabled = true;
         private String host = "localhost";
         private int port = 19530;
         private String collection = "knowledge_chunks";

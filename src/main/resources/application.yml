@@ -131,6 +131,7 @@ rag:
     size: 500
     overlap: 50
   milvus:
+    enabled: ${RAG_MILVUS_ENABLED:false}
     host: ${MILVUS_HOST:localhost}
     port: ${MILVUS_PORT:19530}
     collection: knowledge_chunks_v3
