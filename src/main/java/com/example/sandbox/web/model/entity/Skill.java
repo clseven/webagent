@@ -35,7 +35,7 @@ import java.util.stream.Stream;
  */
 public class Skill {
 
-    /** 沙箱内技能根目录，所有运行期 skill 文件统一住在 {@code /home/gem/skills/<id>/}。 */
+    /** 沙箱内技能包根目录，运行期从该目录递归发现真实 skill 目录。 */
     public static final String SANDBOX_SKILL_ROOT = "/home/gem/skills";
 
     /** 技能来源枚举：本地仓库、当前会话沙箱、两者都有。 */
@@ -65,6 +65,15 @@ public class Skill {
      */
     private final Path localPath;
 
+    /** 本地 SKILL.md 文件真实路径，用于兼容技能包内的深层 skill 目录和大小写差异。 */
+    private final Path localSkillFile;
+
+    /** 沙箱内该 skill 的真实根目录；为空时按 {@code /home/gem/skills/<id>} 兼容旧结构。 */
+    private final String sandboxBasePath;
+
+    /** 沙箱内 SKILL.md 的真实路径；为空时按真实根目录下的 {@code SKILL.md} 兼容旧结构。 */
+    private final String sandboxSkillFilePath;
+
     /** 完整的 YAML frontmatter（所有字段，含 metadata、license 等）。 */
     private final Map<String, Object> frontmatter;
 
@@ -81,10 +90,37 @@ public class Skill {
      * @param frontmatter 完整 frontmatter Map，可为 null
      */
     public Skill(String id, String name, String description, Path localPath, Map<String, Object> frontmatter) {
+        this(id, name, description, localPath,
+                localPath != null ? localPath.resolve("SKILL.md") : null,
+                null,
+                null,
+                frontmatter);
+    }
+
+    /**
+     * 构造技能元数据并携带真实文件位置。
+     *
+     * <p>本地扫描和沙箱扫描都可能从技能包内部发现深层 {@code SKILL.md}，因此必须保存真实路径；
+     * 后续激活、读取引用文件和列脚本都以真实目录为准。</p>
+     *
+     * @param id                   技能 ID（真实 skill 目录名）
+     * @param name                 从 frontmatter 解析的 name；为空时回退到 id
+     * @param description          从 frontmatter 解析的 description
+     * @param localPath            本地 skill 根目录，可为 null
+     * @param localSkillFile       本地 SKILL.md 真实路径，可为 null
+     * @param sandboxBasePath      沙箱 skill 真实根目录，可为 null
+     * @param sandboxSkillFilePath 沙箱 SKILL.md 真实路径，可为 null
+     * @param frontmatter          完整 frontmatter Map，可为 null
+     */
+    public Skill(String id, String name, String description, Path localPath, Path localSkillFile,
+                 String sandboxBasePath, String sandboxSkillFilePath, Map<String, Object> frontmatter) {
         this.id = id;
         this.name = (name != null && !name.isBlank()) ? name : id;
         this.description = description;
         this.localPath = localPath;
+        this.localSkillFile = localSkillFile;
+        this.sandboxBasePath = normalizeSandboxPath(sandboxBasePath);
+        this.sandboxSkillFilePath = normalizeSandboxPath(sandboxSkillFilePath);
         this.frontmatter = frontmatter != null ? Collections.unmodifiableMap(frontmatter) : Collections.emptyMap();
         this.source = (localPath != null) ? Source.LOCAL : Source.SANDBOX;
     }
@@ -151,7 +187,7 @@ public class Skill {
      * 从当前会话沙箱读取引用文件。
      *
      * <p>路径校验：{@code relativePath} 不允许包含 {@code ..} 或绝对路径前缀，确保读取范围限定在
-     * 沙箱 {@code /home/gem/skills/<id>/} 内。</p>
+     * 当前 skill 的真实沙箱根目录内。</p>
      *
      * @param client       当前会话的 AIO 客户端
      * @param relativePath 相对于 skill 目录的路径，如 "references/anti-patterns.md"
@@ -228,21 +264,39 @@ public class Skill {
     }
 
     /**
-     * 沙箱内 skill 根目录，例如 {@code /home/gem/skills/brainstorming}。
+     * 沙箱内 skill 真实根目录，例如 {@code /home/gem/skills/brainstorming}
+     * 或 {@code /home/gem/skills/package/skill/brainstorming}。
      *
      * @return 沙箱目录绝对路径
      */
     public String sandboxBasePath() {
-        return SANDBOX_SKILL_ROOT + "/" + id;
+        return sandboxBasePath != null ? sandboxBasePath : SANDBOX_SKILL_ROOT + "/" + id;
     }
 
     /**
-     * 沙箱内 SKILL.md 路径，例如 {@code /home/gem/skills/brainstorming/SKILL.md}。
+     * 沙箱内 SKILL.md/skill.md 真实路径。
      *
      * @return 沙箱 SKILL.md 绝对路径
      */
     public String sandboxSkillFilePath() {
-        return sandboxBasePath() + "/SKILL.md";
+        return sandboxSkillFilePath != null ? sandboxSkillFilePath : sandboxBasePath() + "/SKILL.md";
+    }
+
+    /**
+     * 标准化沙箱路径，避免路径尾部斜杠造成后续拼接双斜杠。
+     *
+     * @param path 原始路径
+     * @return 标准化后的路径；空白输入返回 null
+     */
+    private static String normalizeSandboxPath(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String normalized = path.replace('\\', '/').trim();
+        while (normalized.endsWith("/") && normalized.length() > 1) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
     }
 
     /**
@@ -309,6 +363,9 @@ public class Skill {
 
     /** @return 本地 SKILL.md 文件路径（沙箱独有时返回 null 不会被检查；调用方需保证有本地副本） */
     public Path getSkillFile() {
+        if (localSkillFile != null) {
+            return localSkillFile;
+        }
         return localPath != null ? localPath.resolve("SKILL.md") : null;
     }
 
@@ -377,6 +434,7 @@ public class Skill {
                 ", description='" + description + '\'' +
                 ", source=" + source +
                 ", localPath=" + localPath +
+                ", sandboxBasePath='" + sandboxBasePath() + '\'' +
                 '}';
     }
 }

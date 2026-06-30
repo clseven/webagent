@@ -14,26 +14,30 @@ import java.util.List;
 public interface SkillService {
 
     /**
-     * 列出本地仓库中的所有技能（实时扫描文件系统，无缓存）。
+     * 列出本地仓库中的技能上传源（实时扫描文件系统，无缓存）。
      *
-     * @return 技能列表
+     * <p>本地仓库只用于把用户选择的技能目录同步到沙箱，不作为运行时读取和使用 skill 的数据源。</p>
+     *
+     * @return 本地上传源列表
      */
     List<Skill> listSkills();
 
     /**
-     * 从本地仓库获取单个技能详情（实时读文件系统，无缓存）。
+     * 从本地仓库定位单个技能上传源（实时读文件系统，无缓存）。
+     *
+     * <p>调用方只能用返回的本地路径做同步上传；运行时激活、引用文件读取必须使用沙箱发现结果。</p>
      *
      * @param skillId 技能 ID
-     * @return 技能详情
+     * @return 本地上传源元数据
      * @throws IOException 如果读取文件失败
      */
     Skill getSkill(String skillId) throws IOException;
 
     /**
-     * 从目录加载技能（扫描 SKILL.md 文件），直接返回结果不写缓存。
+     * 从目录加载技能上传源（递归扫描 SKILL.md/skill.md 文件），直接返回结果不写缓存。
      *
      * @param directory 目录路径
-     * @return 加载到的技能列表
+     * @return 加载到的本地上传源列表
      */
     List<Skill> loadSkillsFromDirectory(String directory);
 
