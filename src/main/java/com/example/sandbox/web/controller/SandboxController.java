@@ -8,6 +8,7 @@ import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.model.response.FilePreviewContent;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.SandboxService;
+import com.example.sandbox.web.service.WorkspaceDirectoryMemoryService;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.OfficePreviewService;
@@ -53,6 +54,10 @@ public class SandboxController {
     /** MCP 动态工具提供器，工作区刷新时显式重新加载用户 MCP 配置。 */
     @Autowired
     private McpClientToolProvider mcpToolProvider;
+
+    /** 工作区目录记忆服务，刷新时同步记录用户可见目录树。 */
+    @Autowired
+    private WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService;
 
     /**
      * 执行命令
@@ -124,6 +129,11 @@ public class SandboxController {
         log.info("刷新工作空间状态: session={}", id);
         agentService.getSession(id);
         mcpToolProvider.evict(id);
+        try {
+            workspaceDirectoryMemoryService.refresh(id);
+        } catch (Exception e) {
+            log.warn("刷新工作区目录记忆失败: session={}, error={}", id, e.getMessage(), e);
+        }
         return ApiResponse.success();
     }
 

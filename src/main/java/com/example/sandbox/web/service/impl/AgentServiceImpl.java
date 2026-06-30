@@ -16,6 +16,7 @@ import com.example.sandbox.web.service.LlmService;
 import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.TokenUsageService;
 import com.example.sandbox.web.service.Tool;
+import com.example.sandbox.web.service.WorkspaceDirectoryMemoryService;
 import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
 import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
 import com.example.sandbox.web.service.mcpclient.RealMcpTool;
@@ -149,6 +150,10 @@ public class AgentServiceImpl implements AgentService {
     /** 轻量对话路由器（命中时绕过规划、执行模型和工具链路） */
     @Autowired
     private LightweightChatRouter lightweightChatRouter;
+
+    /** 工作区目录记忆服务（只注入 /home/gem 可见目录树元数据） */
+    @Autowired
+    private WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService;
 
     /**
      * 创建新会话（无关联应用）
@@ -315,6 +320,8 @@ public class AgentServiceImpl implements AgentService {
 
         // 4. 构建系统提示（仅技能元数据，不含消息历史 — 利用 prompt caching）
         String systemPrompt = conversationService.buildSystemPrompt(sessionId);
+        String workspaceMemoryContext = buildWorkspaceDirectoryMemoryContext(sessionId);
+        systemPrompt = prependContext(workspaceMemoryContext, systemPrompt);
         if (extraContext != null) {
             systemPrompt = extraContext + "\n\n" + systemPrompt;
         }
@@ -425,7 +432,7 @@ public class AgentServiceImpl implements AgentService {
                         skills.stream().map(Skill::getId).toList());
             }
 
-            String sessionContext = buildSessionContext(session, enhancedContext);
+            String sessionContext = buildSessionContext(session, prependContext(workspaceMemoryContext, enhancedContext));
             PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
             PlanResult planResult = planAgent.plan(userMessage, history);
             plan = planResult.getPlan();
@@ -636,6 +643,52 @@ public class AgentServiceImpl implements AgentService {
     }
 
     /**
+     * 将工作区目录记忆追加到系统提示之前。
+     *
+     * @param sessionId    会话 ID
+     * @param systemPrompt 原系统提示
+     * @return 注入目录记忆后的系统提示
+     */
+    private String appendWorkspaceDirectoryMemoryContext(String sessionId, String systemPrompt) {
+        return prependContext(buildWorkspaceDirectoryMemoryContext(sessionId), systemPrompt);
+    }
+
+    /**
+     * 刷新并构建工作区目录记忆上下文。
+     *
+     * <p>失败时不重试，原因是目录记忆只是增强上下文，不能阻断主对话链路；失败会记录 WARN 并返回空上下文。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return 工作区目录记忆上下文；失败或为空时返回空字符串
+     */
+    private String buildWorkspaceDirectoryMemoryContext(String sessionId) {
+        try {
+            workspaceDirectoryMemoryService.refresh(sessionId);
+            return workspaceDirectoryMemoryService.buildContext(sessionId);
+        } catch (Exception e) {
+            log.warn("工作区目录记忆注入失败: session={}, error={}", sessionId, e.getMessage(), e);
+            return "";
+        }
+    }
+
+    /**
+     * 将额外上下文放到基础上下文之前。
+     *
+     * @param extraContext 额外上下文
+     * @param baseContext  基础上下文
+     * @return 合并后的上下文
+     */
+    private String prependContext(String extraContext, String baseContext) {
+        if (extraContext == null || extraContext.isBlank()) {
+            return baseContext != null ? baseContext : "";
+        }
+        if (baseContext == null || baseContext.isBlank()) {
+            return extraContext;
+        }
+        return extraContext + "\n\n" + baseContext;
+    }
+
+    /**
      * 从用户消息中提取文件上传信息，生成上下文提示
      *
      * <p>检测用户消息中是否包含【上传的文件】段落，解析出文件名列表，
@@ -723,6 +776,8 @@ public class AgentServiceImpl implements AgentService {
 
                 // 构建系统提示
                 String systemPrompt = conversationService.buildSystemPrompt(sessionId);
+                String workspaceMemoryContext = buildWorkspaceDirectoryMemoryContext(sessionId);
+                systemPrompt = prependContext(workspaceMemoryContext, systemPrompt);
                 if (extraContext != null) {
                     systemPrompt = extraContext + "\n\n" + systemPrompt;
                 }
@@ -821,7 +876,7 @@ public class AgentServiceImpl implements AgentService {
                                 .toList();
                     }
 
-                    String sessionContext = buildSessionContext(session, enhancedContext);
+                    String sessionContext = buildSessionContext(session, prependContext(workspaceMemoryContext, enhancedContext));
                     PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
                     PlanResult planResult = planAgent.plan(userMessage, history);
                     plan = planResult.getPlan();
