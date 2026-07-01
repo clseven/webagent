@@ -45,28 +45,38 @@ public class AgentConfigProperties {
     public static class Llm {
         private Planner planner = new Planner();
         private Executor executor = new Executor();
+        private Vision vision = new Vision();
 
         @Setter
         @Getter
         public static class Planner {
-            private String apiUrl = "https://open.bigmodel.cn/api/paas/v4";
+            private String apiUrl = "https://api.deepseek.com";
             private String apiKey = "";
-            private String model = "glm-4.7";
+            private String model = "deepseek-v4-flash";
 
         }
 
         @Setter
         @Getter
         public static class Executor {
-            private String apiUrl = "https://apihub.agnes-ai.com/v1";
+            private String apiUrl = "https://api.deepseek.com";
             private String apiKey = "";
-            private String model = "agnes-2.0-flash";
+            private String model = "deepseek-v4-flash";
 
             /**
              * 是否为执行器模型启用思考模式（仅 DeepSeek 专有参数，切换回 DeepSeek 时使用）。
              * Agnes 不使用此字段。
              */
             private boolean thinkingEnabled = false;
+
+        }
+
+        @Setter
+        @Getter
+        public static class Vision {
+            private String apiUrl = "https://apihub.agnes-ai.com/v1";
+            private String apiKey = "";
+            private String model = "agnes-2.0-flash";
 
         }
     }

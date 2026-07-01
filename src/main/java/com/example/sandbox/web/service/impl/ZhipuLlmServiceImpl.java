@@ -6,26 +6,24 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
- * 智谱 AI LLM 服务实现 — 用作规划器 LLM
+ * 规划 LLM 服务实现。
  *
  * <h3>用途</h3>
- * <p>负责 Agent 的规划阶段，特点：</p>
+ * <p>当前主任务规划由 {@link AgentPlannerService} 沿用执行器模型完成，
+ * 该 Bean 主要保留给会话标题等轻量规划类调用。</p>
  * <ul>
- *   <li>擅长中文理解和结构化输出</li>
- *   <li>规划阶段不需要工具调用，调用频率低</li>
- *   <li>产出的计划质量高，逻辑清晰</li>
+ *   <li>不需要工具调用能力</li>
+ *   <li>调用频率较低</li>
+ *   <li>可通过配置切换到 OpenAI 兼容的规划模型</li>
  * </ul>
  *
  * <h3>配置来源</h3>
  * <p>从 application.yml 的 agent.llm.planner 节点读取：</p>
  * <ul>
- *   <li>api-url — 智谱 API 地址</li>
+ *   <li>api-url — 规划模型 API 地址</li>
  *   <li>api-key — 认证密钥</li>
- *   <li>model — 模型名称（如 glm-4）</li>
+ *   <li>model — 模型名称</li>
  * </ul>
- *
- * @author example
- * @date 2026/05/14
  */
 @Service("plannerLlm")
 public class ZhipuLlmServiceImpl extends BaseLlmServiceImpl {

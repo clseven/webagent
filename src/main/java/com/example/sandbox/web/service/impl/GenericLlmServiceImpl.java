@@ -2,14 +2,14 @@ package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.web.config.AgentConfigProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
 
 /**
- * 通用 LLM 服务实现 — 用作执行器 LLM
+ * 通用 LLM 服务实现。
  *
  * <h3>用途</h3>
- * <p>负责 Agent 的执行阶段，支持 OpenAI 兼容协议的任意模型：</p>
+ * <p>支持 OpenAI 兼容协议的任意模型。当前执行器由
+ * {@link DeepSeekLlmServiceImpl} 提供，视觉模型由 {@link VisionLlmServiceImpl}
+ * 提供。本类保留为手动扩展或本地调试时复用。</p>
  * <ul>
  *   <li>支持原生 tool_calls</li>
  *   <li>支持多模态消息（图文混合，视觉模型）</li>
@@ -24,12 +24,9 @@ import org.springframework.stereotype.Service;
  *   <li>model   — 模型名称</li>
  * </ul>
  *
- * @author example
  */
-@Service("executorLlm")
 public class GenericLlmServiceImpl extends BaseLlmServiceImpl {
 
-    @Autowired
     public GenericLlmServiceImpl(AgentConfigProperties configProperties, ObjectMapper objectMapper) {
         super(
                 configProperties.getLlm().getExecutor().getApiUrl(),

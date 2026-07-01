@@ -108,10 +108,15 @@ agent:
     directory: ${SKILL_DIR:.claude/skills}
   llm:
     planner:
-      api-url: ${AGNES_LLM_URL:https://apihub.agnes-ai.com/v1}
-      api-key: ${AGNES_API_KEY:}
-      model: ${AGNES_LLM_MODEL:agnes-2.0-flash}
+      api-url: ${DEEPSEEK_LLM_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}
     executor:
+      api-url: ${DEEPSEEK_LLM_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}
+      thinking-enabled: ${DEEPSEEK_THINKING_ENABLED:false}
+    vision:
       api-url: ${AGNES_LLM_URL:https://apihub.agnes-ai.com/v1}
       api-key: ${AGNES_API_KEY:}
       model: ${AGNES_LLM_MODEL:agnes-2.0-flash}

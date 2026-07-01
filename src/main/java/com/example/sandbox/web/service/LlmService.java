@@ -11,10 +11,11 @@ import java.util.List;
 /**
  * LLM 服务接口 — 抽象不同 LLM 厂商的调用差异
  *
- * <p>项目中使用两套 LLM 实例：</p>
+ * <p>项目中使用多套 LLM 实例：</p>
  * <ul>
- *   <li>plannerLlm（智谱 GLM）— 负责规划，不需要工具调用能力</li>
- *   <li>executorLlm（DeepSeek）— 负责执行，需要工具调用能力</li>
+ *   <li>executorLlm（DeepSeek）— 负责规划、执行和工具调用</li>
+ *   <li>plannerLlm — 保留给会话标题等轻量规划类调用</li>
+ *   <li>visionLlm（Agnes）— 负责图片观察，不参与最终回答</li>
  * </ul>
  *
  * @author example

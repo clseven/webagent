@@ -31,11 +31,11 @@
 ```
 用户请求
   → AgentService（编排）
-    → PlanAgent（规划，plannerLlm）
+    → PlanAgent（规划，当前沿用 executorLlm）
     → ReactAgent（执行，executorLlm）
       → Tool.execute()（原子操作）
         → AIO 层（沙箱 API）
-      → PostToolUseHook（可注入额外消息）
+      → PostToolUseHook（可注入额外消息，图片观察可调用 visionLlm）
       → LlmService.chatWithToolsStream()（下一轮 LLM 调用）
 ```
 
@@ -281,7 +281,7 @@ String path = arguments.get("path");
 3. 如有厂商专有参数（如 DeepSeek 的 `thinking`），重写 `customizeRequestBody()`，**只在这里加专有参数**
 4. 在 `AgentConfigProperties.Llm` 下新增对应配置节点
 5. 在 `application.yml` 填写真实配置值（api-key 不提交到 git）
-6. 在 `AgentServiceImpl` 中用 `@Qualifier` 注入并决定用于 planner 还是 executor
+6. 用 `@Qualifier` 注入并决定用于 `executorLlm`、`plannerLlm` 或 `visionLlm`
 
 ### 7.3 新增 Hook
 
@@ -342,13 +342,15 @@ String path = arguments.get("path");
 
 ---
 
-### ADR-004 执行器 LLM 切换为 Agnes
+### ADR-004 DeepSeek 负责规划执行，Agnes 负责视觉观察
 
-**时间**：2026-06
+**时间**：2026-07
 
-**决策**：executorLlm 从 DeepSeek 切换为 Agnes（`agnes-2.0-flash`）。
+**决策**：`executorLlm` 使用 DeepSeek，负责 ReAct 执行、工具选择和最终回答；当前 `AgentPlannerService` 的 PlanAgent 也沿用 `executorLlm`，因此规划阶段同样由 DeepSeek 驱动。新增 `visionLlm` 使用 Agnes（`agnes-2.0-flash`），专门处理 `view_image` 后的图片观察。
 
-**理由**：Agnes 免费且支持多模态视觉输入，与 `view_image` 工具链路天然匹配。`DeepSeekLlmServiceImpl` 保留但不注册为 Bean，切换回 DeepSeek 时恢复 `@Service("executorLlm")` 注解即可。
+**理由**：DeepSeek 更适合作为主 Agent 的规划和工具执行模型；Agnes 具备多模态视觉能力，适合作为图片观察模型。`view_image` 仍由工具加载图片，`PostToolUseHook` 调用 `visionLlm` 得到文本观察结果，再注入给 DeepSeek 主 Agent 继续推理，避免要求主执行器直接处理图片字节。
+
+**约束**：`visionLlm` 不添加 DeepSeek 的 `thinking` 等专有参数；Agnes 只输出客观观察结果，不接管最终回复。
 
 ---
 

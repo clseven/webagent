@@ -41,7 +41,7 @@ import java.util.stream.Collectors;
  * <h3>设计特点</h3>
  * <ul>
  *   <li>规划与执行解耦 — PlanAgent 只规划不带工具，ReactAgent 只执行不规划</li>
- *   <li>双 LLM — 规划用智谱 GLM，执行用 DeepSeek（按场景选模型）</li>
+ *   <li>多 LLM — DeepSeek 负责规划/执行，Agnes 负责图片观察</li>
  *   <li>工具过滤 — 根据沙箱类型（AIO/Common）动态过滤可用工具</li>
  *   <li>知识库注入 — 应用关联知识库时，动态修改工具描述</li>
  * </ul>
@@ -73,7 +73,7 @@ public class AgentServiceImpl implements AgentService {
     @Autowired
     private ConversationServiceImpl conversationService;
 
-    /** 规划 LLM（智谱 GLM，负责意图理解和任务规划） */
+    /** 轻量规划 LLM（当前主要用于会话标题生成） */
     @Autowired
     @Qualifier("plannerLlm")
     private LlmService plannerLlm;
