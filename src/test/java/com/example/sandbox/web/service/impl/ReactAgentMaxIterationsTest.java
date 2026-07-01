@@ -69,6 +69,11 @@ class ReactAgentMaxIterationsTest {
         assertThat(events).extracting(SseEvent::type)
                 .doesNotContain("error")
                 .contains("answer", "done");
+        assertThat(events)
+                .filteredOn(event -> "tool_call".equals(event.type()))
+                .first()
+                .satisfies(event -> assertThat(event.data())
+                        .containsEntry("displayReason", "准备调用 noop 工具继续处理当前任务。"));
         assertThat(events.get(events.size() - 2).type()).isEqualTo("answer");
         assertThat(events.get(events.size() - 1).type()).isEqualTo("done");
 

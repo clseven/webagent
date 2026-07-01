@@ -3761,6 +3761,15 @@ input:checked + .slider:before {
   font-family: var(--font-mono);
 }
 
+.process-tool-reason {
+  margin-bottom: 10px;
+  padding: 7px 9px;
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
 .process-tool-args { margin-bottom: 10px; }
 
 .assistant-answer { margin-top: 5px; }

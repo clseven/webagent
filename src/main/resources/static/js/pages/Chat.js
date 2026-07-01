@@ -116,6 +116,7 @@ const ChatPage = {
                                                         <span class="process-preview">{{ processPreview(event) }}</span>
                                                     </summary>
                                                     <div class="process-detail">
+                                                        <div v-if="(event.type === 'toolCall' || event.type === 'toolResult') && event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
                                                         <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
                                                         <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
                                                         <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
@@ -166,6 +167,7 @@ const ChatPage = {
                                                 <span class="process-preview">{{ processPreview(event) }}</span>
                                             </summary>
                                             <div class="process-detail">
+                                                <div v-if="(event.type === 'toolCall' || event.type === 'toolResult') && event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
                                                 <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
                                                 <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
                                                 <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
@@ -1035,6 +1037,7 @@ const ChatPage = {
                 type: 'toolCall',
                 tool: data.tool,
                 args: data.args || {},
+                displayReason: data.displayReason || '',
                 elapsed: data.elapsed || 0,
                 status: 'running',
                 stepIndex: data.stepIndex || nextStepIndex(stream, 'toolCall')
@@ -1063,6 +1066,7 @@ const ChatPage = {
                 originalType: 'toolCall',
                 tool: data.tool || previous?.tool || stream.currentToolCall?.tool || '',
                 args: previous?.args || stream.currentToolCall?.args || {},
+                displayReason: data.displayReason || previous?.displayReason || stream.currentToolCall?.displayReason || '',
                 result: data.result || '',
                 duration: data.duration,
                 elapsed: data.duration || previous?.elapsed || 0,
@@ -1315,6 +1319,7 @@ const ChatPage = {
         const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
         const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolCall': return `工具 ${e.tool || ''}`; case 'toolResult': return `工具 ${e.tool || ''}`; case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新'); default: return '处理'; } };
         const processPreview = (e) => {
+            if ((e.type === 'toolCall' || e.type === 'toolResult') && e.displayReason) return e.displayReason;
             if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
             if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
             return previewText(e.content, 90);

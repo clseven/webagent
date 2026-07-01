@@ -134,6 +134,9 @@ public final class AgentEventMapper {
         event.put("args", toolCall != null && toolCall.arguments() != null ? toolCall.arguments() : Map.of());
         event.put("result", toolResult.content());
         event.put("duration", toolResult.durationMs());
+        if (!isBlank(toolResult.displayReason())) {
+            event.put("displayReason", toolResult.displayReason());
+        }
         return event;
     }
 

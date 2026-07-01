@@ -2,6 +2,7 @@ package com.example.sandbox.web.model.sse;
 
 import com.example.sandbox.web.model.llm.LlmUsage;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -73,12 +74,86 @@ public record SseEvent(
      * @param args  工具参数
      * @param stepIndex 当前轮次
      */
-    public static SseEvent toolCall(String tool, Map<String, Object> args, int stepIndex) {
-        return new SseEvent("tool_call", Map.of(
-            "tool", tool,
-            "args", args,
-            "stepIndex", stepIndex
-        ));
+    public static SseEvent toolCall(String tool, Map<String, ?> args, int stepIndex) {
+        return toolCall(tool, args, stepIndex, fallbackDisplayReason(tool, args));
+    }
+
+    /**
+     * 工具调用开始，并携带用户可见的行动说明。
+     *
+     * @param tool          工具名称
+     * @param args          工具参数
+     * @param stepIndex     当前轮次
+     * @param displayReason 面向用户展示的调用原因，可为空
+     */
+    public static SseEvent toolCall(String tool, Map<String, ?> args, int stepIndex, String displayReason) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tool", tool);
+        data.put("args", args != null ? args : Map.of());
+        data.put("stepIndex", stepIndex);
+        if (displayReason != null && !displayReason.isBlank()) {
+            data.put("displayReason", displayReason);
+        }
+        return new SseEvent("tool_call", data);
+    }
+
+    /**
+     * 为旧调用点生成兜底行动说明，避免前端只看到裸工具流水账。
+     *
+     * @param tool 工具名称
+     * @param args 工具参数
+     * @return 面向用户展示的简短调用原因
+     */
+    private static String fallbackDisplayReason(String tool, Map<String, ?> args) {
+        String toolName = tool != null ? tool : "unknown";
+        if (toolName.toLowerCase(java.util.Locale.ROOT).contains("search")) {
+            String query = extractQuery(args);
+            String scope = mentionsOfficialSource(query) ? "优先确认官方来源。" : "验证当前任务需要的信息。";
+            return query.isBlank() ? "准备搜索公开信息，" + scope : "准备搜索 " + query + "，" + scope;
+        }
+        if ("run_subagent".equals(toolName)) {
+            return "准备启动子代理处理当前任务中的独立部分。";
+        }
+        return "准备调用 " + toolName + " 工具继续处理当前任务。";
+    }
+
+    /**
+     * 从工具参数中提取常见搜索词。
+     *
+     * @param args 工具参数
+     * @return 搜索词，缺失时为空字符串
+     */
+    private static String extractQuery(Map<String, ?> args) {
+        if (args == null || args.isEmpty()) {
+            return "";
+        }
+        for (String key : java.util.List.of("query", "q", "keyword", "keywords")) {
+            Object value = args.get(key);
+            if (value != null) {
+                String text = String.valueOf(value).trim();
+                if (!text.isEmpty()) {
+                    return text.length() <= 120 ? text : text.substring(0, 117) + "...";
+                }
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 判断文本是否包含官方来源线索。
+     *
+     * @param value 待检查文本
+     * @return true 表示包含官方来源线索
+     */
+    private static boolean mentionsOfficialSource(String value) {
+        if (value == null || value.isBlank()) {
+            return false;
+        }
+        String lower = value.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("official")
+                || lower.contains("github")
+                || lower.contains("官网")
+                || lower.contains("官方");
     }
 
     /**

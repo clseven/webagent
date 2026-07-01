@@ -496,6 +496,7 @@ public class ReactAgent {
 
                 // 执行工具并记录耗时
                 log.info("执行工具: {} 参数: {}", toolName, arguments);
+                String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
                 long startTime = System.currentTimeMillis();
 
                 // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
@@ -522,7 +523,7 @@ public class ReactAgent {
 
                 // 记录本轮步骤
                 LlmToolResult toolResult = LlmToolResult.success(
-                        historyToolCall.id(), toolName, observation, durationMs);
+                        historyToolCall.id(), toolName, observation, durationMs, displayReason);
                 AgentStep step = new AgentStep(iteration, llmContent, response.getReasoningContent(),
                         historyToolCall, toolResult, response.getTokenUsage());
                 steps.add(step);
@@ -1098,6 +1099,7 @@ public class ReactAgent {
                     if (toolCall != null) {
                         String toolName = toolCall.name();
                         Map<String, Object> arguments = toolCall.arguments();
+                        String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
 
                         log.info("执行工具: {} 参数: {}", toolName, arguments);
 
@@ -1134,7 +1136,7 @@ public class ReactAgent {
 
                         // 记录本轮步骤
                         LlmToolResult toolResult = LlmToolResult.success(
-                                historyToolCall.id(), toolName, observation, durationMs);
+                                historyToolCall.id(), toolName, observation, durationMs, displayReason);
                         AgentStep step = new AgentStep(currentStep, currentThinking.toString(),
                                 currentReasoning.toString(), historyToolCall, toolResult, usageRef.get());
                         steps.add(step);
