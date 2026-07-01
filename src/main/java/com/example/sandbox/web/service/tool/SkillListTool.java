@@ -1,18 +1,15 @@
 package com.example.sandbox.web.service.tool;
 
-import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.entity.ToolDefinition;
-import com.example.sandbox.web.service.ConversationService;
-import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.Tool;
+import com.example.sandbox.web.service.impl.AgentSkillRuntimeService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 技能列表工具 — 列出当前会话可用的技能。
@@ -37,13 +34,13 @@ import java.util.Set;
 @Component
 public class SkillListTool implements Tool {
 
+    private static final Logger log = LoggerFactory.getLogger(SkillListTool.class);
+
     private static final String NAME = "skill_list";
 
+    /** 技能运行时服务，负责格式化当前会话可见技能列表。 */
     @Autowired
-    private ConversationService conversationService;
-
-    @Autowired
-    private SkillService skillService;
+    private AgentSkillRuntimeService skillRuntimeService;
 
     @Override
     public ToolDefinition getDefinition() {
@@ -64,50 +61,10 @@ public class SkillListTool implements Tool {
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
         try {
-            List<Skill> enabled = conversationService.getEnabledSkills(sessionId);
-            List<Skill> sandboxAll = skillService.discoverFromSandbox(sessionId);
-
-            Set<String> enabledIds = new HashSet<>();
-            if (enabled != null) {
-                for (Skill s : enabled) enabledIds.add(s.getId());
-            }
-            List<Skill> sandboxOnlyUnenabled = sandboxAll.stream()
-                    .filter(s -> !enabledIds.contains(s.getId()))
-                    .toList();
-
-            if ((enabled == null || enabled.isEmpty()) && sandboxOnlyUnenabled.isEmpty()) {
-                return "当前会话未启用任何技能；沙箱 " + Skill.SANDBOX_SKILL_ROOT + " 目录下也没有可发现的技能。";
-            }
-
-            StringBuilder sb = new StringBuilder();
-            sb.append("## 已启用技能\n");
-            if (enabled == null || enabled.isEmpty()) {
-                sb.append("（无）\n");
-            } else {
-                for (Skill skill : enabled) {
-                    sb.append("- ").append(skill.getId());
-                    if (skill.getDescription() != null && !skill.getDescription().isEmpty()) {
-                        sb.append(": ").append(skill.getDescription());
-                    }
-                    sb.append("\n");
-                }
-            }
-
-            if (!sandboxOnlyUnenabled.isEmpty()) {
-                sb.append("\n## 沙箱中发现但未启用\n");
-                sb.append("以下技能存在于 ").append(Skill.SANDBOX_SKILL_ROOT)
-                        .append("/ 但未在本会话启用，提示用户在前端 Skill 页面启用后才能调用：\n");
-                for (Skill skill : sandboxOnlyUnenabled) {
-                    sb.append("- ").append(skill.getId());
-                    if (skill.getDescription() != null && !skill.getDescription().isEmpty()) {
-                        sb.append(": ").append(skill.getDescription());
-                    }
-                    sb.append("\n");
-                }
-            }
-            return sb.toString();
+            return skillRuntimeService.formatSkillList(sessionId);
         } catch (Exception e) {
-            return "获取技能列表失败：" + e.getMessage();
+            log.error("获取技能列表失败: sessionId={}", sessionId, e);
+            return "错误：获取技能列表失败 - " + e.getMessage();
         }
     }
 }

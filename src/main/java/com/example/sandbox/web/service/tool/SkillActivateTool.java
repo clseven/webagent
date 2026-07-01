@@ -1,8 +1,10 @@
 package com.example.sandbox.web.service.tool;
 
 import com.example.sandbox.web.model.entity.ToolDefinition;
-import com.example.sandbox.web.service.ConversationService;
+import com.example.sandbox.web.service.impl.AgentSkillRuntimeService;
 import com.example.sandbox.web.service.Tool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -31,10 +33,13 @@ import java.util.Map;
 @Component
 public class SkillActivateTool implements Tool {
 
+    private static final Logger log = LoggerFactory.getLogger(SkillActivateTool.class);
+
     private static final String NAME = "skill_activate";
 
+    /** 技能运行时服务，负责从当前会话沙箱读取技能内容。 */
     @Autowired
-    private ConversationService conversationService;
+    private AgentSkillRuntimeService skillRuntimeService;
 
     @Override
     public ToolDefinition getDefinition() {
@@ -60,16 +65,17 @@ public class SkillActivateTool implements Tool {
 
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
-        String skillId = (String) arguments.get("skill_id");
+        Object skillIdValue = arguments.get("skill_id");
+        String skillId = skillIdValue instanceof String value ? value : null;
         if (skillId == null || skillId.isBlank()) {
             return "错误：技能 ID 不能为空";
         }
 
         try {
-            String content = conversationService.getSkillContent(sessionId, skillId);
-            return content;
+            return skillRuntimeService.getSkillContent(sessionId, skillId);
         } catch (Exception e) {
-            return "激活技能失败：" + e.getMessage();
+            log.error("激活技能失败: sessionId={}, skillId={}", sessionId, skillId, e);
+            return "错误：激活技能失败 - " + e.getMessage();
         }
     }
 }

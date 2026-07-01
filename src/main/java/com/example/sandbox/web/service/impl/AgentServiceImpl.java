@@ -10,30 +10,15 @@ import com.example.sandbox.web.model.llm.LlmUsage;
 import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
-import com.example.sandbox.web.service.AgentAppService;
-import com.example.sandbox.web.service.KnowledgeService;
 import com.example.sandbox.web.service.LlmService;
-import com.example.sandbox.web.service.SkillService;
 import com.example.sandbox.web.service.TokenUsageService;
-import com.example.sandbox.web.service.Tool;
-import com.example.sandbox.web.service.WorkspaceDirectoryMemoryService;
-import com.example.sandbox.web.service.enhance.KnowledgeEnhancer;
-import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
-import com.example.sandbox.web.service.mcpclient.RealMcpTool;
-import com.example.sandbox.web.config.SubAgentConfigProperties;
-import com.example.sandbox.web.service.tool.WebSearchTool;
-import com.example.sandbox.web.service.tool.KnowledgeSearchTool;
-import com.example.sandbox.web.service.tool.RunSubagentTool;
-import com.example.sandbox.web.service.tool.ImageBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -93,67 +78,30 @@ public class AgentServiceImpl implements AgentService {
     @Qualifier("plannerLlm")
     private LlmService plannerLlm;
 
-    /** 执行 LLM（DeepSeek，负责工具调用和任务执行） */
-    @Autowired
-    @Qualifier("executorLlm")
-    private LlmService executorLlm;
-
-    /** 技能服务（加载可用技能列表） */
-    @Autowired
-    private SkillService skillService;
-
     /** Token 用量服务（记录每次 LLM 调用的 token 消耗） */
     @Autowired
     private TokenUsageService tokenUsageService;
-
-    /** 所有可用工具（Spring 自动注入 Tool 接口的所有实现） */
-    @Autowired
-    private List<Tool> tools;
-
-    /** MCP 动态工具提供器（基于官方 MCP Java SDK 的真 MCP 协议客户端） */
-    @Autowired
-    private McpClientToolProvider mcpToolProvider;
-
-    /** Agent 应用服务（加载应用配置：知识库、技能过滤等） */
-    @Autowired
-    private AgentAppService agentAppService;
-
-    /** 知识库服务（获取知识库描述，用于工具描述注入） */
-    @Autowired
-    private KnowledgeService knowledgeService;
-
-    /** 知识库检索增强服务（Query Rewrite + Rerank） */
-    @Autowired
-    private KnowledgeEnhancer knowledgeEnhancer;
 
     /** 沙箱服务（懒加载，避免循环依赖） */
     @Autowired
     @org.springframework.context.annotation.Lazy
     private com.example.sandbox.web.service.SandboxService sandboxService;
 
-    /** MCP 动态工具开关，默认关闭 */
-    @Value("${agent.mcp.enabled:false}")
-    private boolean mcpEnabled;
-
-    /** 后台任务管理器（统一调度慢操作后台执行） */
+    /** 单轮上下文准备服务。 */
     @Autowired
-    private BackgroundTaskManager backgroundTaskManager;
+    private AgentTurnContextService agentTurnContextService;
 
-    /** 图片字节缓冲区（view_image 工具与 PostToolUseHook 之间的数据桥梁） */
+    /** 规划阶段服务。 */
     @Autowired
-    private ImageBuffer imageBuffer;
+    private AgentPlannerService agentPlannerService;
 
-    /** 子代理配置（控制 run_subagent 工具的注册和行为） */
+    /** ReactAgent 工厂。 */
     @Autowired
-    private SubAgentConfigProperties subAgentConfig;
+    private ReactAgentFactory reactAgentFactory;
 
-    /** 轻量对话路由器（命中时绕过规划、执行模型和工具链路） */
+    /** 工具上下文服务，用于清理会话级工具状态。 */
     @Autowired
-    private LightweightChatRouter lightweightChatRouter;
-
-    /** 工作区目录记忆服务（只注入 /home/gem 可见目录树元数据） */
-    @Autowired
-    private WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService;
+    private AgentToolContextService agentToolContextService;
 
     /**
      * 创建新会话（无关联应用）
@@ -295,192 +243,29 @@ public class AgentServiceImpl implements AgentService {
     public ChatMessage chat(String sessionId, String userMessage) {
         ConversationSession session = conversationService.getSession(sessionId);
         validateSessionOwnership(session);
+        AgentTurnContext context = agentTurnContextService.prepare(session, userMessage, false);
+        String plan = agentPlannerService.plan(context, userMessage, "plan", "【规划结果】", 300);
+        try {
+            ReactAgent reactAgent = reactAgentFactory.createForChat(context, plan);
+            AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, context.history());
+            String response = agentResponse.getFinalAnswer();
+            String reasoning = agentResponse.getFinalReasoning();
+            List<Map<String, Object>> events = AgentEventMapper.fromPlanAndSteps(plan, agentResponse.getSteps());
 
-        // 0. 加载当前会话的历史消息（存储前获取，不含本轮消息）
-        List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
-        log.info("【历史消息】会话: {} 条数: {}", sessionId, history.size());
+            LlmUsage execUsage = agentResponse.getTotalUsage();
+            tokenUsageService.record(context.userId(), sessionId, execUsage.promptTokens(),
+                    execUsage.completionTokens(), execUsage.cacheHitTokens(),
+                    execUsage.totalTokens(), "executor", "chat");
 
-        boolean skipPlanningByLightweightRoute = lightweightChatRouter.shouldSkipPlanning(userMessage, history);
-        boolean shouldRunPlanAgent = UserContext.isPlanningEnabled() && !skipPlanningByLightweightRoute;
+            conversationService.addAssistantMessage(sessionId, response, reasoning, events);
+            scheduleGeneratedTitle(sessionId, context.userId(), context.firstTurn(), userMessage, response);
+            log.info("【助手输出】会话: {} 内容长度: {}, 思考链长度: {}",
+                    sessionId, response != null ? response.length() : 0, reasoning != null ? reasoning.length() : 0);
 
-        // 1. 确保沙箱已创建（异步可能还没完成）
-        if (!sandboxService.hasSandbox(sessionId)) {
-            log.info("Sandbox not ready for session {}, creating now...", sessionId);
-            sandboxService.createSandbox(sessionId);
+            return ChatMessage.restore("assistant", response, reasoning, System.currentTimeMillis(), events);
+        } finally {
+            agentToolContextService.clearRuntimeState(context.toolContext());
         }
-
-        boolean firstTurn = history.isEmpty();
-
-        // 2. 存储用户消息
-        conversationService.addUserMessage(sessionId, userMessage);
-        log.info("【用户输入】会话: {} 内容: {}", sessionId, userMessage);
-
-        // 3. 提取上传文件上下文
-        String extraContext = extractFileContext(userMessage);
-
-        // 4. 构建系统提示（仅技能元数据，不含消息历史 — 利用 prompt caching）
-        String systemPrompt = conversationService.buildSystemPrompt(sessionId);
-        String workspaceMemoryContext = buildWorkspaceDirectoryMemoryContext(sessionId);
-        systemPrompt = prependContext(workspaceMemoryContext, systemPrompt);
-        if (extraContext != null) {
-            systemPrompt = extraContext + "\n\n" + systemPrompt;
-        }
-        log.info("【系统提示】会话: {} 长度: {} 字符", sessionId, systemPrompt.length());
-
-        // 4.5 加载 Agent 应用配置（知识库描述注入 + skill 过滤）
-        Long appId = session.getAppId();
-        AgentAppEntity app = null;
-        if (appId != null) {
-            try {
-                app = agentAppService.getApp(appId);
-            } catch (Exception e) {
-                log.warn("加载 Agent 应用配置失败: appId={}", appId, e.getMessage());
-            }
-        }
-
-        // 根据沙箱类型过滤工具
-        boolean isAio = sandboxService.isAioSandbox(sessionId);
-        String targetType = isAio ? "AIO" : "COMMON";
-        List<Tool> filteredTools = new ArrayList<>(tools.stream()
-                .filter(t -> {
-                    String type = t.getDefinition().getSandboxType();
-                    return "ALL".equals(type) || targetType.equals(type);
-                })
-                .toList());
-        // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
-        filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
-
-        // WebSearch 工具：仅在前端开启搜索时才保留
-        filteredTools = filterWebSearchTool(filteredTools);
-
-        // 子代理工具：受 agent.sub-agent.enabled 控制
-        filteredTools = filterSubAgentTool(filteredTools);
-
-        // 知识库描述注入：如果应用关联了知识库，动态修改 knowledge_search 工具的描述
-        KnowledgeSearchTool knowledgeSearchTool = null;
-        String kbDescription = null;
-        if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-            // 构建知识库描述
-            StringBuilder kbDescBuilder = new StringBuilder();
-            kbDescBuilder.append("从知识库中检索相关信息。");
-            for (Long kbId : app.getKnowledgeBaseIds()) {
-                try {
-                    String desc = knowledgeService.getKnowledgeBaseDescription(kbId);
-                    if (desc != null && !desc.isEmpty()) {
-                        kbDescBuilder.append(desc).append(" ");
-                    }
-                } catch (Exception e) {
-                    log.warn("获取知识库描述失败: kbId={}", kbId);
-                }
-            }
-            kbDescription = kbDescBuilder.toString();
-
-            // 找到 KnowledgeSearchTool 并设置动态描述
-            for (Tool t : filteredTools) {
-                if (t instanceof KnowledgeSearchTool kst) {
-                    knowledgeSearchTool = kst;
-                    // 用应用关联的第一个知识库作为默认检索知识库
-                    Long defaultKbId = app.getKnowledgeBaseIds().iterator().next();
-                    kst.setCurrentKbId(defaultKbId);
-                    break;
-                }
-            }
-
-            log.info("【知识库注入】应用: {}, 知识库: {}, 描述: {}",
-                    appId, app.getKnowledgeBaseIds(),
-                    kbDescription.length() > 100 ? kbDescription.substring(0, 100) + "..." : kbDescription);
-        }
-
-        // 构建工具定义（如果有关联知识库，注入动态描述）
-        final String finalKbDesc = kbDescription;
-        final AgentAppEntity finalApp = app;
-        List<ToolDefinition> toolDefinitions = filteredTools.stream()
-                .map(t -> {
-                    if (t instanceof KnowledgeSearchTool kst && finalApp != null && finalKbDesc != null) {
-                        return kst.getDefinitionWithDescription(finalKbDesc);
-                    }
-                    return t.getDefinition();
-                })
-                .toList();
-        log.info("【工具过滤】沙箱类型: {}, 可用工具: {}", targetType,
-                filteredTools.stream().map(t -> t.getDefinition().getName()).toList());
-
-        // 5. 知识库检索增强（Query Rewrite + Rerank）— 提前到规划前，PlanAgent 也需要知识库上下文
-        Long userId = UserContext.getCurrentUserId();
-        String enhancedContext = "";
-        if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-            List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
-            enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
-            if (!enhancedContext.isEmpty()) {
-                systemPrompt = enhancedContext + "\n\n" + systemPrompt;
-                log.info("【知识库增强】注入上下文: {} 字符", enhancedContext.length());
-            }
-        }
-
-        // 6. Phase 1: 按请求开关和轻量判断决定是否调用 PlanAgent
-        String plan = null;
-        if (shouldRunPlanAgent) {
-            List<Skill> skills = skillService.discoverFromSandbox(sessionId);
-
-            // Skill 过滤：如果应用配置了 skill，只使用应用关联的 skill
-            if (app != null && !app.getSkillIds().isEmpty()) {
-                Set<String> appSkillIds = app.getSkillIds();
-                skills = skills.stream()
-                        .filter(s -> appSkillIds.contains(s.getId()))
-                        .toList();
-                log.info("【Skill 过滤】应用: {}, 可用技能: {}", appId,
-                        skills.stream().map(Skill::getId).toList());
-            }
-
-            String sessionContext = buildSessionContext(session, prependContext(workspaceMemoryContext, enhancedContext));
-            PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
-            PlanResult planResult = planAgent.plan(userMessage, history);
-            plan = planResult.getPlan();
-            log.info("【规划结果】{}", plan.length() > 300 ? plan.substring(0, 300) + "..." : plan);
-
-            // 保存规划阶段的 token 用量
-            if (planResult.getTokenUsage() != null) {
-                LlmUsage planUsage = planResult.getTokenUsage();
-                tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
-                        planUsage.completionTokens(), planUsage.cacheHitTokens(),
-                        planUsage.totalTokens(), "planner", "plan");
-            }
-        } else {
-            log.info("【规划跳过】会话: {}, planningEnabled={}, lightweight={}",
-                    sessionId, UserContext.isPlanningEnabled(), skipPlanningByLightweightRoute);
-        }
-
-        // 7. Phase 2: ReactAgent 执行（历史消息作为固定前缀，利用 prompt caching）
-        ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
-                null, null, backgroundTaskManager);
-        reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
-        reactAgent.registerPostToolUseHook(viewImageHook());
-        // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
-        wireSubAgentParent(reactAgent, filteredTools);
-        AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, history);
-        String response = agentResponse.getFinalAnswer();
-        String reasoning = agentResponse.getFinalReasoning();
-        List<Map<String, Object>> events = AgentEventMapper.fromPlanAndSteps(plan, agentResponse.getSteps());
-
-        // 保存执行阶段的 token 用量
-        LlmUsage execUsage = agentResponse.getTotalUsage();
-        tokenUsageService.record(userId, sessionId, execUsage.promptTokens(),
-                execUsage.completionTokens(), execUsage.cacheHitTokens(),
-                execUsage.totalTokens(), "executor", "chat");
-
-        // 7. 存储助手响应，并保存本轮可恢复展示的执行过程事件
-        conversationService.addAssistantMessage(sessionId, response, reasoning, events);
-        scheduleGeneratedTitle(sessionId, userId, firstTurn, userMessage, response);
-        log.info("【助手输出】会话: {} 内容长度: {}, 思考链长度: {}",
-                sessionId, response != null ? response.length() : 0, reasoning != null ? reasoning.length() : 0);
-
-        // 清理 ThreadLocal
-        if (knowledgeSearchTool != null) {
-            knowledgeSearchTool.clearCurrentKbId();
-            knowledgeSearchTool.clearDynamicDescription();
-        }
-
-        return ChatMessage.restore("assistant", response, reasoning, System.currentTimeMillis(), events);
     }
 
     /**
@@ -613,119 +398,6 @@ public class AgentServiceImpl implements AgentService {
         return title.substring(0, endIndex);
     }
 
-    /**
-     * 构建会话上下文（已启用技能描述 + 知识库增强上下文）
-     */
-    private String buildSessionContext(ConversationSession session, String enhancedContext) {
-        StringBuilder sb = new StringBuilder();
-        if (session.getEnabledSkillIds() != null && !session.getEnabledSkillIds().isEmpty()) {
-            // 直接从沙箱发现技能，无缓存
-            Map<String, Skill> sandboxSkills = new java.util.LinkedHashMap<>();
-            for (Skill s : skillService.discoverFromSandbox(session.getSessionId())) {
-                sandboxSkills.put(s.getId(), s);
-            }
-            sb.append("## 已启用技能\n\n");
-            for (String skillId : session.getEnabledSkillIds()) {
-                Skill skill = sandboxSkills.get(skillId);
-                if (skill != null) {
-                    sb.append(skill.toMetadataLine()).append("\n");
-                } else {
-                    log.warn("构建会话上下文时技能 {} 在沙箱中未找到", skillId);
-                    sb.append("- ").append(skillId).append("\n");
-                }
-            }
-            sb.append("\n");
-        }
-        if (enhancedContext != null && !enhancedContext.isEmpty()) {
-            sb.append(enhancedContext).append("\n");
-        }
-        return sb.toString();
-    }
-
-    /**
-     * 将工作区目录记忆追加到系统提示之前。
-     *
-     * @param sessionId    会话 ID
-     * @param systemPrompt 原系统提示
-     * @return 注入目录记忆后的系统提示
-     */
-    private String appendWorkspaceDirectoryMemoryContext(String sessionId, String systemPrompt) {
-        return prependContext(buildWorkspaceDirectoryMemoryContext(sessionId), systemPrompt);
-    }
-
-    /**
-     * 刷新并构建工作区目录记忆上下文。
-     *
-     * <p>失败时不重试，原因是目录记忆只是增强上下文，不能阻断主对话链路；失败会记录 WARN 并返回空上下文。</p>
-     *
-     * @param sessionId 会话 ID
-     * @return 工作区目录记忆上下文；失败或为空时返回空字符串
-     */
-    private String buildWorkspaceDirectoryMemoryContext(String sessionId) {
-        try {
-            workspaceDirectoryMemoryService.refresh(sessionId);
-            return workspaceDirectoryMemoryService.buildContext(sessionId);
-        } catch (Exception e) {
-            log.warn("工作区目录记忆注入失败: session={}, error={}", sessionId, e.getMessage(), e);
-            return "";
-        }
-    }
-
-    /**
-     * 将额外上下文放到基础上下文之前。
-     *
-     * @param extraContext 额外上下文
-     * @param baseContext  基础上下文
-     * @return 合并后的上下文
-     */
-    private String prependContext(String extraContext, String baseContext) {
-        if (extraContext == null || extraContext.isBlank()) {
-            return baseContext != null ? baseContext : "";
-        }
-        if (baseContext == null || baseContext.isBlank()) {
-            return extraContext;
-        }
-        return extraContext + "\n\n" + baseContext;
-    }
-
-    /**
-     * 从用户消息中提取文件上传信息，生成上下文提示
-     *
-     * <p>检测用户消息中是否包含【上传的文件】段落，解析出文件名列表，
-     * 生成提示告诉 LLM 文件已同步到沙箱的 /home/gem/uploads/ 目录。</p>
-     */
-    private String extractFileContext(String userMessage) {
-        // 检测用户消息中是否提到【上传的文件】段落
-        if (!userMessage.contains("【上传的文件】")) {
-            return null;
-        }
-
-        // 提取文件名列表
-        StringBuilder context = new StringBuilder();
-        context.append("## 用户已上传的文件\n");
-        context.append("文件已同步到沙盒 `/home/gem/uploads/` 目录，可直接读取：\n\n");
-
-        // 用换行和 📎 标记来解析文件列表
-        String[] lines = userMessage.split("\n");
-        for (String line : lines) {
-            if (line.contains("📎")) {
-                // 提取文件名（📎 后面的内容，去掉大小信息）
-                String filename = line.replace("📎", "").trim();
-                int sizeIdx = filename.lastIndexOf(" (");
-                if (sizeIdx > 0) {
-                    filename = filename.substring(0, sizeIdx);
-                }
-                // 去掉可能的前缀符号
-                filename = filename.replaceFirst("^[^a-zA-Z0-9\\u4e00-\\u9fa5]+", "");
-                if (!filename.isEmpty()) {
-                    context.append("- ").append(filename).append("\n");
-                }
-            }
-        }
-
-        return context.toString();
-    }
-
     // ==================== 流式对话 ====================
 
     /**
@@ -747,176 +419,27 @@ public class AgentServiceImpl implements AgentService {
     public Flux<SseEvent> chatStream(String sessionId, String userMessage) {
         return Flux.create(emitter -> {
             var sink = emitter;
-            AtomicReference<KnowledgeSearchTool> knowledgeSearchToolRef = new AtomicReference<>();
             AtomicReference<String> streamAnswerRef = new AtomicReference<>("");
+            AtomicReference<AgentTurnContext> contextRef = new AtomicReference<>();
 
             try {
-                // 0. 前置处理
                 ConversationSession session = conversationService.getSession(sessionId);
                 validateSessionOwnership(session);
-
-                List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
-                log.info("【Stream 历史消息】会话: {} 条数: {}", sessionId, history.size());
-
-                boolean skipPlanningByLightweightRoute = lightweightChatRouter.shouldSkipPlanning(userMessage, history);
-                boolean shouldRunPlanAgent = UserContext.isPlanningEnabled() && !skipPlanningByLightweightRoute;
-
-                if (!sandboxService.hasSandbox(sessionId)) {
-                    log.info("Sandbox not ready for session {}, creating now...", sessionId);
-                    sandboxService.createSandbox(sessionId);
-                }
-
-                boolean firstTurn = history.isEmpty();
-
-                // 存储用户消息
-                conversationService.addUserMessage(sessionId, userMessage);
-
-                // 提取文件上下文
-                String extraContext = extractFileContext(userMessage);
-
-                // 构建系统提示
-                String systemPrompt = conversationService.buildSystemPrompt(sessionId);
-                String workspaceMemoryContext = buildWorkspaceDirectoryMemoryContext(sessionId);
-                systemPrompt = prependContext(workspaceMemoryContext, systemPrompt);
-                if (extraContext != null) {
-                    systemPrompt = extraContext + "\n\n" + systemPrompt;
-                }
-
-                // 加载应用配置
-                Long appId = session.getAppId();
-                AgentAppEntity app = null;
-                if (appId != null) {
-                    try {
-                        app = agentAppService.getApp(appId);
-                    } catch (Exception e) {
-                        log.warn("加载 Agent 应用配置失败: appId={}", appId);
-                    }
-                }
-
-                // 过滤工具
-                boolean isAio = sandboxService.isAioSandbox(sessionId);
-                String targetType = isAio ? "AIO" : "COMMON";
-                List<Tool> filteredTools = new ArrayList<>(tools.stream()
-                        .filter(t -> {
-                            String type = t.getDefinition().getSandboxType();
-                            return "ALL".equals(type) || targetType.equals(type);
-                        })
-                        .toList());
-                // MCP 动态工具：受配置开关控制，并与自定义工具去重（优先保留自定义工具）
-                filteredTools = mergeMcpTools(filteredTools, sessionId, isAio);
-
-                // WebSearch 工具：仅在前端开启搜索时才保留
-                filteredTools = filterWebSearchTool(filteredTools);
-
-                // 子代理工具：受 agent.sub-agent.enabled 控制
-                filteredTools = filterSubAgentTool(filteredTools);
-
-                // 知识库注入
-                String kbDescription = null;
-                if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-                    StringBuilder kbDescBuilder = new StringBuilder();
-                    kbDescBuilder.append("从知识库中检索相关信息。");
-                    for (Long kbId : app.getKnowledgeBaseIds()) {
-                        try {
-                            String desc = knowledgeService.getKnowledgeBaseDescription(kbId);
-                            if (desc != null && !desc.isEmpty()) {
-                                kbDescBuilder.append(desc).append(" ");
-                            }
-                        } catch (Exception e) {
-                            log.warn("获取知识库描述失败: kbId={}", kbId);
-                        }
-                    }
-                    kbDescription = kbDescBuilder.toString();
-
-                    for (Tool t : filteredTools) {
-                        if (t instanceof KnowledgeSearchTool kst) {
-                            knowledgeSearchToolRef.set(kst);
-                            Long defaultKbId = app.getKnowledgeBaseIds().iterator().next();
-                            kst.setCurrentKbId(defaultKbId);
-                            break;
-                        }
-                    }
-                }
-
-                final String finalKbDesc = kbDescription;
-                final AgentAppEntity finalApp = app;
-                List<ToolDefinition> toolDefinitions = filteredTools.stream()
-                        .map(t -> {
-                            if (t instanceof KnowledgeSearchTool kst && finalApp != null && finalKbDesc != null) {
-                                return kst.getDefinitionWithDescription(finalKbDesc);
-                            }
-                            return t.getDefinition();
-                        })
-                        .toList();
-
-                log.info("【Stream 工具过滤】沙箱类型: {}, 可用工具: {}", targetType,
-                        filteredTools.stream().map(t -> t.getDefinition().getName()).toList());
-
-                // 知识库检索增强（Query Rewrite + Rerank）— 提前到规划前，PlanAgent 也需要知识库上下文
-                Long userId = UserContext.getCurrentUserId();
-                String enhancedContext = "";
-                if (app != null && !app.getKnowledgeBaseIds().isEmpty()) {
-                    List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
-                    enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
-                    if (!enhancedContext.isEmpty()) {
-                        systemPrompt = enhancedContext + "\n\n" + systemPrompt;
-                        log.info("【Stream 知识库增强】注入上下文: {} 字符", enhancedContext.length());
-                    }
-                }
-
-                // Phase 1: 按请求开关和轻量判断决定是否调用 PlanAgent
-                String plan = null;
-                if (shouldRunPlanAgent) {
-                    List<Skill> skills = skillService.discoverFromSandbox(sessionId);
-
-                    if (app != null && !app.getSkillIds().isEmpty()) {
-                        Set<String> appSkillIds = app.getSkillIds();
-                        skills = skills.stream()
-                                .filter(s -> appSkillIds.contains(s.getId()))
-                                .toList();
-                    }
-
-                    String sessionContext = buildSessionContext(session, prependContext(workspaceMemoryContext, enhancedContext));
-                    PlanAgent planAgent = new PlanAgent(executorLlm, toolDefinitions, skills, sessionContext);
-                    PlanResult planResult = planAgent.plan(userMessage, history);
-                    plan = planResult.getPlan();
-
-                    // 发送规划事件
+                AgentTurnContext context = agentTurnContextService.prepare(session, userMessage, true);
+                contextRef.set(context);
+                String plan = agentPlannerService.plan(context, userMessage, "plan_stream", "【Stream 规划结果】", 200);
+                if (plan != null) {
                     sink.next(SseEvent.plan(plan));
-                    log.info("【Stream 规划结果】{}", plan.length() > 200 ? plan.substring(0, 200) + "..." : plan);
-
-                    // 记录规划 token
-                    if (planResult.getTokenUsage() != null) {
-                        LlmUsage planUsage = planResult.getTokenUsage();
-                        tokenUsageService.record(userId, sessionId, planUsage.promptTokens(),
-                                planUsage.completionTokens(), planUsage.cacheHitTokens(),
-                                planUsage.totalTokens(), "planner", "plan_stream");
-                    }
-                } else {
-                    log.info("【Stream 规划跳过】会话: {}, planningEnabled={}, lightweight={}",
-                            sessionId, UserContext.isPlanningEnabled(), skipPlanningByLightweightRoute);
                 }
 
-                // 检查是否中断
                 if (sink.isCancelled()) {
                     sink.next(SseEvent.interrupted("用户在规划后中断"));
                     sink.complete();
                     return;
                 }
 
-                // Phase 2: 执行
-                ReactAgent reactAgent = new ReactAgent(executorLlm, filteredTools, systemPrompt, plan,
-                        conversationService, sessionId, backgroundTaskManager);
-                reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
-                reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
-                reactAgent.registerPostToolUseHook(viewImageHook());
-                // 子代理工具注入父 Agent 引用（子代理需要从父 fork）
-                wireSubAgentParent(reactAgent, filteredTools);
-
-                // 用于累积 token 用量
-                AtomicReference<LlmUsage> totalUsage = new AtomicReference<>();
-
-                reactAgent.runStream(sessionId, userMessage, history)
+                ReactAgent reactAgent = reactAgentFactory.createForStream(context, plan);
+                reactAgent.runStream(sessionId, userMessage, context.history())
                     .doOnNext(event -> {
                         if (!sink.isCancelled()) {
                             sink.next(event);
@@ -928,7 +451,7 @@ public class AgentServiceImpl implements AgentService {
                             }
                             if ("done".equals(event.type())) {
                                 Object usage = event.data().get("tokenUsage");
-                                if (usage != null && userId != null) {
+                                if (usage != null && context.userId() != null) {
                                     try {
                                         @SuppressWarnings("unchecked")
                                         java.util.Map<String, Object> usageMap = (java.util.Map<String, Object>) usage;
@@ -936,7 +459,7 @@ public class AgentServiceImpl implements AgentService {
                                         int completionTokens = ((Number) usageMap.get("completionTokens")).intValue();
                                         int totalTokens = ((Number) usageMap.get("totalTokens")).intValue();
                                         int cacheHitTokens = ((Number) usageMap.getOrDefault("cacheHitTokens", 0)).intValue();
-                                        tokenUsageService.record(userId, sessionId, promptTokens, completionTokens,
+                                        tokenUsageService.record(context.userId(), sessionId, promptTokens, completionTokens,
                                                 cacheHitTokens, totalTokens, "executor", "chat");
                                         log.info("【Stream Token 用量】prompt={}, completion={}, cacheHit={}, total={}",
                                                 promptTokens, completionTokens, cacheHitTokens, totalTokens);
@@ -944,7 +467,7 @@ public class AgentServiceImpl implements AgentService {
                                         log.warn("解析 tokenUsage 失败: {}", e.getMessage());
                                     }
                                 }
-                                scheduleGeneratedTitle(sessionId, userId, firstTurn,
+                                scheduleGeneratedTitle(sessionId, context.userId(), context.firstTurn(),
                                         userMessage, streamAnswerRef.get());
                             }
                         }
@@ -955,15 +478,10 @@ public class AgentServiceImpl implements AgentService {
                             sink.next(SseEvent.error(e.getMessage()));
                             sink.complete();
                         }
+                        agentToolContextService.clearRuntimeState(context.toolContext());
                     })
                     .doOnComplete(() -> {
-                        // 清理 ThreadLocal（消息保存已在 ReactAgent 内部处理）
-                        KnowledgeSearchTool kst = knowledgeSearchToolRef.get();
-                        if (kst != null) {
-                            kst.clearCurrentKbId();
-                            kst.clearDynamicDescription();
-                        }
-
+                        agentToolContextService.clearRuntimeState(context.toolContext());
                         if (!sink.isCancelled()) {
                             sink.complete();
                         }
@@ -976,142 +494,12 @@ public class AgentServiceImpl implements AgentService {
                     sink.next(SseEvent.error(e.getMessage()));
                     sink.complete();
                 }
-
-                // 清理
-                KnowledgeSearchTool kst = knowledgeSearchToolRef.get();
-                if (kst != null) {
-                    kst.clearCurrentKbId();
-                    kst.clearDynamicDescription();
+                AgentTurnContext context = contextRef.get();
+                if (context != null) {
+                    agentToolContextService.clearRuntimeState(context.toolContext());
                 }
             }
         });
     }
 
-    /**
-     * 按配置合并 MCP 动态工具。
-     *
-     * <p>受 {@code agent.mcp.enabled} 控制，默认关闭。
-     * 开启时与自定义工具去重：若 MCP 工具原始名与已有自定义工具同名，保留自定义工具。</p>
-     *
-     * <p>新版 MCP 客户端是基于官方 SDK 的真 MCP 协议长连接，与具体沙箱类型无关，
-     * 因此不再像旧版那样限制只在 AIO 沙箱启用。</p>
-     *
-     * @param customTools 已过滤的自定义工具列表
-     * @param sessionId   当前会话 ID
-     * @param isAio       是否为 AIO 沙箱（保留参数兼容现有调用，目前未使用）
-     * @return 合并后的工具列表（可能包含 MCP 工具）
-     */
-    private List<Tool> mergeMcpTools(List<Tool> customTools, String sessionId, boolean isAio) {
-        if (!mcpEnabled) {
-            return customTools;
-        }
-
-        // 收集自定义工具名，用于去重
-        Set<String> customNames = customTools.stream()
-                .map(t -> t.getDefinition().getName())
-                .collect(Collectors.toSet());
-
-        List<Tool> result = new ArrayList<>(customTools);
-        int skipped = 0;
-        for (Tool mcpTool : mcpToolProvider.getTools(sessionId)) {
-            if (mcpTool instanceof RealMcpTool mcp) {
-                String originalName = mcp.getOriginalName();
-                if (customNames.contains(originalName)) {
-                    log.debug("MCP 工具 {} (原始名: {}) 与自定义工具冲突，使用自定义版本",
-                            mcpTool.getDefinition().getName(), originalName);
-                    skipped++;
-                    continue;
-                }
-            }
-            result.add(mcpTool);
-        }
-
-        if (skipped > 0) {
-            log.info("MCP 工具去重: 跳过 {} 个冲突工具，保留 {} 个 MCP 工具",
-                    skipped, result.size() - customTools.size());
-        }
-        return result;
-    }
-
-    /**
-     * 按前端网络搜索开关过滤 {@link WebSearchTool}。
-     *
-     * <p>开关来自当前请求的 {@code searchEnabled} 参数（通过 {@link com.example.sandbox.web.context.UserContext} 传递）。
-     * 关闭时从工具列表中移除 web_search，LLM 将无法调用。</p>
-     */
-    private List<Tool> filterWebSearchTool(List<Tool> tools) {
-        boolean enabled = UserContext.isWebSearchEnabled();
-        if (enabled) {
-            log.debug("网络搜索已启用");
-            return tools;
-        }
-        List<Tool> filtered = tools.stream()
-                .filter(t -> !(t instanceof WebSearchTool))
-                .toList();
-        if (filtered.size() < tools.size()) {
-            log.debug("网络搜索已关闭，web_search 工具已移除");
-        }
-        return filtered;
-    }
-
-    /**
-     * 按子代理总开关过滤 {@link RunSubagentTool}。
-     *
-     * <p>当 {@code agent.sub-agent.enabled=false} 时，从工具列表中移除 run_subagent，
-     * LLM 将无法委托子任务给子代理。</p>
-     */
-    private List<Tool> filterSubAgentTool(List<Tool> tools) {
-        if (subAgentConfig != null && subAgentConfig.isEnabled()) {
-            log.info("子代理已启用，run_subagent 工具可用");
-            return tools;
-        }
-        List<Tool> filtered = tools.stream()
-                .filter(t -> !(t instanceof RunSubagentTool))
-                .toList();
-        if (filtered.size() < tools.size()) {
-            log.info("子代理未启用，run_subagent 工具已移除");
-        }
-        return filtered;
-    }
-
-    /**
-     * 将父 Agent 引用注入到 {@link RunSubagentTool} 中。
-     *
-     * <p>子代理通过 {@code parentAgent.fork()} 创建子实例，继承 Hook 和安全策略。
-     * 如果工具列表中不存在 RunSubagentTool（功能关闭），此方法无操作。</p>
-     */
-    private void wireSubAgentParent(ReactAgent reactAgent, List<Tool> filteredTools) {
-        for (Tool tool : filteredTools) {
-            if (tool instanceof RunSubagentTool runSubagentTool) {
-                runSubagentTool.setParentAgent(reactAgent);
-                log.debug("RunSubagentTool 父 Agent 已注入");
-                return;
-            }
-        }
-    }
-
-    /**
-     * 构建 view_image 工具的 PostToolUseHook。
-     *
-     * <p>当 LLM 调用 {@code view_image} 工具后，从 {@link ImageBuffer} 取出图片字节，
-     * 构造携带图片数据的多模态 user 消息追加到对话历史，使下一轮 LLM 调用能直接看到图片。</p>
-     */
-    private ReactAgent.PostToolUseHook viewImageHook() {
-        return (toolCall, result, sessionId) -> {
-            if (!"view_image".equals(toolCall.name())) {
-                return null;
-            }
-            ImageBuffer.Entry entry = imageBuffer.take(sessionId);
-            if (entry == null) {
-                log.warn("view_image 工具已执行，但 ImageBuffer 中无图片数据，sessionId={}", sessionId);
-                return null;
-            }
-            log.info("PostToolUseHook 注入图片: path={} size={} bytes", entry.path(), entry.bytes().length);
-            return com.example.sandbox.web.model.entity.ChatMessage.userMessageWithImage(
-                    "(图片：" + entry.path() + ")",
-                    entry.bytes(),
-                    entry.mimeType()
-            );
-        };
-    }
 }

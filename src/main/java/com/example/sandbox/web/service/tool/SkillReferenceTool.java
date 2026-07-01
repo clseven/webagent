@@ -1,8 +1,10 @@
 package com.example.sandbox.web.service.tool;
 
 import com.example.sandbox.web.model.entity.ToolDefinition;
-import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.Tool;
+import com.example.sandbox.web.service.impl.AgentSkillRuntimeService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -29,10 +31,13 @@ import java.util.Map;
 @Component
 public class SkillReferenceTool implements Tool {
 
+    private static final Logger log = LoggerFactory.getLogger(SkillReferenceTool.class);
+
     private static final String NAME = "skill_reference";
 
+    /** 技能运行时服务，负责从当前会话沙箱读取引用文件。 */
     @Autowired
-    private ConversationService conversationService;
+    private AgentSkillRuntimeService skillRuntimeService;
 
     @Override
     public ToolDefinition getDefinition() {
@@ -62,8 +67,10 @@ public class SkillReferenceTool implements Tool {
 
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
-        String skillId = (String) arguments.get("skill_id");
-        String path = (String) arguments.get("path");
+        Object skillIdValue = arguments.get("skill_id");
+        Object pathValue = arguments.get("path");
+        String skillId = skillIdValue instanceof String value ? value : null;
+        String path = pathValue instanceof String value ? value : null;
 
         if (skillId == null || skillId.isBlank()) {
             return "错误：技能 ID 不能为空";
@@ -73,10 +80,10 @@ public class SkillReferenceTool implements Tool {
         }
 
         try {
-            String content = conversationService.getSkillReference(sessionId, skillId, path);
-            return content;
+            return skillRuntimeService.getSkillReference(sessionId, skillId, path);
         } catch (Exception e) {
-            return "读取引用文件失败：" + e.getMessage();
+            log.error("读取技能引用文件失败: sessionId={}, skillId={}, path={}", sessionId, skillId, path, e);
+            return "错误：读取引用文件失败 - " + e.getMessage();
         }
     }
 }

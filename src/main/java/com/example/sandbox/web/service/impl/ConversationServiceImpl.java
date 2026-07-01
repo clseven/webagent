@@ -2,8 +2,6 @@ package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.web.context.UserContext;
 import com.example.sandbox.web.exception.SessionNotFoundException;
-import com.example.sandbox.web.exception.SkillNotFoundException;
-import com.example.sandbox.web.exception.UnauthorizedException;
 import com.example.sandbox.web.model.converter.EntityConverter;
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ChatMessageEntity;
@@ -13,23 +11,17 @@ import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.response.SkillView;
 import com.example.sandbox.web.repository.ChatMessageRepository;
 import com.example.sandbox.web.repository.ConversationSessionRepository;
-import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.service.ConversationService;
-import com.example.sandbox.web.service.SandboxService;
-import com.example.sandbox.web.service.SkillService;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * 对话记忆服务实现
@@ -47,28 +39,16 @@ public class ConversationServiceImpl implements ConversationService {
      */
     private static final int SESSION_TITLE_MAX_CODE_POINTS = 120;
 
-    private static final Pattern SAFE_SKILL_ID = Pattern.compile("^[a-zA-Z0-9][a-zA-Z0-9_.\\-]{0,63}$");
-
     private final ConversationSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
-    private final SkillService skillService;
-    private final SandboxService sandboxService;
-
-    @Autowired
-    private SandboxClientFactory sandboxClientFactory;
-
-    @Autowired
-    @org.springframework.context.annotation.Lazy
-    private FileSyncService fileSyncService;
+    private final AgentSkillRuntimeService skillRuntimeService;
 
     public ConversationServiceImpl(ConversationSessionRepository sessionRepository,
                                   ChatMessageRepository messageRepository,
-                                  SkillService skillService,
-                                  SandboxService sandboxService) {
+                                  AgentSkillRuntimeService skillRuntimeService) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
-        this.skillService = skillService;
-        this.sandboxService = sandboxService;
+        this.skillRuntimeService = skillRuntimeService;
     }
 
     @Override
@@ -162,65 +142,7 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional(readOnly = true)
     public String buildSystemPrompt(String sessionId) {
-        if (!sessionRepository.existsById(sessionId)) {
-            throw new SessionNotFoundException(sessionId);
-        }
-
-        ConversationSessionEntity session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new SessionNotFoundException(sessionId));
-
-        StringBuilder prompt = new StringBuilder();
-
-        Set<String> enabledSkillIds = session.getEnabledSkillIds();
-        log.info("构建系统提示，会话 {} 启用技能数: {}", sessionId, enabledSkillIds.size());
-
-        if (!enabledSkillIds.isEmpty()) {
-            // 融合本地仓库与沙箱发现，覆盖 Agent 自行下载的 sandbox-only skill
-            Map<String, Skill> available = collectEnabledSkills(sessionId, enabledSkillIds);
-
-            if (!available.isEmpty()) {
-                prompt.append("## 已启用技能\n\n");
-                prompt.append("以下技能已为当前会话启用。技能文件来自当前会话沙箱 ")
-                      .append(Skill.SANDBOX_SKILL_ROOT).append(" 下发现到的真实技能目录。\n");
-                prompt.append("调用 `skill_activate(skill_id=\"技能ID\")` 获取详细指令。\n\n");
-                for (String skillId : enabledSkillIds) {
-                    Skill skill = available.get(skillId);
-                    if (skill != null) {
-                        prompt.append(skill.toMetadataLine()).append("\n");
-                    } else {
-                        log.warn("技能 {} 既不在本地仓库也不在沙箱中，跳过", skillId);
-                    }
-                }
-                prompt.append("\n");
-            }
-        }
-
-        return prompt.toString();
-    }
-
-    /**
-     * 收集会话已启用的技能：先查本地仓库，再用沙箱发现补齐 sandbox-only 项。
-     *
-     * <p>沙箱发现仅在有本地仓库缺项时执行一次，避免无谓的 shell 调用。</p>
-     *
-     * @param sessionId       会话 ID
-     * @param enabledSkillIds 已启用的技能 ID 集合
-     * @return id -> Skill 映射；任一来源都拿不到的技能不会出现在结果中
-     */
-    private Map<String, Skill> collectEnabledSkills(String sessionId, Set<String> enabledSkillIds) {
-        Map<String, Skill> result = new java.util.LinkedHashMap<>();
-        // 直接从沙箱发现，无缓存；未在沙箱中找到的技能静默跳过
-        Map<String, Skill> sandboxById = new java.util.LinkedHashMap<>();
-        for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-            sandboxById.put(s.getId(), s);
-        }
-        for (String skillId : enabledSkillIds) {
-            Skill found = sandboxById.get(skillId);
-            if (found != null) {
-                result.put(skillId, found);
-            }
-        }
-        return result;
+        return skillRuntimeService.buildEnabledSkillPrompt(sessionId);
     }
 
     @Override
@@ -240,73 +162,13 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional
     public void enableSkill(String sessionId, String skillId) {
-        if (skillId == null || !SAFE_SKILL_ID.matcher(skillId).matches()) {
-            throw new IllegalArgumentException("Invalid skill ID: " + skillId);
-        }
-        ConversationSessionEntity session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new SessionNotFoundException(sessionId));
-
-        // 验证技能存在：先看本地仓库，再回退到沙箱发现；两边都没有就拒绝启用
-        Skill localSkill = null;
-        try {
-            localSkill = skillService.getSkill(skillId);
-        } catch (SkillNotFoundException ignored) {
-            // 本地没有，下一步看沙箱
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to read skill: " + skillId, e);
-        }
-
-        if (localSkill == null) {
-            boolean inSandbox = skillService.discoverFromSandbox(sessionId).stream()
-                    .anyMatch(s -> skillId.equals(s.getId()));
-            if (!inSandbox) {
-                throw new RuntimeException("Skill not found: " + skillId);
-            }
-        }
-
-        session.enableSkill(skillId);
-        sessionRepository.save(session);
-
-        // 只在"本地有 + 沙箱已就绪"时推送种子文件；沙箱独有的 skill 无需推送
-        if (localSkill != null && localSkill.getLocalPath() != null
-                && sandboxService != null && sandboxService.hasSandbox(sessionId)) {
-            log.info("同步技能文件到沙箱: {}", skillId);
-            fileSyncService.syncSkill(sessionId, localSkill.getLocalPath(), localSkill.getId());
-        }
+        skillRuntimeService.enableSkill(sessionId, skillId);
     }
 
     @Override
     @Transactional
     public void disableSkill(String sessionId, String skillId) {
-        if (skillId == null || !SAFE_SKILL_ID.matcher(skillId).matches()) {
-            throw new IllegalArgumentException("Invalid skill ID: " + skillId);
-        }
-
-        ConversationSessionEntity session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new SessionNotFoundException(sessionId));
-
-        session.disableSkill(skillId);
-        sessionRepository.save(session);
-
-        if (sandboxService != null && sandboxService.hasSandbox(sessionId)) {
-            try {
-                AioClient client = sandboxClientFactory.getAioClient(sessionId);
-                Skill sandboxSkill = null;
-                for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-                    if (skillId.equals(s.getId())) {
-                        sandboxSkill = s;
-                        break;
-                    }
-                }
-                String skillPath = sandboxSkill != null
-                        ? sandboxSkill.sandboxBasePath()
-                        : Skill.SANDBOX_SKILL_ROOT + "/" + skillId;
-                client.execCommand("rm -rf " + shellQuote(skillPath));
-                log.info("已从沙箱移除技能文件: {}", skillId);
-            } catch (Exception e) {
-                log.warn("清理沙箱技能文件失败: {}", skillId, e);
-            }
-        }
+        skillRuntimeService.disableSkill(sessionId, skillId);
     }
 
     @Override
@@ -387,71 +249,19 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional(readOnly = true)
     public List<Skill> getEnabledSkills(String sessionId) {
-        ConversationSessionEntity session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new SessionNotFoundException(sessionId));
-
-        Set<String> skillIds = session.getEnabledSkillIds();
-        if (skillIds.isEmpty()) {
-            return List.of();
-        }
-        Map<String, Skill> available = collectEnabledSkills(sessionId, skillIds);
-        // 保留 enabledSkillIds 的顺序输出
-        return skillIds.stream().map(available::get).filter(s -> s != null).toList();
+        return skillRuntimeService.getEnabledSkills(sessionId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public String getSkillContent(String sessionId, String skillId) {
-        if (skillId == null || !SAFE_SKILL_ID.matcher(skillId).matches()) {
-            throw new IllegalArgumentException("Invalid skill ID: " + skillId);
-        }
-        if (!sessionRepository.existsById(sessionId)) {
-            throw new SessionNotFoundException(sessionId);
-        }
-
-        Skill skill = resolveSessionSkill(sessionId, skillId);
-        try {
-            AioClient client = sandboxClientFactory.getAioClient(sessionId);
-            String content = skill.getContent(client);
-            return decorateActivationContent(client, skill, content);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to read skill content: " + skillId, e);
-        }
+        return skillRuntimeService.getSkillContent(sessionId, skillId);
     }
 
     @Override
     @Transactional(readOnly = true)
     public String getSkillReference(String sessionId, String skillId, String path) {
-        if (skillId == null || !SAFE_SKILL_ID.matcher(skillId).matches()) {
-            throw new IllegalArgumentException("Invalid skill ID: " + skillId);
-        }
-        if (!sessionRepository.existsById(sessionId)) {
-            throw new SessionNotFoundException(sessionId);
-        }
-
-        Skill skill = resolveSessionSkill(sessionId, skillId);
-        try {
-            AioClient client = sandboxClientFactory.getAioClient(sessionId);
-            return skill.getReferenceFile(client, path);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to read skill reference: " + skillId + "/" + path, e);
-        }
-    }
-
-    /**
-     * 解析会话上下文中的 skill：直接从沙箱发现，无缓存。
-     *
-     * @param sessionId 会话 ID
-     * @param skillId   技能 ID
-     * @return 解析到的技能；找不到时抛 {@link RuntimeException}
-     */
-    private Skill resolveSessionSkill(String sessionId, String skillId) {
-        for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-            if (skillId.equals(s.getId())) {
-                return s;
-            }
-        }
-        throw new RuntimeException("Skill not found: " + skillId);
+        return skillRuntimeService.getSkillReference(sessionId, skillId, path);
     }
 
     /**
@@ -479,101 +289,7 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional(readOnly = true)
     public List<SkillView> listSessionSkills(String sessionId) {
-        if (!sessionRepository.existsById(sessionId)) {
-            throw new SessionNotFoundException(sessionId);
-        }
-        ConversationSessionEntity session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new SessionNotFoundException(sessionId));
-        Set<String> enabledIds = session.getEnabledSkillIds();
-
-        // 本地仓库 + 沙箱发现，按 id 融合
-        Map<String, Skill> localById = new java.util.LinkedHashMap<>();
-        for (Skill s : skillService.listSkills()) {
-            localById.put(s.getId(), s);
-        }
-        Map<String, Skill> sandboxById = new java.util.LinkedHashMap<>();
-        for (Skill s : skillService.discoverFromSandbox(sessionId)) {
-            sandboxById.put(s.getId(), s);
-        }
-
-        // 合并 id 集合，按字母序输出，前端方便展示
-        java.util.Set<String> allIds = new java.util.TreeSet<>();
-        allIds.addAll(localById.keySet());
-        allIds.addAll(sandboxById.keySet());
-
-        List<SkillView> result = new java.util.ArrayList<>(allIds.size());
-        for (String id : allIds) {
-            Skill local = localById.get(id);
-            Skill sandbox = sandboxById.get(id);
-            Skill.Source source;
-            Skill representative;
-            if (local != null && sandbox != null) {
-                source = Skill.Source.BOTH;
-                // 优先用本地仓库的元数据（通常更新更及时）
-                representative = local;
-            } else if (local != null) {
-                source = Skill.Source.LOCAL;
-                representative = local;
-            } else {
-                source = Skill.Source.SANDBOX;
-                representative = sandbox;
-            }
-            result.add(SkillView.from(representative, source, enabledIds.contains(id)));
-        }
-        return result;
-    }
-
-    /**
-     * 给 skill_activate 返回内容拼上沙箱定位头部，告诉 LLM "我在哪、有哪些 scripts/references"。
-     *
-     * <p>这是渐进式披露 L2 的体验优化：一次激活就把"绝对路径根 + 可用资源清单"暴露出来，
-     * 避免 LLM 再花一轮调用列目录或猜路径。</p>
-     *
-     * @param client 当前会话沙箱客户端
-     * @param skill  目标技能
-     * @param body   SKILL.md 正文
-     * @return 拼接后的完整激活内容
-     */
-    private String decorateActivationContent(AioClient client, Skill skill, String body) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("=== Skill: ").append(skill.getId()).append(" ===\n");
-        sb.append("Sandbox base path: ").append(skill.sandboxBasePath()).append("/\n");
-
-        List<String> scripts;
-        List<String> references;
-        try {
-            scripts = skill.listScripts(client);
-        } catch (Exception e) {
-            log.debug("列 scripts 失败 skill={}: {}", skill.getId(), e.getMessage());
-            scripts = List.of();
-        }
-        try {
-            references = skill.listReferences(client);
-        } catch (Exception e) {
-            log.debug("列 references 失败 skill={}: {}", skill.getId(), e.getMessage());
-            references = List.of();
-        }
-        if (!scripts.isEmpty()) {
-            sb.append("Available scripts: ").append(String.join(", ", scripts)).append("\n");
-            sb.append("  Run with shell: bash ").append(skill.sandboxBasePath()).append("/<script>\n");
-        }
-        if (!references.isEmpty()) {
-            sb.append("Available references: ").append(String.join(", ", references)).append("\n");
-            sb.append("  Read with skill_reference(skill_id, path)\n");
-        }
-        sb.append("\n=== SKILL.md ===\n");
-        sb.append(body != null ? body : "");
-        return sb.toString();
-    }
-
-    /**
-     * 把字符串包装成单引号 shell 参数，避免真实技能路径中出现特殊字符时破坏清理命令。
-     *
-     * @param value 原始路径
-     * @return 转义后的 shell 参数
-     */
-    private String shellQuote(String value) {
-        return "'" + value.replace("'", "'\"'\"'") + "'";
+        return skillRuntimeService.listSessionSkills(sessionId);
     }
 
     /**
