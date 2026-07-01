@@ -61,7 +61,7 @@ public class ReactAgentFactory {
                 backgroundTaskManager
         );
         hookService.configureForChat(reactAgent, context.toolContext().filteredTools(),
-                context.userMessage(), plan);
+                context.sessionId(), context.userMessage(), plan);
         return reactAgent;
     }
 
@@ -83,7 +83,7 @@ public class ReactAgentFactory {
                 backgroundTaskManager
         );
         hookService.configureForStream(reactAgent, context.toolContext().filteredTools(),
-                context.userMessage(), plan);
+                context.sessionId(), context.userMessage(), plan);
         return reactAgent;
     }
 }

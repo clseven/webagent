@@ -22,7 +22,7 @@ class ReactAgentHookServiceVisionTest {
     void viewImageHook应调用Agnes并向主Agent注入文本观察结果() {
         ImageBuffer imageBuffer = new ImageBuffer();
         FakeVisionLlm visionLlm = new FakeVisionLlm("画面中有一个登录页，包含用户名和密码输入框。");
-        ReactAgentHookService hookService = new ReactAgentHookService(imageBuffer, visionLlm);
+        ReactAgentHookService hookService = new ReactAgentHookService(imageBuffer, visionLlm, new AgentTodoService());
 
         imageBuffer.put("session-1", "/home/gem/login.png", new byte[]{1, 2, 3}, "image/png");
 

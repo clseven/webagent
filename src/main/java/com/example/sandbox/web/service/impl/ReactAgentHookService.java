@@ -30,16 +30,22 @@ public class ReactAgentHookService {
     /** 视觉模型，用于把图片字节转换为主 Agent 可读取的文本观察。 */
     private final LlmService visionLlm;
 
+    /** TodoState 服务，用于最终回答门禁读取当前运行时任务清单。 */
+    private final AgentTodoService todoService;
+
     /**
      * 创建 Hook 装配服务。
      *
      * @param imageBuffer 图片缓冲区
      * @param visionLlm   视觉模型服务
+     * @param todoService  TodoState 服务
      */
     public ReactAgentHookService(ImageBuffer imageBuffer,
-                                 @Qualifier("visionLlm") LlmService visionLlm) {
+                                 @Qualifier("visionLlm") LlmService visionLlm,
+                                 AgentTodoService todoService) {
         this.imageBuffer = imageBuffer;
         this.visionLlm = visionLlm;
+        this.todoService = todoService;
     }
 
     /**
@@ -49,7 +55,7 @@ public class ReactAgentHookService {
      * @param filteredTools 当前可用工具
      */
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools) {
-        configureForChat(reactAgent, filteredTools, null, null);
+        configureForChat(reactAgent, filteredTools, null, null, null);
     }
 
     /**
@@ -62,9 +68,24 @@ public class ReactAgentHookService {
      */
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
                                  String userMessage, String plan) {
+        configureForChat(reactAgent, filteredTools, null, userMessage, plan);
+    }
+
+    /**
+     * 为同步执行器注册 Hook，并注入本轮任务边界。
+     *
+     * @param reactAgent   执行器实例
+     * @param filteredTools 当前可用工具
+     * @param sessionId    当前会话 ID，可为空
+     * @param userMessage  本轮用户原始请求
+     * @param plan         PlanAgent 生成的计划文本
+     */
+    public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
+                                 String sessionId, String userMessage, String plan) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         reactAgent.registerPreToolUseHook(new AgentSearchPolicyHook(userMessage, plan));
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
+        registerFinalTodoGuard(reactAgent, sessionId);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
@@ -75,7 +96,7 @@ public class ReactAgentHookService {
      * @param filteredTools 当前可用工具
      */
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools) {
-        configureForStream(reactAgent, filteredTools, null, null);
+        configureForStream(reactAgent, filteredTools, null, null, null);
     }
 
     /**
@@ -88,10 +109,25 @@ public class ReactAgentHookService {
      */
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
                                    String userMessage, String plan) {
+        configureForStream(reactAgent, filteredTools, null, userMessage, plan);
+    }
+
+    /**
+     * 为流式执行器注册 Hook，并注入本轮任务边界。
+     *
+     * @param reactAgent   执行器实例
+     * @param filteredTools 当前可用工具
+     * @param sessionId    当前会话 ID，可为空
+     * @param userMessage  本轮用户原始请求
+     * @param plan         PlanAgent 生成的计划文本
+     */
+    public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
+                                   String sessionId, String userMessage, String plan) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         reactAgent.registerPreToolUseHook(new AgentSearchPolicyHook(userMessage, plan));
         reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
+        registerFinalTodoGuard(reactAgent, sessionId);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
@@ -109,6 +145,19 @@ public class ReactAgentHookService {
                 return;
             }
         }
+    }
+
+    /**
+     * 注册最终 TodoState 门禁。
+     *
+     * @param reactAgent 执行器实例
+     * @param sessionId  当前会话 ID，可为空
+     */
+    private void registerFinalTodoGuard(ReactAgent reactAgent, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        reactAgent.registerStopHook(new FinalTodoGuardHook(todoService, sessionId));
     }
 
     /**

@@ -422,3 +422,20 @@ String path = arguments.get("path");
 - 让 `ConversationServiceImpl` 继续直接处理技能运行时：会把会话持久化服务和沙箱技能读取耦合在一起，边界不清晰。
 
 **理由**：同步和流式对话共享同一套 `AgentTurnContext`、工具上下文和规划服务后，新增技能发现规则、Hook 或工具过滤只需要改对应 service。Agent 编排层不再直接读沙箱技能或维护工具状态，职责边界更接近“提示词与流程编排”。
+
+---
+
+### ADR-010 运行时 TodoState 作为 Agent 计划执行与反思的硬状态
+
+**时间**：2026-07
+
+**决策**：保留 `PlanAgent` 的任务前建模职责，新增会话内内存态 `AgentTodoService` 保存运行时 `TodoState`。执行器通过 `todo_write` 工具显式更新 todo、成功信号、证据和阻塞原因；`FinalTodoGuardHook` 在最终回答前检查关键 todo 是否已 `completed` 或 `blocked`。
+
+**排除方案**：
+- 用 `TodoState` 取代 `PlanAgent`：会把任务前建模和执行中状态混在一起，破坏已有规划/执行分层。
+- 让 `TodoState` 调度工具或并行批次：会把看板职责扩大成执行器职责，和 `ReactAgent`、后续 `ToolExecutionPolicy` 边界冲突。
+- 第一版跨会话持久化 todo：会引入清理、迁移和历史兼容问题，超过当前“单轮运行时计划”目标。
+
+**理由**：`PlanAgent` 继续提供目标状态、成功信号和初始策略；`TodoState` 只记录执行中的可检查清单和证据；`FinalTodoGuardHook` 防止仍有未完成 todo 时直接最终回答。这样能增强多步任务闭环，又不改变工具执行、并行策略和视觉模型拆分成果。
+
+**约束**：第一版 `TodoState` 仅保存在内存中，按 `sessionId` 管理；`completed` 缺少 `evidence` 时先返回提醒并由最终门禁拦截补证据；`blocked` 必须包含 `blocker`；未完成 todo 不允许被静默删除，只能继续推进或显式取消/阻塞。

@@ -82,6 +82,26 @@ final class ReactPromptAssembler {
             不适合：单次读取、搜索、写入等一步完成的操作
             """;
 
+    /** TodoWrite 运行时任务清单约束，仅在 todo_write 可用时加载。 */
+    private static final String TODO_WRITE_SECTION = """
+            ## TodoWrite 运行时任务清单
+
+            多步任务开始前使用 todo_write 建立任务清单；轻量问候、单步解释或无需工具的普通回复可以不建清单。
+            TodoState 是看板和账本，不调度工具、不替代 ReactAgent 的行动判断。
+            todo 只描述目标和验收标准，不描述具体工具微动作。
+
+            状态规则：
+            - pending：已列入计划，尚未开始
+            - in_progress：当前正在推进；同一时间只保留一个主 in_progress todo
+            - completed：必须尽量写入 evidence，证据来自工具 observation、用户确认或可验证输出
+            - blocked：必须填写 blocker，说明需要用户、权限、环境还是外部信息
+            - cancelled：必须填写 reason，不能静默删除用户明确要求的目标
+
+            工具参数错误、路径错误、schema 错误等局部失败优先修正参数或换等价工具，当前 todo 保持 in_progress。
+            发现原假设错误、需要新增前置探测或准备改变路线时，先调用 todo_write 显式更新计划。
+            最终回答前确认关键 todo 已 completed 或 blocked；仍有 pending/in_progress 时继续执行或标记合理阻塞。
+            """;
+
     /** MCP 管理约束，仅在 MCP 管理工具可用时加载。 */
     private static final String MCP_SECTION = """
             ## MCP 动态工具管理
@@ -125,6 +145,9 @@ final class ReactPromptAssembler {
         if (hasTool(toolDefinitions, "run_subagent")) {
             sections.add(SUBAGENT_SECTION);
         }
+        if (hasTool(toolDefinitions, "todo_write")) {
+            sections.add(TODO_WRITE_SECTION);
+        }
         if (hasTool(toolDefinitions, "mcp_add_or_update_server")) {
             sections.add(MCP_SECTION);
         }
@@ -165,6 +188,9 @@ final class ReactPromptAssembler {
         }
         if (hasTool(toolDefinitions, "run_subagent")) {
             names.add("subagent");
+        }
+        if (hasTool(toolDefinitions, "todo_write")) {
+            names.add("todo_write");
         }
         if (hasTool(toolDefinitions, "mcp_add_or_update_server")) {
             names.add("mcp_management");
