@@ -109,12 +109,12 @@ public record SseEvent(
         if (toolName.toLowerCase(java.util.Locale.ROOT).contains("search")) {
             String query = extractQuery(args);
             String scope = mentionsOfficialSource(query) ? "优先确认官方来源。" : "验证当前任务需要的信息。";
-            return query.isBlank() ? "准备搜索公开信息，" + scope : "准备搜索 " + query + "，" + scope;
+            return query.isBlank() ? "正在搜索公开信息，" + scope : "正在搜索 " + query + "，" + scope;
         }
         if ("run_subagent".equals(toolName)) {
-            return "准备启动子代理处理当前任务中的独立部分。";
+            return "正在启动子任务";
         }
-        return "准备调用 " + toolName + " 工具继续处理当前任务。";
+        return "正在处理当前任务";
     }
 
     /**
@@ -177,11 +177,26 @@ public record SseEvent(
      * @param duration 执行耗时（毫秒）
      */
     public static SseEvent observation(String tool, String result, long duration) {
-        return new SseEvent("observation", Map.of(
-            "tool", tool,
-            "result", result,
-            "duration", duration
-        ));
+        return observation(tool, result, duration, null);
+    }
+
+    /**
+     * 工具执行结果，并携带与调用开始一致的用户可见行动说明。
+     *
+     * @param tool          工具名称
+     * @param result        执行结果
+     * @param duration      执行耗时（毫秒）
+     * @param displayReason 面向用户展示的调用原因，可为空
+     */
+    public static SseEvent observation(String tool, String result, long duration, String displayReason) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tool", tool);
+        data.put("result", result);
+        data.put("duration", duration);
+        if (displayReason != null && !displayReason.isBlank()) {
+            data.put("displayReason", displayReason);
+        }
+        return new SseEvent("observation", data);
     }
 
     // ==================== 规划事件 ====================

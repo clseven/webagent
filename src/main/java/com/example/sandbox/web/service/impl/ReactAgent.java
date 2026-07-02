@@ -1112,10 +1112,10 @@ public class ReactAgent {
                             observation = blocked;
                             startTime = System.currentTimeMillis();
                             // 不实际执行，但发送事件告知前端
-                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
+                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason));
                         } else {
                             // 发送工具调用事件
-                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep));
+                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason));
 
                             // 执行工具并发送心跳
                             startTime = System.currentTimeMillis();
@@ -1130,7 +1130,7 @@ public class ReactAgent {
                         }
 
                         // 发送工具执行结果事件
-                        sink.next(SseEvent.observation(toolName, observation, durationMs));
+                        sink.next(SseEvent.observation(toolName, observation, durationMs, displayReason));
 
                         LlmToolCall historyToolCall = ensureToolCallId(toolCall);
 
@@ -1211,14 +1211,15 @@ public class ReactAgent {
                                                 digest + 1, 6, tc.name());
 
                                         int digestStep = currentStep + digest + 1;
-                                        sink.next(SseEvent.toolCall(tc.name(), tc.arguments(), digestStep));
+                                        String digestDisplayReason = AgentActionNarrator.describe(tc.name(), tc.arguments(), plan);
+                                        sink.next(SseEvent.toolCall(tc.name(), tc.arguments(), digestStep, digestDisplayReason));
 
                                         String obs = executeTool(sessionId, tc.name(), tc.arguments());
                                         LlmToolCall historyTc = ensureToolCallId(tc);
                                         messages.add(ChatMessage.assistantToolCallMessage(historyTc));
                                         messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
 
-                                        sink.next(SseEvent.observation(tc.name(), obs, 0));
+                                        sink.next(SseEvent.observation(tc.name(), obs, 0, digestDisplayReason));
                                         log.info("[后台子代理] 消化步骤 {}/{} 工具 {} 结果: {} 字符",
                                                 digest + 1, 6, tc.name(),
                                                 obs != null ? obs.length() : 0);

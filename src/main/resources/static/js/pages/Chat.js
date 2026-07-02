@@ -615,7 +615,7 @@ const ChatPage = {
                 case 'thinking': return '正在思考';
                 case 'generating': return '正在生成';
                 case 'processing': return '正在处理';
-                case 'tool': return currentToolCall.value ? `执行 ${currentToolCall.value.tool}` : '执行工具';
+                case 'tool': return currentToolCall.value ? (currentToolCall.value.displayReason || '正在处理当前任务') : '执行工具';
                 case 'tool_done': return '工具完成';
                 case 'answer': return '整理回答';
                 default: return '处理中';
@@ -1317,9 +1317,63 @@ const ChatPage = {
         const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : escapeHtml(msg.content || '');
         const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
         const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
-        const processTitle = (e) => { switch (e.type) { case 'plan': return '规划任务'; case 'thinking': return `思考 · ${e.stepIndex || 1}`; case 'reasoning': return `推理 · ${e.stepIndex || 1}`; case 'toolCall': return `工具 ${e.tool || ''}`; case 'toolResult': return `工具 ${e.tool || ''}`; case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新'); default: return '处理'; } };
+        const completedActionText = (text) => {
+            const value = String(text || '').trim();
+            return value.startsWith('正在') ? `已${value.substring(2)}` : value;
+        };
+        const argText = (args, keys, max = 90) => {
+            if (!args) return '';
+            for (const key of keys) {
+                const value = args[key];
+                if (value == null || value === '') continue;
+                const text = Array.isArray(value) ? value.join(' ') : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+                const trimmed = previewText(text, max);
+                if (trimmed) return trimmed;
+            }
+            return '';
+        };
+        const firstUrl = (value) => {
+            const match = String(value || '').match(/https?:\/\/[^\s"'<>]+/i);
+            return match ? match[0].replace(/[),.;，。]+$/, '') : '';
+        };
+        const toolPreview = (e) => {
+            const tool = e.tool || '';
+            const args = e.args || {};
+            const resultUrl = firstUrl(e.result);
+            const argUrl = firstUrl(argText(args, ['url', 'href', 'target'], 140));
+            const codeUrl = firstUrl(args.code || args.script);
+            if (resultUrl) return previewText(resultUrl, 140);
+            if (argUrl) return previewText(argUrl, 140);
+            if (codeUrl) return previewText(codeUrl, 140);
+            if (tool.includes('search')) return argText(args, ['query', 'q', 'keyword', 'keywords'], 120);
+            if (['read_file', 'write_file', 'file_replace', 'str_replace_editor', 'download_file', 'parse_document', 'convert_to_markdown', 'view_image'].includes(tool)) {
+                return argText(args, ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'source_path', 'sourcePath', 'relativePath'], 120);
+            }
+            if (tool === 'list_files') return argText(args, ['path', 'directory', 'dir'], 120);
+            if (tool === 'execute_command') return argText(args, ['command', 'cmd'], 120);
+            if (tool === 'browser_action') return argText(args, ['action_type', 'key', 'keys'], 80);
+            if (tool === 'todo_write' && Array.isArray(args.todos)) return `${args.todos.length} 项`;
+            return '';
+        };
+        const processTitle = (e) => {
+            if (e.type === 'toolCall' || e.type === 'toolResult') {
+                const reason = e.displayReason || '';
+                if (reason) return e.type === 'toolResult' ? completedActionText(reason) : reason;
+                return e.type === 'toolResult' ? '已处理当前任务' : '正在处理当前任务';
+            }
+            switch (e.type) {
+                case 'plan': return '规划任务';
+                case 'thinking': return '已思考';
+                case 'reasoning': return '已推理';
+                case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新');
+                default: return '处理';
+            }
+        };
         const processPreview = (e) => {
-            if ((e.type === 'toolCall' || e.type === 'toolResult') && e.displayReason) return e.displayReason;
+            if (e.type === 'toolCall' || e.type === 'toolResult') {
+                const meta = toolPreview(e);
+                if (meta) return meta;
+            }
             if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
             if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
             return previewText(e.content, 90);
