@@ -1,0 +1,44 @@
+filters:
+  and:
+    - 'project == "webagent-clean"'
+    - 'file.ext == "md"'
+properties:
+  file.name:
+    displayName: 页面
+  type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  area:
+    displayName: 领域
+  updated:
+    displayName: 更新日期
+views:
+  - type: table
+    name: 按类型
+    groupBy:
+      property: type
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - area
+      - updated
+  - type: table
+    name: 按领域
+    groupBy:
+      property: area
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - updated
+  - type: table
+    name: 最近更新
+    order:
+      - file.name
+      - type
+      - area
+      - updated
+

@@ -1,0 +1,28 @@
+filters:
+  and:
+    - 'project == "webagent-clean"'
+    - 'file.ext == "md"'
+    - 'status != "verified"'
+properties:
+  file.name:
+    displayName: 页面
+  type:
+    displayName: 类型
+  status:
+    displayName: 状态
+  area:
+    displayName: 领域
+  updated:
+    displayName: 更新日期
+views:
+  - type: table
+    name: 待确认
+    groupBy:
+      property: status
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - area
+      - updated
+

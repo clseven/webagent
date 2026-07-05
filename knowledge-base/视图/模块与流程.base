@@ -1,0 +1,28 @@
+filters:
+  and:
+    - 'project == "webagent-clean"'
+    - 'file.ext == "md"'
+    - or:
+        - 'type == "module"'
+        - 'type == "mechanism"'
+        - 'type == "flow"'
+properties:
+  file.name:
+    displayName: 页面
+  type:
+    displayName: 类型
+  area:
+    displayName: 领域
+  status:
+    displayName: 状态
+views:
+  - type: table
+    name: 模块与流程
+    groupBy:
+      property: type
+      direction: ASC
+    order:
+      - file.name
+      - area
+      - status
+
