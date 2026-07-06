@@ -206,20 +206,26 @@ public class ReactAgent {
     }
 
     /**
-     * 触发 PostToolUse 事件：遍历所有注册的回调。
+     * 触发 PostToolUse 事件：遍历所有注册的回调，全部执行并收集注入消息。
      *
-     * <p>任一回调返回非 null 的 {@link ChatMessage} 时立即返回该消息（短路）；
-     * 全部返回 null 则返回 null 表示无需注入额外消息。</p>
+     * <p>与 Pre/Stop 不同，PostToolUse 不短路：每个回调都会执行，所有返回非 null 的
+     * {@link ChatMessage} 都会被收集，由调用方依次追加到对话历史。这保证多个
+     * PostToolUse Hook（如大输出告警 + 图片观察注入）能各自补充上下文、互不遮挡。</p>
+     *
+     * @return 需要注入的消息列表，可能为空，不会为 null
      */
     @SuppressWarnings("unchecked")
-    private ChatMessage triggerPostToolUseHooks(LlmToolCall toolCall, String result, String sessionId) {
+    private List<ChatMessage> triggerPostToolUseHooks(LlmToolCall toolCall, String result, String sessionId) {
         List<Object> callbacks = hooks.get("PostToolUse");
-        if (callbacks == null) return null;
+        if (callbacks == null) return List.of();
+        List<ChatMessage> injections = new ArrayList<>();
         for (Object cb : callbacks) {
             ChatMessage extra = ((PostToolUseHook) cb).run(toolCall, result, sessionId);
-            if (extra != null) return extra;
+            if (extra != null) {
+                injections.add(extra);
+            }
         }
-        return null;
+        return injections;
     }
 
     /**
@@ -511,11 +517,10 @@ public class ReactAgent {
 
                 long durationMs = System.currentTimeMillis() - startTime;
 
-                // 🪝 PostToolUse Hook：仅在实际执行时触发
-                ChatMessage hookInjection = null;
-                if (blocked == null) {
-                    hookInjection = triggerPostToolUseHooks(toolCall, observation, sessionId);
-                }
+                // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
+                List<ChatMessage> hookInjections = blocked == null
+                        ? triggerPostToolUseHooks(toolCall, observation, sessionId)
+                        : List.of();
 
                 log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
 
@@ -532,8 +537,8 @@ public class ReactAgent {
                 messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
                 messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
 
-                // Hook 注入额外消息（如图片数据）
-                if (hookInjection != null) {
+                // Hook 注入额外消息（如图片数据），可能有多个 PostToolUse Hook 各自注入
+                for (ChatMessage hookInjection : hookInjections) {
                     messages.add(hookInjection);
                     log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
                 }
@@ -1123,11 +1128,10 @@ public class ReactAgent {
                         }
                         long durationMs = System.currentTimeMillis() - startTime;
 
-                        // 🪝 PostToolUse Hook：仅在实际执行时触发
-                        ChatMessage hookInjection = null;
-                        if (blocked == null) {
-                            hookInjection = triggerPostToolUseHooks(toolCall, observation, sessionId);
-                        }
+                        // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
+                        List<ChatMessage> hookInjections = blocked == null
+                                ? triggerPostToolUseHooks(toolCall, observation, sessionId)
+                                : List.of();
 
                         // 发送工具执行结果事件
                         sink.next(SseEvent.observation(toolName, observation, durationMs, displayReason));
@@ -1146,8 +1150,8 @@ public class ReactAgent {
                         messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
                         messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
 
-                        // Hook 注入额外消息（如图片数据）
-                        if (hookInjection != null) {
+                        // Hook 注入额外消息（如图片数据），可能有多个 PostToolUse Hook 各自注入
+                        for (ChatMessage hookInjection : hookInjections) {
                             messages.add(hookInjection);
                             log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
                         }
