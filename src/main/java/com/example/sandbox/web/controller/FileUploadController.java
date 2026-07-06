@@ -4,7 +4,6 @@ import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.exception.DuplicateFileException;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.service.AgentService;
-import com.example.sandbox.web.service.FileStorageService;
 import com.example.sandbox.web.service.impl.OfficePreviewAsyncService;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.UserWorkspaceStorageService;
@@ -18,8 +17,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.ByteArrayInputStream;
+import java.nio.file.Path;
 
 /**
  * 文件上传下载 API
@@ -32,9 +31,6 @@ import java.nio.charset.StandardCharsets;
 public class FileUploadController {
 
     private static final Logger log = LoggerFactory.getLogger(FileUploadController.class);
-
-    @Autowired
-    private FileStorageService fileStorageService;
 
     @Autowired
     private AgentService agentService;
@@ -117,14 +113,15 @@ public class FileUploadController {
             @PathVariable String sessionId,
             @PathVariable String filename) {
         try {
-            agentService.getSession(sessionId);
-            InputStream inputStream = fileStorageService.getFile(sessionId, filename);
+            var session = agentService.getSession(sessionId);
+            String safeFilename = workspaceStorage.sanitizeFileName(filename);
+            byte[] bytes = workspaceStorage.read(workspaceStorage.uploadFile(session.getUserId(), safeFilename));
             return ResponseEntity.ok()
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeFilename + "\"")
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .body(new InputStreamResource(inputStream));
+                    .body(new InputStreamResource(new ByteArrayInputStream(bytes)));
         } catch (Exception e) {
-            log.error("文件下载失败: {}", e.getMessage());
+            log.error("文件下载失败: {}", e.getMessage(), e);
             return ResponseEntity.notFound().build();
         }
     }
@@ -134,11 +131,12 @@ public class FileUploadController {
             @PathVariable String sessionId,
             @PathVariable String filename) {
         try {
-            agentService.getSession(sessionId);
-            fileStorageService.delete(sessionId, filename);
+            var session = agentService.getSession(sessionId);
+            String safeFilename = workspaceStorage.sanitizeFileName(filename);
+            workspaceStorage.delete(workspaceStorage.uploadFile(session.getUserId(), safeFilename));
             return ApiResponse.success();
         } catch (Exception e) {
-            log.error("文件删除失败: {}", e.getMessage());
+            log.error("文件删除失败: {}", e.getMessage(), e);
             return ApiResponse.error(500, "文件删除失败");
         }
     }
@@ -148,9 +146,11 @@ public class FileUploadController {
      */
     @GetMapping("/path/{sessionId}")
     public ApiResponse<StoragePathInfo> getStoragePath(@PathVariable String sessionId) {
+        var session = agentService.getSession(sessionId);
+        Path uploadRoot = workspaceStorage.uploadRoot(session.getUserId()).toAbsolutePath();
         return ApiResponse.success(new StoragePathInfo(
-                fileStorageService.getStoragePath(sessionId),
-                fileStorageService.getMountPath()
+                uploadRoot.toString(),
+                "/home/gem/uploads"
         ));
     }
 
