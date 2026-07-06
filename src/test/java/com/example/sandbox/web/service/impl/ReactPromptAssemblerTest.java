@@ -1,6 +1,7 @@
 package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.web.model.entity.ToolDefinition;
+import com.example.sandbox.web.service.tool.BrowserScreenshotTool;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -66,6 +67,46 @@ class ReactPromptAssemblerTest {
                 .contains("## 已启用技能");
         assertThat(prompt.indexOf("## 可用工具")).isLessThan(prompt.indexOf("─── 以下为动态段"));
         assertThat(prompt.indexOf("─── 以下为动态段")).isLessThan(prompt.indexOf("## 已启用技能"));
+    }
+
+    /**
+     * 验证浏览器截图策略要求区分过程观察和最终交付。
+     */
+    @Test
+    void browserSectionRequiresExplicitScreenshotDelivery() {
+        String prompt = ReactPromptAssembler.assemble(
+                List.of(tool("browser_screenshot"), tool("browser_action"), tool("browser_inspect")),
+                "",
+                "");
+
+        assertThat(prompt)
+                .contains("deliver_to_user=true")
+                .contains("过程截图")
+                .contains("验证码")
+                .contains("滚动后再截图");
+    }
+
+    /**
+     * 验证截图工具 schema 通过显式开关区分过程观察和最终交付。
+     */
+    @Test
+    void browserScreenshotSchemaRequiresExplicitDeliveryFlag() {
+        ToolDefinition definition = new BrowserScreenshotTool().getDefinition();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) definition.getParameters().get("properties");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> deliverToUser = (Map<String, Object>) properties.get("deliver_to_user");
+
+        assertThat(deliverToUser)
+                .containsEntry("type", "boolean")
+                .containsEntry("default", false);
+        assertThat(String.valueOf(deliverToUser.get("description")))
+                .contains("最终回答")
+                .contains("过程截图")
+                .contains("验证码");
+        assertThat(new BrowserScreenshotTool().execute("session-1", Map.of("deliver_to_user", "yes")))
+                .contains("deliver_to_user 必须是布尔值");
     }
 
     /**

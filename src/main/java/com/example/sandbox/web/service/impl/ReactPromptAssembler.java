@@ -53,7 +53,11 @@ final class ReactPromptAssembler {
             需要语义定位、连续多步操作、导航或等待页面状态时，使用 browser_execute。
             坐标点击、滚动、快捷键等单步视觉兜底操作使用 browser_action；坐标操作前后重新截图，避免使用过期坐标。
             当用户需要亲自看到页面视觉内容（二维码、验证码、图形结果）时，使用 browser_screenshot 将画面呈现给用户。
+            browser_screenshot 的 deliver_to_user 默认 false；过程截图、验证码、拦截页、加载失败页和仅用于观察的截图都保持 false，不进入最终图片卡片组。
+            只有用户最终要看的截图才设置 deliver_to_user=true；设置前先确认页面分类、关键词和结果状态符合用户要求。
+            用户要求查看后续页面内容或多张截图时，先用 browser_action 滚动后再截图；不要把同一视口或错误分类截图重复交付。
             页面状态可由文本或 DOM 确认时，优先用文本证据；截图是观察和交付方式，本身不证明业务目标已达成。
+            需要浏览器搜索网页时，默认使用 Bing（https://www.bing.com）。
             """;
 
     /** 技能系统约束，仅在技能工具或技能元数据存在时加载。 */

@@ -29,6 +29,7 @@ import java.util.Map;
  * <h3>参数</h3>
  * <ul>
  *   <li>url — 可选，截图前先导航到该 URL；不传则截取当前页面</li>
+ *   <li>deliver_to_user — 可选，只有最终要展示给用户的截图才设为 true</li>
  * </ul>
  *
  * <h3>返回值</h3>
@@ -61,6 +62,14 @@ public class BrowserScreenshotTool implements Tool {
                         可选。提供时先导航到该 URL 再截图；省略则截取当前页面。
                         """
         ));
+        properties.put("deliver_to_user", Map.of(
+                "type", "boolean",
+                "default", false,
+                "description", """
+                        可选，默认 false。只有这张截图是最终回答中要展示给用户的图片时才设为 true。
+                        过程截图、验证码、拦截页、加载失败页和仅用于观察判断的截图必须保持 false。
+                        """
+        ));
 
         Map<String, Object> parameters = Map.of(
                 "type", "object",
@@ -83,19 +92,25 @@ public class BrowserScreenshotTool implements Tool {
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
         try {
-            var client = factory.getAioClient(sessionId);
-
-            // 等待 AIO 服务就绪
-            if (!client.waitForReady()) {
-                return "错误：AIO 服务未就绪（等待 120 秒后仍无法连接），请稍后重试";
-            }
-
-            // 获取 URL 参数
+            // 先校验纯入参，避免非法参数触发沙箱依赖访问。
             Object urlValue = arguments != null ? arguments.get("url") : null;
             if (urlValue != null && !(urlValue instanceof String)) {
                 return "错误：url 必须是字符串";
             }
             String url = urlValue instanceof String value ? value : null;
+
+            Object deliverValue = arguments != null ? arguments.get("deliver_to_user") : null;
+            if (deliverValue != null && !(deliverValue instanceof Boolean)) {
+                return "错误：deliver_to_user 必须是布尔值";
+            }
+            boolean deliverToUser = deliverValue instanceof Boolean value && value;
+
+            var client = factory.getAioClient(sessionId);
+
+            // 等待 AIO 服务就绪。
+            if (!client.waitForReady()) {
+                return "错误：AIO 服务未就绪（等待 120 秒后仍无法连接），请稍后重试";
+            }
 
             // 如果提供了 URL，先导航
             if (url != null && !url.isBlank()) {
@@ -133,10 +148,14 @@ public class BrowserScreenshotTool implements Tool {
             log.info("截图成功，大小: {} bytes，路径: {}", screenshot.length, filePath);
             String encodedPath = URLEncoder.encode(filePath, StandardCharsets.UTF_8);
             String downloadUrl = baseUrl + "/api/sessions/" + sessionId + "/files/download?path=" + encodedPath;
-            return "截图成功！文件路径: " + filePath + "，大小: " + screenshot.length + " bytes\n\n" +
-                   "![截图](" + downloadUrl + ")\n\n" +
-                   "下载链接: " + downloadUrl + "\n\n" +
-                   "如果需要理解截图内容，请继续调用 view_image，参数 path 使用: " + filePath;
+            String result = "截图成功！文件路径: " + filePath + "，大小: " + screenshot.length + " bytes\n\n" +
+                    "交付给用户: " + deliverToUser + "\n\n" +
+                    "下载链接: " + downloadUrl + "\n\n" +
+                    "如果需要理解截图内容，请继续调用 view_image，参数 path 使用: " + filePath;
+            if (!deliverToUser) {
+                return result + "\n\n此截图仅作为过程观察，不会展示在最终图片卡片组。";
+            }
+            return result + "\n\n![截图](" + downloadUrl + ")";
         } catch (Exception e) {
             log.error("截图失败", e);
             return "截图失败：" + e.getMessage();
