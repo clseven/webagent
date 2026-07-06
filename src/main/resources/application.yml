@@ -146,14 +146,13 @@ rag:
     enabled: true
     rewrite:
       enabled: true
-      max-queries: 3
-      api-url: ${RAG_REWRITE_URL:http://localhost:11434/api/chat}
-      model: ${RAG_REWRITE_MODEL:qwen3:1.7b}
-      temperature: 0.1
+      max-queries: 5
+      api-url: ${RAG_REWRITE_URL:${DEEPSEEK_LLM_URL:https://api.deepseek.com}}
+      api-key: ${RAG_REWRITE_KEY:${DEEPSEEK_API_KEY:}}
+      model: ${RAG_REWRITE_MODEL:${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}}
+      temperature: 0.3
       top-p: 0.8
-      num-predict: 128
-      num-ctx: 4096
-      keep-alive: 30m
+      max-tokens: 512
     retrieve:
       top-n: 20
       min-score: 0.5

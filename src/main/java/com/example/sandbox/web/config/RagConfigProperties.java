@@ -91,12 +91,11 @@ public class RagConfigProperties {
             private boolean enabled;
             private int maxQueries;
             private String apiUrl;
+            private String apiKey;
             private String model;
             private double temperature;
             private double topP;
-            private int numPredict;
-            private int numCtx;
-            private String keepAlive;
+            private int maxTokens;
 
         }
 
