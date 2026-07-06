@@ -7,6 +7,8 @@ server:
 spring:
   application:
     name: sandbox-agent
+  profiles:
+    active: deepseek,local
 
   servlet:
     multipart:
@@ -169,16 +171,3 @@ baidu:
 logging:
   level:
     com.example.sandbox: DEBUG
-
----
-spring:
-  config:
-    activate:
-      on-profile: deepseek
-agent:
-  llm:
-    executor:
-      api-url: https://api.deepseek.com
-      api-key: ${DEEPSEEK_API_KEY:}
-      model: deepseek-v4-flash
-      thinking-enabled: false

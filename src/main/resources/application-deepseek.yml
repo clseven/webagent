@@ -1,0 +1,11 @@
+# DeepSeek 模型配置 — planner 和 executor 使用 DeepSeek
+# 激活方式: --spring.profiles.active=deepseek
+agent:
+  llm:
+    planner:
+      api-url: https://api.deepseek.com
+      model: deepseek-v4-flash
+    executor:
+      api-url: https://api.deepseek.com
+      model: deepseek-v4-flash
+      thinking-enabled: false

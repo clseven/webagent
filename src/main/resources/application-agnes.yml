@@ -1,0 +1,11 @@
+# Agnes 模型配置 — planner 和 executor 使用 Agnes
+# 激活方式: --spring.profiles.active=agnes
+# 注意: vision 永远用 Agnes，在 application.yml 中固定，不受此 profile 影响
+agent:
+  llm:
+    planner:
+      api-url: https://apihub.agnes-ai.com/v1
+      model: agnes-2.0-flash
+    executor:
+      api-url: https://apihub.agnes-ai.com/v1
+      model: agnes-2.0-flash
