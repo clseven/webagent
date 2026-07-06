@@ -1,3 +1,29 @@
+// 聊天图片组工具：过程截图默认不进入最终图片卡片组，图片预览默认只露出前 4 张。
+const ChatArtifactGalleryUtils = {
+    PREVIEW_LIMIT: 4,
+    shouldShowToolArtifact(artifact) {
+        if (!artifact) return false;
+        if (artifact.sourceTool === 'browser_screenshot') {
+            return artifact.deliverToUser === true;
+        }
+        return true;
+    },
+    gallerySlice(artifacts, limit = 4) {
+        const list = Array.isArray(artifacts) ? artifacts : [];
+        const safeLimit = Math.max(1, Number(limit) || 4);
+        const visible = list.slice(0, safeLimit);
+        return {
+            visible,
+            hiddenCount: Math.max(0, list.length - visible.length),
+            totalCount: list.length,
+        };
+    },
+};
+
+if (typeof window !== 'undefined') {
+    window.ChatArtifactGalleryUtils = ChatArtifactGalleryUtils;
+}
+
 // 聊天产物卡片：图片直接展示缩略图，文档展示类型图标和文件信息。
 const ChatArtifactCard = {
     props: {
@@ -28,15 +54,80 @@ const ChatArtifactCard = {
     `,
 };
 
+// 聊天产物组：图片按 GPT 风格缩略图组展示，非图片继续用文件卡片展示。
+const ChatArtifactGallery = {
+    components: { ChatArtifactCard },
+    props: {
+        artifacts: { type: Array, default: () => [] },
+        blobUrlFor: { type: Function, required: true },
+        loadErrorFor: { type: Function, required: true },
+    },
+    emits: ['preview', 'preview-gallery', 'download'],
+    computed: {
+        imageArtifacts() {
+            return this.artifacts.filter(artifact => artifact?.isImage);
+        },
+        fileArtifacts() {
+            return this.artifacts.filter(artifact => !artifact?.isImage);
+        },
+        imageSlice() {
+            return ChatArtifactGalleryUtils.gallerySlice(this.imageArtifacts);
+        },
+        visibleImages() {
+            return this.imageSlice.visible;
+        },
+    },
+    template: `
+        <div class="chat-artifact-collection">
+            <div
+                v-if="imageArtifacts.length"
+                :class="['chat-artifact-gallery', 'count-' + visibleImages.length]"
+            >
+                <button
+                    v-for="(artifact, index) in visibleImages"
+                    :key="artifact.key"
+                    type="button"
+                    class="chat-artifact-thumb"
+                    @click="$emit('preview-gallery', imageArtifacts, index)"
+                    :aria-label="'预览图片 ' + artifact.fileName"
+                >
+                    <img v-if="blobUrlFor(artifact)" :src="blobUrlFor(artifact)" :alt="artifact.fileName">
+                    <span v-else-if="loadErrorFor(artifact)" class="chat-artifact-thumb-state">图片加载失败</span>
+                    <span v-else class="chat-artifact-thumb-state">加载中...</span>
+                    <span
+                        v-if="index === visibleImages.length - 1 && imageSlice.hiddenCount > 0"
+                        class="chat-artifact-more"
+                    >+{{ imageSlice.hiddenCount }}</span>
+                </button>
+            </div>
+            <div v-if="fileArtifacts.length" class="chat-artifact-files">
+                <chat-artifact-card
+                    v-for="artifact in fileArtifacts"
+                    :key="artifact.key"
+                    :artifact="artifact"
+                    :blob-url="blobUrlFor(artifact)"
+                    :load-error="loadErrorFor(artifact)"
+                    @preview="$emit('preview', artifact)"
+                    @download="$emit('download', artifact)"
+                ></chat-artifact-card>
+            </div>
+        </div>
+    `,
+};
+
 // 对话页组件
 const ChatPage = {
-    components: { ChatArtifactCard },
+    components: { ChatArtifactCard, ChatArtifactGallery },
     template: `
-        <div class="chat-workspace">
+        <div
+            class="chat-workspace chatgpt-workspace"
+            :class="{ 'tool-dock-open': toolDockOpen, 'tool-dock-resizing': isToolDockResizing }"
+            :style="{ '--tool-dock-width': toolDockWidth + 'px' }"
+        >
             <!-- 中间：聊天主区 -->
             <div class="chat-main">
                 <!-- 对话面板 -->
-                <div class="chat-panel" v-if="currentSessionId || draftSessionActive" style="position:relative;">
+                <div class="chat-panel chatgpt-panel" style="position:relative;">
                     <!-- 聊天头部（精简） -->
                     <div class="chat-header">
                         <div class="chat-header-left">
@@ -49,10 +140,32 @@ const ChatPage = {
                                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
                                 {{ copied ? '已复制' : '复制ID' }}
                             </button>
-                            <button class="btn btn-ghost btn-sm" @click="toggleVnc" :class="{ 'btn-active': vncOpen }">
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                                沙箱
-                            </button>
+                            <div class="chat-tool-switches" aria-label="右侧工具">
+                                <button
+                                    type="button"
+                                    class="chat-tool-switch"
+                                    :class="{ active: activeToolDock === 'sandbox' }"
+                                    @click="toggleToolDock('sandbox')"
+                                    title="沙箱"
+                                >
+                                    <span class="chat-tool-switch-icon">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                                    </span>
+                                    <span>沙箱</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="chat-tool-switch"
+                                    :class="{ active: activeToolDock === 'workspace' }"
+                                    @click="toggleToolDock('workspace')"
+                                    title="工作目录"
+                                >
+                                    <span class="chat-tool-switch-icon">
+                                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                                    </span>
+                                    <span>工作目录</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -84,16 +197,15 @@ const ChatPage = {
                         </template>
 
                         <!-- 空状态 -->
-                        <div v-if="!loadingHistory && displayMessages.length === 0 && !streaming" class="empty-state chat-empty">
-                            <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                <rect x="20" y="30" width="80" height="55" rx="12" stroke="currentColor" stroke-width="2" opacity="0.2"/>
-                                <circle cx="45" cy="57" r="6" fill="currentColor" opacity="0.15"/>
-                                <circle cx="60" cy="57" r="6" fill="currentColor" opacity="0.15"/>
-                                <circle cx="75" cy="57" r="6" fill="currentColor" opacity="0.15"/>
-                                <path d="M30 80h60" stroke="currentColor" stroke-width="2" opacity="0.1"/>
-                            </svg>
-                            <h3>开始对话</h3>
-                            <p>输入消息，AI 助手将为你提供帮助</p>
+                        <div v-if="!loadingHistory && displayMessages.length === 0 && !streaming" class="chat-empty-hero">
+                            <div class="chat-empty-mark">AI</div>
+                            <h1>今天想让 WebAgent 做什么？</h1>
+                            <p>可以上传文档、整理网页、生成结构图，也可以让智能体继续操作沙箱工作区。</p>
+                            <div class="chat-empty-hints" aria-hidden="true">
+                                <span>上传实验报告</span>
+                                <span>分析网页内容</span>
+                                <span>生成结构图</span>
+                            </div>
                         </div>
 
                         <!-- 历史消息 -->
@@ -126,17 +238,16 @@ const ChatPage = {
                                             </div>
                                         </details>
                                         <div class="assistant-answer" v-html="renderMarkdown(msg.content || '')"></div>
-                                        <div v-if="messageArtifacts(msg).length" class="chat-artifacts">
-                                            <chat-artifact-card
-                                                v-for="artifact in messageArtifacts(msg)"
-                                                :key="artifact.key"
-                                                :artifact="artifact"
-                                                :blob-url="artifactBlobUrl(artifact)"
-                                                :load-error="artifactLoadError(artifact)"
-                                                @preview="previewArtifact"
-                                                @download="downloadArtifact"
-                                            ></chat-artifact-card>
-                                        </div>
+                                        <chat-artifact-gallery
+                                            v-if="messageArtifacts(msg).length"
+                                            class="chat-artifacts"
+                                            :artifacts="messageArtifacts(msg)"
+                                            :blob-url-for="artifactBlobUrl"
+                                            :load-error-for="artifactLoadError"
+                                            @preview="previewArtifact"
+                                            @preview-gallery="previewArtifactGallery"
+                                            @download="downloadArtifact"
+                                        ></chat-artifact-gallery>
                                         <div v-if="msg.error" class="error-retry">
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                                             <span>{{ msg.error }}</span>
@@ -189,17 +300,16 @@ const ChatPage = {
                                     <span class="stream-cursor"></span>
                                 </div>
                                 <div v-if="finalAnswer && !finalAnswerSaved" class="live-final-answer" v-html="renderMarkdown(finalAnswer)"></div>
-                                <div v-if="liveArtifacts.length" class="chat-artifacts">
-                                    <chat-artifact-card
-                                        v-for="artifact in liveArtifacts"
-                                        :key="artifact.key"
-                                        :artifact="artifact"
-                                        :blob-url="artifactBlobUrl(artifact)"
-                                        :load-error="artifactLoadError(artifact)"
-                                        @preview="previewArtifact"
-                                        @download="downloadArtifact"
-                                    ></chat-artifact-card>
-                                </div>
+                                <chat-artifact-gallery
+                                    v-if="liveArtifacts.length"
+                                    class="chat-artifacts"
+                                    :artifacts="liveArtifacts"
+                                    :blob-url-for="artifactBlobUrl"
+                                    :load-error-for="artifactLoadError"
+                                    @preview="previewArtifact"
+                                    @preview-gallery="previewArtifactGallery"
+                                    @download="downloadArtifact"
+                                ></chat-artifact-gallery>
                             </div>
                         </div>
 
@@ -212,14 +322,39 @@ const ChatPage = {
                     <!-- Chat Composer -->
                     <div class="chat-composer">
                         <div class="composer-files" v-if="pendingFiles.length > 0">
-                            <span class="composer-file-chip" v-for="(file, index) in pendingFiles" :key="index">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                    <polyline points="14 2 14 8 20 8"/>
-                                </svg>
-                                <span class="composer-file-name">{{ file.name }}</span>
-                                <button type="button" class="composer-file-remove" @click="removeFile(index)">×</button>
-                            </span>
+                            <template v-for="(file, index) in pendingFiles" :key="file.name + '-' + index">
+                                <article v-if="isImageFile(file)" class="composer-image-card">
+                                    <button
+                                        type="button"
+                                        class="composer-image-preview"
+                                        @click="previewPendingImage(file)"
+                                        :aria-label="'预览 ' + file.name"
+                                    >
+                                        <img :src="pendingImagePreviewUrl(file)" :alt="file.name">
+                                    </button>
+                                    <button
+                                        type="button"
+                                        class="composer-file-remove composer-image-remove"
+                                        @click="removeFile(index)"
+                                        :aria-label="'移除 ' + file.name"
+                                    >×</button>
+                                </article>
+                                <article v-else class="composer-file-card">
+                                    <span :class="['composer-file-icon', composerFilePresentation(file).iconClass]">
+                                        {{ composerFilePresentation(file).iconText }}
+                                    </span>
+                                    <span class="composer-file-info">
+                                        <strong :title="file.name">{{ file.name }}</strong>
+                                        <small>{{ composerFileMeta(file) }}</small>
+                                    </span>
+                                    <button
+                                        type="button"
+                                        class="composer-file-remove"
+                                        @click="removeFile(index)"
+                                        :aria-label="'移除 ' + file.name"
+                                    >×</button>
+                                </article>
+                            </template>
                         </div>
 
                         <textarea
@@ -301,29 +436,47 @@ const ChatPage = {
                     </div>
                 </div>
 
-                <!-- 无会话 -->
-                <div v-else class="empty-state chat-empty" style="flex:1; background: var(--color-surface); border-radius: var(--radius-lg); border:1px solid var(--color-border-light);">
-                    <svg viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="60" cy="55" r="24" fill="currentColor" opacity="0.08"/>
-                        <path d="M48 62c4 6 20 6 24 0" stroke="currentColor" stroke-width="2" opacity="0.15"/>
-                        <circle cx="52" cy="50" r="3" fill="currentColor" opacity="0.2"/>
-                        <circle cx="68" cy="50" r="3" fill="currentColor" opacity="0.2"/>
-                    </svg>
-                    <h3>选择或创建会话</h3>
-                    <p>在右侧选择 Agent 和会话开始对话</p>
-                    <button class="btn btn-primary" @click="createSession">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        新建会话
-                    </button>
-                </div>
             </div>
 
             <!-- 右侧：Agent + 会话面板 -->
-            <aside class="chat-sidebar">
+            <aside class="chat-sidebar chatgpt-sidebar">
+                <div class="chat-sidebar-brand">
+                    <div class="chat-sidebar-brand-copy">
+                        <strong>WebAgent</strong>
+                        <span>Clean</span>
+                    </div>
+                </div>
+
+                <nav class="chat-sidebar-nav" aria-label="主导航">
+                    <button type="button" class="chat-sidebar-link chat-sidebar-link-active" @click="createSession">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                        <span>新对话</span>
+                    </button>
+                    <router-link to="/apps" class="chat-sidebar-link">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                        <span>Agent</span>
+                    </router-link>
+                    <router-link to="/skills" class="chat-sidebar-link">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m13 2-9 12h8l-1 8 9-12h-8Z"/></svg>
+                        <span>Skill</span>
+                    </router-link>
+                    <router-link to="/knowledge" class="chat-sidebar-link">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/></svg>
+                        <span>文件库</span>
+                    </router-link>
+                    <router-link to="/mcp" class="chat-sidebar-link">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                        <span>MCP</span>
+                    </router-link>
+                    <router-link to="/token-stats" class="chat-sidebar-link">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                        <span>Token</span>
+                    </router-link>
+                </nav>
                 <!-- Agent 选择区 -->
                 <div class="sidebar-section">
                     <div class="sidebar-section-header">
-                        <span class="sidebar-section-title">Agent</span>
+                        <span class="sidebar-section-title">智能体</span>
                         <span class="sidebar-section-count">{{ apps.length + 1 }}</span>
                     </div>
                     <div class="agent-list">
@@ -356,7 +509,7 @@ const ChatPage = {
                 <!-- 会话列表 -->
                 <div class="sidebar-section sidebar-section-flex">
                     <div class="sidebar-section-header">
-                        <span class="sidebar-section-title">会话</span>
+                        <span class="sidebar-section-title">聊天</span>
                         <div class="session-header-actions">
                             <button v-if="filteredSessions.length"
                                     type="button"
@@ -423,39 +576,71 @@ const ChatPage = {
                         </button>
                     </div>
                 </div>
+
+                <div class="chat-sidebar-account">
+                    <span class="chat-sidebar-avatar">{{ store.username ? store.username.charAt(0).toUpperCase() : 'U' }}</span>
+                    <span class="chat-sidebar-user">{{ store.username || '用户' }}</span>
+                    <button type="button" @click="logout" title="退出登录">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                    </button>
+                </div>
             </aside>
 
-            <!-- VNC 面板 -->
-            <div v-if="vncOpen" class="vnc-resize-handle" @mousedown="startResize"></div>
-            <div class="vnc-panel" :class="{ open: vncOpen }" :style="{ width: vncOpen ? vncWidth + '%' : '0' }">
-                <div class="vnc-header">
-                    <h3>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                        沙箱视图
-                    </h3>
-                    <div class="vnc-actions">
-                        <span class="vnc-status">{{ vncStatus }}</span>
-                        <button @click="resizeVnc(-10)" title="缩小">−</button>
-                        <button @click="resizeVnc(10)" title="放大">+</button>
-                        <button @click="toggleVnc" title="关闭">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
+            <div v-if="toolDockOpen" class="chat-tool-resize-handle" @mousedown="startToolDockResize"></div>
+            <aside v-if="toolDockOpen" class="chat-tool-dock">
+                <header class="chat-tool-dock-header">
+                    <div class="chat-tool-dock-title">
+                        <span class="chat-tool-dock-icon">
+                            <svg v-if="activeToolDock === 'sandbox'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                        </span>
+                        <div>
+                            <strong>{{ toolDockTitle }}</strong>
+                            <small>{{ toolDockSubtitle }}</small>
+                        </div>
                     </div>
+                    <button type="button" class="chat-tool-dock-close" @click="closeToolDock" title="关闭">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                </header>
+                <div class="chat-tool-dock-body">
+                    <section v-if="activeToolDock === 'sandbox'" class="tool-sandbox-panel">
+                        <div class="tool-sandbox-status">
+                            <div class="sandbox-view-menu" role="tablist" aria-label="沙箱视图">
+                                <button
+                                    v-for="view in sandboxViews"
+                                    :key="view.id"
+                                    type="button"
+                                    class="sandbox-view-option"
+                                    :class="{ active: activeSandboxView === view.id }"
+                                    :title="view.title"
+                                    @click="switchSandboxView(view.id)"
+                                >
+                                    <span class="sandbox-view-option-icon" aria-hidden="true">
+                                        <svg v-if="view.id === 'browser'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/></svg>
+                                        <svg v-else-if="view.id === 'terminal'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                                        <svg v-else-if="view.id === 'vscode'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 8l-3 4 3 4"/><path d="M16 8l3 4-3 4"/></svg>
+                                        <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                                    </span>
+                                    <span>{{ view.label }}</span>
+                                </button>
+                            </div>
+                            <div class="tool-sandbox-actions">
+                                <span>{{ vncStatus }}</span>
+                                <button type="button" @click="loadVncView" :disabled="!currentSessionId">刷新</button>
+                            </div>
+                        </div>
+                        <div class="tool-sandbox-frame">
+                            <iframe v-if="vncUrl" :src="vncUrl"></iframe>
+                            <div v-else class="vnc-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.35"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                                <span>{{ vncPlaceholder }}</span>
+                            </div>
+                        </div>
+                    </section>
+                    <workspace-browser v-else-if="activeToolDock === 'workspace'" embedded></workspace-browser>
                 </div>
-                <div class="vnc-container">
-                    <iframe v-if="vncUrl" :src="vncUrl"></iframe>
-                    <div v-else class="vnc-placeholder">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.3"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                        <span>{{ vncPlaceholder }}</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- VNC 浮动按钮 -->
-            <button class="vnc-float-btn" @click="toggleVnc" :style="{ background: vncOpen ? '#EF4444' : '' }" :title="vncOpen ? '关闭' : '沙箱视图'">
-                <svg v-if="!vncOpen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
+            </aside>
 
             <!-- 删除会话确认框：说明删除边界，避免用户误以为沙箱文件也会被清理。 -->
             <div v-if="sessionPendingDelete" class="modal-overlay session-delete-overlay" @click.self="cancelDeleteSession">
@@ -547,7 +732,11 @@ const ChatPage = {
         </div>
     `,
     setup() {
+        marked.use({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : hljs.highlightAuto(c).value, breaks: true, gfm: true });
+
         const store = Vue.inject('store');
+        const router = VueRouter.useRouter();
+        const logout = () => { store.logout(); router.push('/login'); };
         const messagesEl = Vue.ref(null);
 
         const apps = Vue.ref([]);
@@ -572,6 +761,8 @@ const ChatPage = {
         const messages = Vue.ref([]);
         const inputText = Vue.ref('');
         const pendingFiles = Vue.ref([]);
+        const pendingImagePreviewUrls = Vue.reactive({});
+        const sentUploadPreviews = Vue.reactive({});
         const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
         const planningEnabled = Vue.ref(localStorage.getItem('planning_enabled') !== 'false');
 
@@ -622,12 +813,29 @@ const ChatPage = {
             }
         });
 
-        const vncOpen = Vue.ref(false);
+        const activeToolDock = Vue.ref('');
+        const toolDockWidth = Vue.ref(460);
+        const toolDockOpen = Vue.computed(() => Boolean(activeToolDock.value));
+        const toolDockTitle = Vue.computed(() => activeToolDock.value === 'workspace' ? '工作目录' : '沙箱');
+        const sandboxViews = [
+            { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true' },
+            { id: 'terminal', label: '终端', title: '打开 Web 终端', path: '/terminal' },
+            { id: 'vscode', label: 'VSCode', title: '打开 VSCode 工作区', path: '/code-server/?folder=/home/gem' },
+            { id: 'files', label: '文件', title: '打开工作目录', dock: 'workspace' },
+        ];
+        const activeSandboxView = Vue.ref('browser');
+        const sandboxBaseUrl = Vue.ref('');
+        const sandboxViewById = (id) => sandboxViews.find(view => view.id === id) || sandboxViews[0];
+        const toolDockSubtitle = Vue.computed(() => {
+            if (activeToolDock.value === 'workspace') return '当前会话文件';
+            return sandboxViewById(activeSandboxView.value).label;
+        });
+        const isToolDockResizing = Vue.ref(false);
+        const vncOpen = Vue.computed(() => activeToolDock.value === 'sandbox');
         const vncUrl = Vue.ref('');
         const vncStatus = Vue.ref('未连接');
         const vncPlaceholder = Vue.ref('请先创建会话');
-        const vncWidth = Vue.ref(70);
-        let isResizing = false, startX = 0;
+        let isResizing = false, startX = 0, pendingToolDockWidth = 0, toolDockResizeFrame = 0;
 
         const currentApp = Vue.computed(() => {
             if (!currentAppId.value) return null;
@@ -911,7 +1119,7 @@ const ChatPage = {
                 for (const file of pendingFiles.value) {
                     try {
                         const result = await api.uploadFile(sessionId, file);
-                        uploadedFiles.push({ name: file.name, path: result });
+                        uploadedFiles.push(createUploadedFileRecord(sessionId, file, file.name, result));
                     } catch (e) {
                         if (window.DuplicateHandler && window.DuplicateHandler.isDuplicateError(e)) {
                             let keptFileName = file.name;
@@ -925,11 +1133,12 @@ const ChatPage = {
                             });
                             if (handleResult === 'replace-done' || handleResult === 'keep-both-done') {
                                 const name = handleResult === 'keep-both-done' ? keptFileName : file.name;
-                                uploadedFiles.push({ name, path: '/home/gem/uploads/' + name });
+                                uploadedFiles.push(createUploadedFileRecord(sessionId, file, name, '/home/gem/uploads/' + name));
                             }
                         }
                     }
                 }
+                clearPendingImagePreviews();
                 pendingFiles.value = [];
             }
 
@@ -938,7 +1147,7 @@ const ChatPage = {
                 fullMessage = (text ? text + '\n\n' : '') + '【上传的文件】\n' + uploadedFiles.map(f => '📎 ' + f.name).join('\n');
             }
 
-            const userMessage = { role: 'user', content: fullMessage, timestamp: Date.now(), _optimistic: true };
+            const userMessage = { role: 'user', content: fullMessage, uploadedFiles, timestamp: Date.now(), _optimistic: true };
             stream.pendingUserMessage = userMessage;
             if (currentSessionId.value === sessionId) {
                 messages.value.push(userMessage);
@@ -1192,6 +1401,98 @@ const ChatPage = {
             return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
         };
 
+        // 从文件名中提取扩展名，用于统一输入区和消息区的文件图标。
+        const fileExtensionFromName = (name) => {
+            const text = String(name || '').split(/[?#]/)[0];
+            const dot = text.lastIndexOf('.');
+            return dot >= 0 ? text.substring(dot + 1).toLowerCase() : '';
+        };
+
+        // 本地图片预览只保存临时 Blob URL，不把图片字节写进消息历史。
+        const pendingImageKey = (file) => `${file?.name || ''}::${file?.size || 0}::${file?.lastModified || 0}`;
+        const sentUploadPreviewKey = (sessionId, fileName) => `${sessionId || currentSessionId.value || ''}::${fileName || ''}`;
+        const isImageFile = (file) => {
+            if (!file) return false;
+            if (String(file.type || '').toLowerCase().startsWith('image/')) return true;
+            return imageFileTypes.has(fileExtensionFromName(file.name));
+        };
+        const pendingImagePreviewUrl = (file) => {
+            if (!isImageFile(file)) return '';
+            const key = pendingImageKey(file);
+            if (!pendingImagePreviewUrls[key]) {
+                pendingImagePreviewUrls[key] = URL.createObjectURL(file);
+            }
+            return pendingImagePreviewUrls[key];
+        };
+        const releasePendingImagePreview = (file, revoke = true) => {
+            const key = pendingImageKey(file);
+            const url = pendingImagePreviewUrls[key];
+            if (url && revoke) URL.revokeObjectURL(url);
+            delete pendingImagePreviewUrls[key];
+            return url || '';
+        };
+        const takePendingImagePreview = (file) => releasePendingImagePreview(file, false);
+        const clearPendingImagePreviews = () => {
+            Object.values(pendingImagePreviewUrls).forEach(url => {
+                if (url) URL.revokeObjectURL(url);
+            });
+            Object.keys(pendingImagePreviewUrls).forEach(key => delete pendingImagePreviewUrls[key]);
+        };
+        const rememberSentUploadPreview = (sessionId, uploaded) => {
+            if (!uploaded?.previewUrl || !uploaded?.name) return;
+            sentUploadPreviews[sentUploadPreviewKey(sessionId, uploaded.name)] = uploaded;
+        };
+        const localPreviewForUpload = (msg, fileName) => {
+            const fromMessage = Array.isArray(msg?.uploadedFiles)
+                ? msg.uploadedFiles.find(file => file?.name === fileName && file?.previewUrl)
+                : null;
+            return fromMessage || sentUploadPreviews[sentUploadPreviewKey(currentSessionId.value, fileName)] || null;
+        };
+        const previewPendingImage = (file) => {
+            const previewUrl = pendingImagePreviewUrl(file);
+            if (!previewUrl || typeof FilePreviewer === 'undefined') return;
+            FilePreviewer.preview({
+                source: 'local-image',
+                fileName: file.name,
+                fileType: fileExtensionFromName(file.name),
+                fileSize: file.size,
+                previewUrl,
+            });
+        };
+        const previewLocalImage = (fileName, previewUrl, fileType = '', fileSize = 0) => {
+            if (!previewUrl || typeof FilePreviewer === 'undefined') return;
+            FilePreviewer.preview({
+                source: 'local-image',
+                fileName,
+                fileType: fileType || fileExtensionFromName(fileName),
+                fileSize: Number(fileSize) || 0,
+                previewUrl,
+            });
+        };
+        const createUploadedFileRecord = (sessionId, file, name, path) => {
+            const fileType = fileExtensionFromName(name);
+            const previewUrl = isImageFile(file) ? (pendingImagePreviewUrl(file) && takePendingImagePreview(file)) : '';
+            const record = {
+                name,
+                path,
+                fileType,
+                fileSize: Number(file?.size) || 0,
+                previewUrl,
+                isImage: Boolean(previewUrl),
+            };
+            rememberSentUploadPreview(sessionId, record);
+            return record;
+        };
+
+        // 返回待上传文件在输入框中的视觉元信息。
+        const composerFilePresentation = (file) => artifactTypePresentation(fileExtensionFromName(file?.name));
+
+        // 返回待上传文件的类型和大小说明。
+        const composerFileMeta = (file) => {
+            const presentation = composerFilePresentation(file);
+            return [presentation.typeLabel, formatFileSize(file?.size)].filter(Boolean).join(' · ');
+        };
+
         const parseArtifactSize = (result) => {
             const match = String(result || '').match(/大小:\s*(\d+)\s*bytes/i);
             return match ? Number(match[1]) : 0;
@@ -1230,13 +1531,16 @@ const ChatPage = {
                 fileType,
                 fileSize,
                 isImage: imageFileTypes.has(fileType),
+                deliverToUser: event.tool !== 'browser_screenshot' || event.args?.deliver_to_user === true,
                 meta: [presentation.typeLabel, formatFileSize(fileSize)].filter(Boolean).join(' · '),
                 ...presentation,
             };
         };
 
         const extractArtifactsFromEvents = (events) => {
-            const artifacts = (events || []).map(artifactFromToolEvent).filter(Boolean);
+            const artifacts = (events || [])
+                .map(artifactFromToolEvent)
+                .filter(ChatArtifactGalleryUtils.shouldShowToolArtifact);
             // download_file 表示最终交付文件；存在时忽略截图工具产生的临时副本。
             const delivered = artifacts.filter(artifact => artifact.sourceTool === 'download_file');
             const candidates = delivered.length ? delivered : artifacts;
@@ -1291,6 +1595,26 @@ const ChatPage = {
         const downloadArtifact = (artifact) => {
             if (artifact) api.downloadFileFromSandbox(artifact.sessionId || currentSessionId.value, artifact.filePath);
         };
+        const artifactPreviewItem = (artifact) => ({
+            source: 'workspace',
+            sessionId: artifact.sessionId || currentSessionId.value,
+            filePath: artifact.filePath,
+            fileName: artifact.fileName,
+            fileType: artifact.fileType,
+            fileSize: artifact.fileSize,
+        });
+        const previewArtifactGallery = (artifacts, index = 0) => {
+            const images = (artifacts || []).filter(artifact => artifact?.isImage);
+            if (!images.length || typeof FilePreviewer === 'undefined') return;
+            if (typeof FilePreviewer.previewGroup === 'function') {
+                FilePreviewer.previewGroup({
+                    items: images.map(artifactPreviewItem),
+                    index: Math.max(0, Number(index) || 0),
+                });
+                return;
+            }
+            previewArtifact(images[Math.max(0, Number(index) || 0)] || images[0]);
+        };
 
         const escapeAttribute = (v) => escapeHtml(String(v || ''));
         const chatMarkdownRenderer = new marked.Renderer();
@@ -1308,13 +1632,72 @@ const ChatPage = {
         };
 
         const handleMessageContentClick = (event) => {
+            const localImageTarget = event.target.closest('[data-local-image-preview="true"]');
+            if (localImageTarget) {
+                event.preventDefault();
+                previewLocalImage(
+                    localImageTarget.dataset.fileName,
+                    localImageTarget.dataset.previewUrl,
+                    localImageTarget.dataset.fileType,
+                    localImageTarget.dataset.fileSize
+                );
+                return;
+            }
+
             const target = event.target.closest('[data-sandbox-preview="true"]');
             if (!target) return;
             event.preventDefault();
             if (typeof FilePreviewer !== 'undefined') FilePreviewer.preview({ source: 'workspace', sessionId: target.dataset.sessionId || currentSessionId.value, filePath: target.dataset.filePath, fileName: target.dataset.fileName, fileType: target.dataset.fileType });
         };
 
-        const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : escapeHtml(msg.content || '');
+        // 将用户消息中的上传文件段落转换成和输入区一致的文件卡片。
+        const renderUserContent = (msg) => {
+            const raw = String(msg?.content || '');
+            const marker = '【上传的文件】';
+            if (!raw.includes(marker)) {
+                return `<div class="user-message-text">${escapeHtml(raw).replace(/\n/g, '<br>')}</div>`;
+            }
+
+            const [textPart, filePart = ''] = raw.split(marker);
+            const files = filePart
+                .split(/\r?\n/)
+                .map(line => line.replace(/^📎\s*/, '').trim())
+                .filter(Boolean);
+            const textHtml = textPart.trim()
+                ? `<div class="user-message-text">${escapeHtml(textPart.trim()).replace(/\n/g, '<br>')}</div>`
+                : '';
+            const fileHtml = files.map(name => {
+                const localPreview = localPreviewForUpload(msg, name);
+                if (localPreview?.previewUrl && imageFileTypes.has(localPreview.fileType || fileExtensionFromName(name))) {
+                    return `
+                        <button
+                            type="button"
+                            class="user-upload-image"
+                            data-local-image-preview="true"
+                            data-file-name="${escapeAttribute(name)}"
+                            data-file-type="${escapeAttribute(localPreview.fileType || fileExtensionFromName(name))}"
+                            data-file-size="${escapeAttribute(localPreview.fileSize || 0)}"
+                            data-preview-url="${escapeAttribute(localPreview.previewUrl)}"
+                            aria-label="预览 ${escapeAttribute(name)}"
+                        >
+                            <img src="${escapeAttribute(localPreview.previewUrl)}" alt="${escapeAttribute(name)}">
+                        </button>
+                    `;
+                }
+                const presentation = artifactTypePresentation(fileExtensionFromName(name));
+                return `
+                    <article class="user-upload-card">
+                        <span class="user-upload-icon ${presentation.iconClass}">${presentation.iconText}</span>
+                        <span class="user-upload-info">
+                            <strong title="${escapeAttribute(name)}">${escapeHtml(name)}</strong>
+                            <small>${escapeHtml(presentation.typeLabel || '文件')}</small>
+                        </span>
+                    </article>
+                `;
+            }).join('');
+            return `${textHtml}<div class="user-upload-list">${fileHtml}</div>`;
+        };
+        const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : renderUserContent(msg);
         const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
         const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
         const completedActionText = (text) => {
@@ -1384,8 +1767,18 @@ const ChatPage = {
         const checkScrollPosition = () => { if (!messagesEl.value) return; const { scrollTop, scrollHeight, clientHeight } = messagesEl.value; showScrollBtn.value = scrollHeight - scrollTop - clientHeight > 200; };
 
         const copyId = () => { if (currentSessionId.value) { navigator.clipboard.writeText(currentSessionId.value); copied.value = true; setTimeout(() => copied.value = false, 1500); } };
-        const handleFileSelect = (e) => { Array.from(e.target.files).forEach(f => { if (!pendingFiles.value.some(p => p.name === f.name)) pendingFiles.value.push(f); }); e.target.value = ''; };
-        const removeFile = (i) => { pendingFiles.value.splice(i, 1); };
+        const handleFileSelect = (e) => {
+            Array.from(e.target.files).forEach(file => {
+                if (pendingFiles.value.some(p => p.name === file.name)) return;
+                pendingFiles.value.push(file);
+                if (isImageFile(file)) pendingImagePreviewUrl(file);
+            });
+            e.target.value = '';
+        };
+        const removeFile = (i) => {
+            const [file] = pendingFiles.value.splice(i, 1);
+            if (file) releasePendingImagePreview(file);
+        };
 
         const composerInput = Vue.ref(null);
         const autoResize = () => {
@@ -1396,20 +1789,92 @@ const ChatPage = {
         };
         const escapeHtml = (s) => s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
 
-        const toggleVnc = () => { vncOpen.value = !vncOpen.value; if (vncOpen.value && currentSessionId.value && !vncUrl.value) loadVncView(); };
+        const closeToolDock = () => {
+            activeToolDock.value = '';
+        };
+        const sandboxViewUrl = (baseUrl, view) => {
+            if (!baseUrl || !view || !view.path) return '';
+            const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+            return base + view.path;
+        };
+        const toggleToolDock = (dock) => {
+            activeToolDock.value = activeToolDock.value === dock ? '' : dock;
+            if (activeToolDock.value === 'sandbox' && currentSessionId.value && !vncUrl.value) {
+                loadVncView();
+            }
+        };
+        const toggleVnc = () => toggleToolDock('sandbox');
         const loadVncView = async () => {
             if (!currentSessionId.value) { vncPlaceholder.value = '请先创建会话'; return; }
+            const view = sandboxViewById(activeSandboxView.value);
             vncStatus.value = '连接中...'; vncPlaceholder.value = '获取沙箱地址...';
-            try { const ep = await api.getAioEndpoint(currentSessionId.value); if (ep) { vncUrl.value = `http://${ep}/`; vncStatus.value = '已连接'; } else { vncPlaceholder.value = '无法获取地址'; vncStatus.value = '失败'; } }
+            try {
+                const url = await api.getAioViewUrl(currentSessionId.value);
+                if (url) {
+                    sandboxBaseUrl.value = url;
+                    vncUrl.value = sandboxViewUrl(url, view);
+                    vncStatus.value = `已连接：${view.label}`;
+                } else {
+                    vncPlaceholder.value = '无法获取地址';
+                    vncStatus.value = '失败';
+                }
+            }
             catch (e) { vncPlaceholder.value = '连接错误'; vncStatus.value = '失败'; }
         };
-        const resizeVnc = (d) => { vncWidth.value = Math.max(30, Math.min(90, vncWidth.value + d)); };
-        const startResize = (e) => {
-            isResizing = true; startX = e.clientX; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none';
-            const m = (ev) => { if (!isResizing) return; const w = document.querySelector('.chat-page'); if (!w) return; const dw = startX - ev.clientX; vncWidth.value = Math.max(20, Math.min(80, (vncWidth.value / 100) * w.offsetWidth + dw) / w.offsetWidth * 100); startX = ev.clientX; };
-            const u = () => { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; document.removeEventListener('mousemove', m); document.removeEventListener('mouseup', u); };
+        const switchSandboxView = async (viewId) => {
+            const view = sandboxViewById(viewId);
+            if (view.dock === 'workspace') {
+                activeToolDock.value = view.dock;
+                return;
+            }
+            activeSandboxView.value = view.id;
+            if (!currentSessionId.value) {
+                vncUrl.value = '';
+                vncPlaceholder.value = '请先创建会话';
+                vncStatus.value = '未连接';
+                return;
+            }
+            if (!sandboxBaseUrl.value) {
+                await loadVncView();
+                return;
+            }
+            vncUrl.value = sandboxViewUrl(sandboxBaseUrl.value, view);
+            vncStatus.value = `已连接：${view.label}`;
+        };
+        const resizeVnc = (d) => { toolDockWidth.value = Math.max(340, Math.min(820, toolDockWidth.value + d * 8)); };
+        const startToolDockResize = (e) => {
+            isResizing = true; startX = e.clientX;
+            const startWidth = toolDockWidth.value;
+            pendingToolDockWidth = startWidth;
+            isToolDockResizing.value = true;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            const m = (ev) => {
+                if (!isResizing) return;
+                const maxWidth = Math.max(340, Math.min(860, window.innerWidth - 560));
+                pendingToolDockWidth = Math.max(340, Math.min(maxWidth, startWidth + startX - ev.clientX));
+                if (toolDockResizeFrame) return;
+                toolDockResizeFrame = requestAnimationFrame(() => {
+                    toolDockResizeFrame = 0;
+                    toolDockWidth.value = pendingToolDockWidth;
+                });
+            };
+            const u = () => {
+                isResizing = false;
+                isToolDockResizing.value = false;
+                if (toolDockResizeFrame) {
+                    cancelAnimationFrame(toolDockResizeFrame);
+                    toolDockResizeFrame = 0;
+                }
+                toolDockWidth.value = pendingToolDockWidth;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.removeEventListener('mousemove', m);
+                document.removeEventListener('mouseup', u);
+            };
             document.addEventListener('mousemove', m); document.addEventListener('mouseup', u);
         };
+        const startResize = startToolDockResize;
 
         // 消费全局流式完成标记，确保跨页面回来时能拉到后端已保存的最终消息。
         const consumeCompletedStream = async () => {
@@ -1421,8 +1886,11 @@ const ChatPage = {
 
         Vue.watch(currentSessionId, () => {
             vncUrl.value = '';
+            sandboxBaseUrl.value = '';
+            activeSandboxView.value = 'browser';
             vncStatus.value = '未连接';
             vncPlaceholder.value = '请先创建会话';
+            if (activeToolDock.value === 'sandbox') loadVncView();
             consumeCompletedStream();
         });
 
@@ -1443,7 +1911,6 @@ const ChatPage = {
         );
 
         Vue.onMounted(() => {
-            marked.setOptions({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : hljs.highlightAuto(c).value, breaks: true, gfm: true });
             const p = new URLSearchParams(window.location.hash.split('?')[1] || ''); const aid = p.get('appId'); if (aid) currentAppId.value = aid;
             Promise.all([loadApps(), loadSessions()]).then(async () => {
                 if (currentSessionId.value) await loadHistory();
@@ -1453,6 +1920,11 @@ const ChatPage = {
         });
 
         Vue.onBeforeUnmount(() => {
+            clearPendingImagePreviews();
+            Object.values(sentUploadPreviews).forEach(item => {
+                if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+            });
+            Object.keys(sentUploadPreviews).forEach(key => delete sentUploadPreviews[key]);
             Object.values(artifactBlobUrls).forEach(url => {
                 if (url) URL.revokeObjectURL(url);
             });
@@ -1461,17 +1933,18 @@ const ChatPage = {
         });
 
         return {
-            store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
+            store, logout, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
             draftSessionActive, sessionTitle,
             messages, displayMessages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
             searchEnabled, toggleSearch, planningEnabled, togglePlanning, composerInput, autoResize,
+            composerFilePresentation, composerFileMeta, isImageFile, pendingImagePreviewUrl, previewPendingImage,
             sessionManageMode, selectedSessionCount, allFilteredSessionsSelected,
             batchDeletePending, batchDeleteError, batchDeleting,
             sessionPendingDelete, deleteSessionError, deletingSessionId,
             streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
             finalAnswer, finalAnswerSaved, currentEvents,
             liveArtifacts, messageArtifacts, artifactBlobUrl, artifactLoadError,
-            previewArtifact, downloadArtifact,
+            previewArtifact, previewArtifactGallery, downloadArtifact,
             onAppChange, selectApp, selectSession, createSession,
             toggleSessionManagement, handleSessionItemClick, isSessionSelected: sessionId => selectedSessionIds.value.has(sessionId),
             toggleSessionSelection, toggleSelectAllSessions, requestBatchDelete, cancelBatchDelete, confirmBatchDelete,
@@ -1479,7 +1952,10 @@ const ChatPage = {
             switchSession, send, stopStream, retryMessage,
             renderContent, renderMarkdown, previewText, processTitle, processPreview,
             handleMessageContentClick, formatTime, copyId, handleFileSelect, removeFile,
-            vncOpen, vncUrl, vncStatus, vncPlaceholder, vncWidth, toggleVnc, resizeVnc, startResize, scrollToBottom
+            activeToolDock, toolDockOpen, toolDockWidth, toolDockTitle, toolDockSubtitle, isToolDockResizing,
+            toggleToolDock, closeToolDock, startToolDockResize,
+            sandboxViews, activeSandboxView, switchSandboxView,
+            vncOpen, vncUrl, vncStatus, vncPlaceholder, toggleVnc, loadVncView, resizeVnc, startResize, scrollToBottom
         };
     }
 };

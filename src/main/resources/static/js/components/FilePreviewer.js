@@ -14,15 +14,19 @@ const FilePreviewer = {
     fileContent: null,            // 字符串 / ArrayBuffer
     fileContentKind: '',          // 'text' | 'binary'
     fileBlobUrl: '',              // 二进制预览用的 blob URL
+    ownsFileBlobUrl: false,       // 是否由预览器负责释放当前 blob URL
+    imageZoom: 60,                // 图片预览默认缩放比例，接近 ChatGPT 预览框的初始视觉大小
     chunks: [],                   // 切片列表
     chunksLoading: false,
     chunkSearch: '',              // 切片搜索词
     activeChunkId: null,          // 当前高亮的切片
     expandedChunks: new Set(),    // 展开的切片 id（>500 字符默认折叠）
-    source: '',                   // 'knowledge' | 'workspace'
+    source: '',                   // 'knowledge' | 'workspace' | 'local-image'
     sessionId: '',                // 工作空间会话 ID，用于从预览界面下载文件
     filePath: '',                 // 工作空间文件路径，用于从预览界面下载文件
     docId: null,                  // 知识库文档 ID，用于从预览界面下载原文件
+    galleryItems: [],             // 图片组预览项，来自同一条助手消息的图片产物
+    galleryIndex: 0,              // 当前图片组索引
     _mounted: false,
     _container: null,
     _app: null,
@@ -33,17 +37,50 @@ const FilePreviewer = {
     /**
      * 打开预览器
      * @param {Object} opts
-     * @param {'knowledge'|'workspace'} opts.source
+     * @param {'knowledge'|'workspace'|'local-image'} opts.source
      * @param {string} opts.fileName
      * @param {string} opts.fileType - 不带点的小写扩展名
      * @param {number} [opts.fileSize]
      * @param {number} [opts.docId] - 知识库文档 ID
      * @param {string} [opts.sessionId] - 工作空间会话 ID
      * @param {string} [opts.filePath] - 工作空间文件路径
+     * @param {string} [opts.previewUrl] - 本地图片预览 URL
      */
     async preview(opts) {
         this._ensureMounted();
         this._reset();
+        await this._openPreviewOptions(opts || {});
+    },
+
+    /**
+     * 打开图片组预览。
+     * @param {Object} opts
+     * @param {Array<Object>} opts.items 图片预览项列表，字段与 preview(opts) 一致
+     * @param {number} [opts.index] 初始打开的图片索引
+     */
+    async previewGroup(opts) {
+        this._ensureMounted();
+        const items = Array.isArray(opts?.items) ? opts.items.filter(Boolean) : [];
+        if (items.length === 0) return;
+        this._reset();
+        this.galleryItems = items;
+        this.galleryIndex = Math.max(0, Math.min(Number(opts.index) || 0, items.length - 1));
+        await this._openPreviewOptions(items[this.galleryIndex]);
+    },
+
+    /**
+     * 切换图片组中的当前图片。
+     * @param {number} index 目标图片索引
+     */
+    async previewGalleryAt(index) {
+        if (!this.galleryItems.length) return;
+        const nextIndex = Math.max(0, Math.min(Number(index) || 0, this.galleryItems.length - 1));
+        this.galleryIndex = nextIndex;
+        await this._openPreviewOptions(this.galleryItems[nextIndex]);
+    },
+
+    async _openPreviewOptions(opts) {
+        this._resetFileState();
         this.source = opts.source;
         this.sessionId = opts.sessionId || '';
         this.filePath = opts.filePath || '';
@@ -65,6 +102,11 @@ const FilePreviewer = {
                 this._loadKnowledgeChunks(opts.docId);
             } else if (opts.source === 'workspace') {
                 await this._loadWorkspaceFile(opts.sessionId, opts.filePath);
+            } else if (opts.source === 'local-image') {
+                this.fileBlobUrl = opts.previewUrl || '';
+                this.fileContentKind = 'binary';
+                this.ownsFileBlobUrl = false;
+                if (!this.fileBlobUrl) throw new Error('本地图片缺少预览地址');
             } else {
                 throw new Error('未知 source: ' + opts.source);
             }
@@ -79,10 +121,11 @@ const FilePreviewer = {
 
     close() {
         this.visible = false;
-        if (this.fileBlobUrl) {
+        if (this.fileBlobUrl && this.ownsFileBlobUrl) {
             URL.revokeObjectURL(this.fileBlobUrl);
-            this.fileBlobUrl = '';
         }
+        this.fileBlobUrl = '';
+        this.ownsFileBlobUrl = false;
         this._syncView();
     },
 
@@ -94,6 +137,15 @@ const FilePreviewer = {
         try {
             if (this.source === 'workspace' && this.sessionId && this.filePath) {
                 api.downloadFileFromSandbox(this.sessionId, this.filePath);
+                return;
+            }
+            if (this.source === 'local-image' && this.fileBlobUrl) {
+                const anchor = document.createElement('a');
+                anchor.href = this.fileBlobUrl;
+                anchor.download = this.fileName || 'image';
+                document.body.appendChild(anchor);
+                anchor.click();
+                document.body.removeChild(anchor);
                 return;
             }
             if (this.source === 'knowledge' && this.docId != null) {
@@ -141,22 +193,33 @@ const FilePreviewer = {
         this._vm.fileContent = this.fileContent;
         this._vm.fileContentKind = this.fileContentKind;
         this._vm.fileBlobUrl = this.fileBlobUrl;
+        this._vm.imageZoom = this.imageZoom;
         this._vm.chunks = this.chunks;
         this._vm.chunksLoading = this.chunksLoading;
         this._vm.chunkSearch = this.chunkSearch;
         this._vm.activeChunkId = this.activeChunkId;
         this._vm.expandedChunks = this.expandedChunks;
         this._vm.source = this.source;
+        this._vm.galleryItems = this.galleryItems;
+        this._vm.galleryIndex = this.galleryIndex;
     },
 
     _reset() {
-        if (this.fileBlobUrl) {
+        this._resetFileState();
+        this.galleryItems = [];
+        this.galleryIndex = 0;
+    },
+
+    _resetFileState() {
+        if (this.fileBlobUrl && this.ownsFileBlobUrl) {
             URL.revokeObjectURL(this.fileBlobUrl);
-            this.fileBlobUrl = '';
         }
+        this.fileBlobUrl = '';
+        this.ownsFileBlobUrl = false;
         this.fileContent = null;
         this.fileContentKind = '';
         this.previewType = '';
+        this.imageZoom = 60;
         this.converting = false;
         this.sessionId = '';
         this.filePath = '';
@@ -179,6 +242,7 @@ const FilePreviewer = {
             const mime = this._mimeOf(this.previewType);
             const blob = new Blob([buffer], { type: mime });
             this.fileBlobUrl = URL.createObjectURL(blob);
+            this.ownsFileBlobUrl = true;
             this.fileContentKind = 'binary';
         }
     },
@@ -223,6 +287,7 @@ const FilePreviewer = {
                 const mime = this._mimeOf(this.previewType);
                 const blob = new Blob([buffer], { type: mime });
                 this.fileBlobUrl = URL.createObjectURL(blob);
+                this.ownsFileBlobUrl = true;
                 this.fileContentKind = 'binary';
             }
         } finally {
@@ -511,12 +576,15 @@ const FilePreviewer = {
                     fileContent: self.fileContent,
                     fileContentKind: self.fileContentKind,
                     fileBlobUrl: self.fileBlobUrl,
+                    imageZoom: self.imageZoom,
                     chunks: self.chunks,
                     chunksLoading: self.chunksLoading,
                     chunkSearch: self.chunkSearch,
                     activeChunkId: self.activeChunkId,
                     expandedChunks: self.expandedChunks,
                     source: self.source,
+                    galleryItems: self.galleryItems,
+                    galleryIndex: self.galleryIndex,
                 };
             },
             computed: {
@@ -545,6 +613,25 @@ const FilePreviewer = {
                 isImage() { return self._isImageType(this.previewType); },
                 isPdf() { return self._isPdfType(this.previewType); },
                 isBinary() { return this.fileContentKind === 'binary'; },
+                imageZoomText() { return `${this.imageZoom}%`; },
+                imageStyle() {
+                    return {
+                        width: `${this.imageZoom}%`,
+                        maxWidth: `${this.imageZoom}%`,
+                    };
+                },
+                hasGallery() {
+                    return this.galleryItems.length > 1;
+                },
+                galleryPositionText() {
+                    return `${this.galleryIndex + 1} / ${this.galleryItems.length}`;
+                },
+                hasPreviousGallery() {
+                    return this.galleryIndex > 0;
+                },
+                hasNextGallery() {
+                    return this.galleryIndex < this.galleryItems.length - 1;
+                },
             },
             watch: {
                 visible(v) { self.visible = v; if (!v) self._reset(); },
@@ -555,6 +642,7 @@ const FilePreviewer = {
                 previewType(v) { self.previewType = v; },
                 fileContent(v) { self.fileContent = v; },
                 fileBlobUrl(v) { self.fileBlobUrl = v; },
+                imageZoom(v) { self.imageZoom = v; },
                 chunks: {
                     deep: false,
                     handler(v) { self.chunks = v || []; },
@@ -562,6 +650,7 @@ const FilePreviewer = {
                 chunksLoading(v) { self.chunksLoading = v; },
                 chunkSearch(v) { self.chunkSearch = v; },
                 activeChunkId(v) { self.activeChunkId = v; },
+                galleryIndex(v) { self.galleryIndex = v; },
             },
             mounted() {
                 // 同步初始状态
@@ -576,27 +665,75 @@ const FilePreviewer = {
                 this.fileContent = self.fileContent;
                 this.fileContentKind = self.fileContentKind;
                 this.fileBlobUrl = self.fileBlobUrl;
+                this.imageZoom = self.imageZoom;
                 this.chunks = self.chunks;
                 this.source = self.source;
+                this.galleryItems = self.galleryItems;
+                this.galleryIndex = self.galleryIndex;
             },
             methods: {
                 close() { self.close(); },
                 downloadCurrent() { self.downloadCurrent(); },
+                showPreviousGallery() {
+                    if (this.hasPreviousGallery) self.previewGalleryAt(this.galleryIndex - 1);
+                },
+                showNextGallery() {
+                    if (this.hasNextGallery) self.previewGalleryAt(this.galleryIndex + 1);
+                },
+                zoomImage(delta) {
+                    this.imageZoom = Math.max(30, Math.min(180, this.imageZoom + delta));
+                },
+                resetImageZoom() {
+                    this.imageZoom = 60;
+                },
                 isChunkExpanded(chunk) { return self._isChunkExpanded(chunk); },
                 toggleChunkExpand(chunk) { self._toggleChunkExpand(chunk.id); },
                 onChunkClick(chunk) { self._onChunkClick(chunk); },
                 copyChunk(chunk) { self._copyChunk(chunk); },
             },
             template: `
-                <div v-if="visible" class="fp-overlay" @click.self="close">
+                <div v-if="visible" class="fp-overlay" :class="{ 'fp-image-lightbox-overlay': isImage && !showChunks }" @click.self="close">
+                    <div v-if="isImage && !showChunks" class="fp-lightbox-actions">
+                        <div v-if="hasGallery" class="fp-gallery-counter">{{ galleryPositionText }}</div>
+                        <button type="button" class="fp-lightbox-btn" @click="downloadCurrent" title="下载" aria-label="下载图片">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                        </button>
+                        <button type="button" class="fp-lightbox-btn" @click="close" title="关闭" aria-label="关闭预览">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                        </button>
+                    </div>
+                    <button
+                        v-if="isImage && !showChunks && hasGallery"
+                        type="button"
+                        class="fp-gallery-nav fp-gallery-prev"
+                        :disabled="!hasPreviousGallery"
+                        @click="showPreviousGallery"
+                        title="上一张"
+                        aria-label="上一张图片"
+                    >
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m15 18-6-6 6-6"/></svg>
+                    </button>
+                    <button
+                        v-if="isImage && !showChunks && hasGallery"
+                        type="button"
+                        class="fp-gallery-nav fp-gallery-next"
+                        :disabled="!hasNextGallery"
+                        @click="showNextGallery"
+                        title="下一张"
+                        aria-label="下一张图片"
+                    >
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m9 18 6-6-6-6"/></svg>
+                    </button>
                     <div class="fp-dialog" :class="{
                         'fp-with-chunks': showChunks,
-                        'fp-image-dialog': isImage && !showChunks
+                        'fp-image-dialog': isImage && !showChunks,
+                        'fp-local-image-dialog': source === 'local-image' && isImage && !showChunks,
+                        'fp-image-lightbox-dialog': isImage && !showChunks
                     }">
                         <!-- 头部 -->
                         <div class="fp-header">
                             <div class="fp-title">
-                                <span class="fp-icon">{{ fileTypeIcon(fileType) }}</span>
+                                <span :class="['fp-icon', fileTypeClass(fileType)]">{{ fileTypeIcon(fileType) }}</span>
                                 <span class="fp-name">{{ fileName }}</span>
                                 <span class="fp-title-divider" aria-hidden="true">|</span>
                                 <button type="button" class="fp-title-download" @click="downloadCurrent">下载</button>
@@ -630,7 +767,7 @@ const FilePreviewer = {
                                     ref="originalContent"
                                 >
                                     <!-- 二进制图片 -->
-                                    <img v-if="isImage && fileBlobUrl" :src="fileBlobUrl" class="fp-image" :alt="fileName" />
+                                    <img v-if="isImage && fileBlobUrl" :src="fileBlobUrl" class="fp-image" :style="imageStyle" :alt="fileName" />
                                     <!-- PDF -->
                                     <iframe v-else-if="isPdf && fileBlobUrl" :src="fileBlobUrl" class="fp-pdf" :title="fileName"></iframe>
                                     <!-- 二进制其他类型 -->
@@ -679,6 +816,11 @@ const FilePreviewer = {
                             </div>
                         </div>
                     </div>
+                    <div v-if="isImage && !showChunks" class="fp-image-zoom-controls" aria-label="图片缩放">
+                        <button type="button" class="fp-image-zoom-btn" @click="zoomImage(-10)" aria-label="缩小">−</button>
+                        <button type="button" class="fp-image-zoom-value" @click="resetImageZoom" title="重置缩放">{{ imageZoomText }}</button>
+                        <button type="button" class="fp-image-zoom-btn" @click="zoomImage(10)" aria-label="放大">＋</button>
+                    </div>
                 </div>
             `,
             methods2: {
@@ -705,16 +847,23 @@ FilePreviewer._createComponent = (function (orig) {
         const comp = orig.call(this);
         // 合并 fileTypeIcon
         comp.methods.fileTypeIcon = function (t) {
-            const map = {
-                'pdf': '📕', 'doc': '📘', 'docx': '📘',
-                'xls': '📗', 'xlsx': '📗', 'csv': '📊',
-                'ppt': '📙', 'pptx': '📙',
-                'txt': '📄', 'md': '📝', 'markdown': '📝',
-                'html': '🌐', 'json': '📋', 'xml': '📋',
-                'py': '🐍', 'js': '📜', 'ts': '📜', 'java': '☕', 'go': '🔵',
-                'png': '🖼️', 'jpg': '🖼️', 'jpeg': '🖼️', 'gif': '🖼️', 'svg': '🖼️',
-            };
-            return map[t] || '📄';
+            const type = String(t || '').toLowerCase();
+            if (type === 'pdf') return 'PDF';
+            if (['doc', 'docx', 'odt', 'rtf'].includes(type)) return 'DOC';
+            if (['xls', 'xlsx', 'ods', 'csv'].includes(type)) return 'XLS';
+            if (['ppt', 'pptx', 'odp'].includes(type)) return 'PPT';
+            if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(type)) return 'IMG';
+            return 'FILE';
+        };
+        // 按文件类型返回预览器标题图标的配色类。
+        comp.methods.fileTypeClass = function (t) {
+            const type = String(t || '').toLowerCase();
+            if (type === 'pdf') return 'pdf';
+            if (['doc', 'docx', 'odt', 'rtf'].includes(type)) return 'word';
+            if (['xls', 'xlsx', 'ods', 'csv'].includes(type)) return 'excel';
+            if (['ppt', 'pptx', 'odp'].includes(type)) return 'powerpoint';
+            if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(type)) return 'image';
+            return 'generic';
         };
         return comp;
     };

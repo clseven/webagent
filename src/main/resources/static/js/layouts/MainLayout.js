@@ -1,9 +1,9 @@
 // 主布局组件 - 顶栏导航
 const MainLayout = {
     template: `
-        <div class="app-shell">
+        <div :class="['app-shell', isChatRoute ? 'chat-shell-mode' : '']">
             <!-- 顶部导航栏 -->
-            <header class="topbar">
+            <header v-if="!isChatRoute" class="topbar">
                 <div class="topbar-left">
                     <div class="brand">
                         <div class="brand-logo">AI</div>
@@ -54,13 +54,15 @@ const MainLayout = {
                 <router-view />
             </main>
 
-            <workspace-browser />
+            <workspace-browser v-if="!isChatRoute" />
         </div>
     `,
     setup() {
         const store = Vue.inject('store');
         const router = VueRouter.useRouter();
+        const route = VueRouter.useRoute();
+        const isChatRoute = Vue.computed(() => route.path === '/chat');
         const logout = () => { store.logout(); router.push('/login'); };
-        return { store, logout };
+        return { store, logout, isChatRoute };
     }
 };

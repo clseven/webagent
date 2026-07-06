@@ -1,9 +1,12 @@
 // 工作空间文件浏览器 - IDEA 风格懒加载树
 const WorkspaceBrowser = {
+    props: {
+        embedded: { type: Boolean, default: false }
+    },
     template: `
-        <div class="workspace-browser">
+        <div :class="['workspace-browser', embedded ? 'workspace-browser-embedded' : '']">
             <!-- 浮动按钮 -->
-            <button class="workspace-toggle-btn" @click="togglePanel" :class="{ active: isOpen }" :title="isOpen ? '关闭工作空间' : '打开工作空间'">
+            <button v-if="!embedded" class="workspace-toggle-btn" @click="togglePanel" :class="{ active: isOpen }" :title="isOpen ? '关闭工作空间' : '打开工作空间'">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
@@ -11,7 +14,7 @@ const WorkspaceBrowser = {
 
             <!-- 抽屉面板 -->
             <transition name="slide">
-                <div v-if="isOpen" class="workspace-drawer">
+                <div v-if="isOpen || embedded" :class="embedded ? 'workspace-dock-content' : 'workspace-drawer'">
                     <div class="drawer-header">
                         <h3>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;vertical-align:-2px;opacity:0.7;">
@@ -25,7 +28,7 @@ const WorkspaceBrowser = {
                                     <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                                 </svg>
                             </button>
-                            <button @click="togglePanel" class="action-btn" title="关闭">
+                            <button v-if="!embedded" @click="togglePanel" class="action-btn" title="关闭">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             </button>
                         </div>
@@ -182,10 +185,10 @@ const WorkspaceBrowser = {
             }
         }
     },
-    setup() {
+    setup(props) {
         const store = Vue.inject('store');
 
-        const isOpen = Vue.ref(false);
+        const isOpen = Vue.ref(props.embedded);
         const rootPath = Vue.ref('/home/gem');
         const nodes = Vue.ref([]);
         const rootLoading = Vue.ref(false);
@@ -299,6 +302,12 @@ const WorkspaceBrowser = {
             rootLoading.value = true;
             rootError.value = null;
             try {
+                // 嵌入右侧工具栏时可能还没有会话，先显示明确状态，避免请求空 session。
+                if (!store.currentSessionId) {
+                    nodes.value = [];
+                    rootError.value = '请先创建会话';
+                    return;
+                }
                 const result = await api.executeCommand(
                     store.currentSessionId,
                     buildWorkspaceTreeCommand(rootPath.value)
@@ -350,6 +359,12 @@ const WorkspaceBrowser = {
             if (isOpen.value) {
                 nodes.value = [];
                 expandedSet.value = new Set();
+                loadWorkspaceTree();
+            }
+        });
+
+        Vue.onMounted(() => {
+            if (props.embedded) {
                 loadWorkspaceTree();
             }
         });
