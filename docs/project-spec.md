@@ -439,3 +439,21 @@ String path = arguments.get("path");
 **理由**：`PlanAgent` 继续提供目标状态、成功信号和初始策略；`TodoState` 只记录执行中的可检查清单和证据；`FinalTodoGuardHook` 防止仍有未完成 todo 时直接最终回答。这样能增强多步任务闭环，又不改变工具执行、并行策略和视觉模型拆分成果。
 
 **约束**：第一版 `TodoState` 仅保存在内存中，按 `sessionId` 管理；`completed` 缺少 `evidence` 时先返回提醒并由最终门禁拦截补证据；`blocked` 必须包含 `blocker`；未完成 todo 不允许被静默删除，只能继续推进或显式取消/阻塞。
+ 
+### ADR-011 沙箱视图通过用户级 token 和同源 URI 代理暴露
+
+**时间**：2026-07
+
+**决策**：沙箱视图入口使用 `/sandbox-view/{token}/...` 同源 URI 代理。`SandboxViewTokenService`
+只在 token 中保存 `userId`，不保存 AIO endpoint；每次 HTTP 或 WebSocket 请求都按用户查询当前最新
+endpoint。代理层支持常见 HTTP 方法、Location 头改写和 WebSocket Upgrade 转发，前端默认打开
+`/vnc/index.html?autoconnect=true` 浏览器视图，并通过本地视图菜单切换终端、VSCode 和文件。
+
+**排除方案**：
+- 直接把 AIO endpoint 返回给浏览器：云端部署会暴露 `127.0.0.1` 或随机端口，浏览器无法访问且有安全边界问题。
+- token 固定 endpoint：沙箱重建或端口变化后旧 token 会继续代理到旧端口，容易产生 502。
+- 只代理 `/code-server/`：无法覆盖 AIO 自带的浏览器、终端、文件和 WebSocket 通道。
+
+**理由**：该方案更接近 OpenSandbox Ingress 的 URI mode，既保持公网同源访问，也能复用 AIO 内部
+VNC、code-server 和 terminal 路由。endpoint 动态解析可以适配用户级沙箱绑定和沙箱重建；Location
+改写和 WebSocket 代理则保证 code-server/noVNC 这类视图不会跳出同源代理或在 Upgrade 阶段失败。

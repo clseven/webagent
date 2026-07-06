@@ -11,6 +11,7 @@ import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.WorkspaceDirectoryMemoryService;
 import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
+import com.example.sandbox.web.service.impl.SandboxViewTokenService;
 import com.example.sandbox.web.service.impl.OfficePreviewService;
 import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +48,10 @@ public class SandboxController {
 
     @Autowired
     private AgentService agentService;
+
+    /** 沙箱视图 token 服务，用于生成同源 iframe 代理地址。 */
+    @Autowired
+    private SandboxViewTokenService sandboxViewTokenService;
 
     @Autowired
     private OfficePreviewService officePreviewService;
@@ -113,6 +118,22 @@ public class SandboxController {
         agentService.getSession(id);
         String endpoint = sandboxServiceImpl.getAioEndpoint(id);
         return ApiResponse.success(endpoint);
+    }
+
+    /**
+     * 获取沙箱视图同源访问地址。
+     *
+     * <p>前端 iframe 应使用本接口返回的相对路径，不直接访问 AIO endpoint，避免云端部署时
+     * 浏览器把 127.0.0.1 解析到用户本机。</p>
+     *
+     * @param id 会话 ID
+     * @return 同源沙箱视图路径
+     */
+    @GetMapping("/{id}/aio/view-url")
+    public ApiResponse<String> getAioViewUrl(@PathVariable String id) {
+        var session = agentService.getSession(id);
+        String token = sandboxViewTokenService.issue(session.getUserId());
+        return ApiResponse.success("/sandbox-view/" + token + "/");
     }
 
     /**

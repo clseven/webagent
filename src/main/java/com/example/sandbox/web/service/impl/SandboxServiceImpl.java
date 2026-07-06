@@ -122,7 +122,7 @@ public class SandboxServiceImpl implements SandboxService {
                                 userId, sandboxId, endpoint);
                         continue;
                     }
-                    aioSandboxStore.register("__user_" + userId, sandboxId, endpoint);
+                    aioSandboxStore.register(userSandboxKey(userId), sandboxId, endpoint);
                 }
                 userSandboxMap.put(userId, sandboxId);
                 sandboxUserMap.put(sandboxId, userId);
@@ -180,7 +180,6 @@ public class SandboxServiceImpl implements SandboxService {
                     // 检查沙箱是否健康
                     if (isSandboxHealthy(endpoint)) {
                         linkSessionToSandbox(sessionId, existingSandboxId, endpoint);
-                        aioSandboxStore.register(sessionId, existingSandboxId, endpoint);
                         initAioDirectories(sessionId, endpoint);
                         log.info("用户 {} 已有沙箱 {}，关联会话 {}", userId, existingSandboxId, sessionId);
                         return;
@@ -217,7 +216,6 @@ public class SandboxServiceImpl implements SandboxService {
                         String endpoint = findEndpointForUser(userId, existingSandboxId);
                         if (endpoint != null && isSandboxHealthy(endpoint)) {
                             linkSessionToSandbox(sessionId, existingSandboxId, endpoint);
-                            aioSandboxStore.register(sessionId, existingSandboxId, endpoint);
                             initAioDirectories(sessionId, endpoint);
                             return;
                         }
@@ -255,7 +253,6 @@ public class SandboxServiceImpl implements SandboxService {
                 log.info("为用户 {} 创建永久沙箱 {}（会话 {}）", userId, agent.getSandboxId(), sessionId);
 
                 if (isCurrentImageAio()) {
-                    aioSandboxStore.register(sessionId, agent.getSandboxId(), endpoint);
                     if (!initAioContext(sessionId, agent)) {
                         throw new IllegalStateException("AIO 服务未在启动窗口内就绪");
                     }
@@ -276,10 +273,36 @@ public class SandboxServiceImpl implements SandboxService {
         }
     }
 
+    /**
+     * 将当前会话所属用户绑定到沙箱。
+     *
+     * <p>sessionId 只用于解析 userId，不再作为沙箱资源隔离 key。AIO endpoint
+     * 统一注册到用户级 key，避免同一用户多个会话出现不同沙箱视图。</p>
+     *
+     * @param sessionId   会话 ID
+     * @param sandboxId   沙箱 ID
+     * @param aioEndpoint AIO endpoint
+     */
     private void linkSessionToSandbox(String sessionId, String sandboxId, String aioEndpoint) {
-        sessionSandboxMap.put(sessionId, sandboxId);
-        sessionTypeMap.put(sessionId, isCurrentImageAio());
+        Long userId = getUserIdForSession(sessionId);
+        if (userId != null) {
+            userSandboxMap.put(userId, sandboxId);
+            sandboxUserMap.put(sandboxId, userId);
+            if (aioEndpoint != null && !aioEndpoint.isBlank()) {
+                aioSandboxStore.register(userSandboxKey(userId), sandboxId, aioEndpoint);
+            }
+        }
         persistSandboxInfo(sessionId, sandboxId, aioEndpoint);
+    }
+
+    /**
+     * 生成用户级沙箱缓存 key。
+     *
+     * @param userId 用户 ID
+     * @return 用户级沙箱缓存 key
+     */
+    private String userSandboxKey(Long userId) {
+        return "__user_" + userId;
     }
 
     /**
@@ -291,7 +314,7 @@ public class SandboxServiceImpl implements SandboxService {
             log.debug("findEndpointForUser: sandboxId 为 null，从数据库查找 userId={}", userId);
         } else {
             // 1. 从 aioSandboxStore 内存中查找
-            String key = "__user_" + userId;
+            String key = userSandboxKey(userId);
             if (aioSandboxStore.hasSandbox(key)) {
                 return aioSandboxStore.getEndpoint(key);
             }
@@ -309,10 +332,14 @@ public class SandboxServiceImpl implements SandboxService {
         try {
             var userSandbox = userSandboxRepository.findByUserIdAndDeletedFalse(userId);
             if (userSandbox.isPresent()) {
-                String endpoint = userSandbox.get().getAioEndpoint();
+                UserSandboxEntity entity = userSandbox.get();
+                String endpoint = entity.getAioEndpoint();
                 if (endpoint != null && !endpoint.isBlank()) {
-                    if (sandboxId != null) {
-                        aioSandboxStore.register("__user_" + userId, sandboxId, endpoint);
+                    String resolvedSandboxId = sandboxId != null ? sandboxId : entity.getSandboxId();
+                    if (resolvedSandboxId != null && !resolvedSandboxId.isBlank()) {
+                        userSandboxMap.put(userId, resolvedSandboxId);
+                        sandboxUserMap.put(resolvedSandboxId, userId);
+                        aioSandboxStore.register(userSandboxKey(userId), resolvedSandboxId, endpoint);
                     }
                     return endpoint;
                 }
@@ -323,16 +350,19 @@ public class SandboxServiceImpl implements SandboxService {
         return null;
     }
 
+    /**
+     * 持久化用户当前沙箱信息。
+     *
+     * <p>会话 ID 只用于解析用户 ID；沙箱 ID 和 endpoint 统一写入用户沙箱表。
+     * 旧的会话 sandbox_id 字段不再作为资源归属来源。</p>
+     *
+     * @param sessionId   会话 ID
+     * @param sandboxId   沙箱 ID
+     * @param aioEndpoint AIO endpoint
+     */
     @Transactional
     public void persistSandboxInfo(String sessionId, String sandboxId, String aioEndpoint) {
         try {
-            // 保存到会话表（只存 sandboxId）
-            var session = sessionRepository.findById(sessionId);
-            if (session.isPresent()) {
-                ConversationSessionEntity entity = session.get();
-                entity.setSandboxId(sandboxId);
-                sessionRepository.save(entity);
-            }
             // 保存到用户沙箱表（存 sandboxId + endpoint）
             Long userId = getUserIdForSession(sessionId);
             if (userId != null) {
@@ -397,52 +427,21 @@ public class SandboxServiceImpl implements SandboxService {
 
     @Override
     public boolean hasSandbox(String sessionId) {
-        // 1. 检查内存中的 session 映射
-        String sandboxId = sessionSandboxMap.get(sessionId);
-        if (sandboxId != null) {
-            if (!isCurrentImageAio()) {
-                return true;
-            }
-            try {
-                String endpoint = getAioEndpoint(sessionId);
-                if (endpoint != null && isSandboxHealthy(endpoint)) {
-                    return true;
-                }
-                log.warn("会话 {} 绑定的 AIO 沙箱不可用，将触发重建", sessionId);
-            } catch (Exception e) {
-                log.debug("检查会话 AIO 沙箱失败: sessionId={}, reason={}", sessionId, e.getMessage());
-            }
-            sessionSandboxMap.remove(sessionId);
-            sessionTypeMap.remove(sessionId);
-        }
-
-        // 2. 通过 userId 查找
         Long userId = getUserIdForSession(sessionId);
         if (userId != null && userSandboxMap.containsKey(userId)) {
-            sandboxId = userSandboxMap.get(userId);
+            String sandboxId = userSandboxMap.get(userId);
             if (!isCurrentImageAio()) {
-                sessionSandboxMap.put(sessionId, sandboxId);
                 return true;
             }
             String endpoint = findEndpointForUser(userId, sandboxId);
             if (endpoint != null && isSandboxHealthy(endpoint)) {
-                sessionSandboxMap.put(sessionId, sandboxId);
-                aioSandboxStore.register(sessionId, sandboxId, endpoint);
+                aioSandboxStore.register(userSandboxKey(userId), sandboxId, endpoint);
                 return true;
             }
             log.warn("用户 {} 的 AIO 沙箱 {} 不可用，将触发重建", userId, sandboxId);
             userSandboxMap.remove(userId);
             sandboxUserMap.remove(sandboxId);
-            aioSandboxStore.remove("__user_" + userId);
-        }
-
-        // 3. 检查 aioSandboxStore
-        if (aioSandboxStore.hasSandbox(sessionId)) {
-            String endpoint = aioSandboxStore.getEndpoint(sessionId);
-            if (!isCurrentImageAio() || (endpoint != null && isSandboxHealthy(endpoint))) {
-                return true;
-            }
-            aioSandboxStore.remove(sessionId);
+            aioSandboxStore.remove(userSandboxKey(userId));
         }
 
         return false;
@@ -467,18 +466,20 @@ public class SandboxServiceImpl implements SandboxService {
 
     // ==================== AIO ====================
 
+    /**
+     * 根据会话所属用户获取 AIO 客户端。
+     *
+     * <p>sessionId 只用于解析 userId；endpoint 统一来自用户当前沙箱，避免同一用户
+     * 不同会话缓存出不同 AIO 地址。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return AIO 客户端
+     */
     public AioClient getAioClient(String sessionId) {
-        // 1. 从 aioSandboxStore 获取
-        if (aioSandboxStore.hasSandbox(sessionId)) {
-            return aioSandboxStore.getClient(sessionId);
-        }
-
-        // 2. 通过 userId 从 UserSandboxEntity 获取
         Long userId = getUserIdForSession(sessionId);
         if (userId != null) {
             String endpoint = findEndpointForUser(userId, userSandboxMap.get(userId));
             if (endpoint != null) {
-                aioSandboxStore.register(sessionId, userSandboxMap.get(userId), endpoint);
                 return new AioClient("http://" + endpoint);
             }
         }
@@ -486,22 +487,40 @@ public class SandboxServiceImpl implements SandboxService {
         throw new SessionNotFoundException("No AIO sandbox for session: " + sessionId);
     }
 
+    /**
+     * 根据会话所属用户获取 AIO endpoint。
+     *
+     * <p>返回的是后端内部访问地址，不应直接暴露给浏览器 iframe 使用。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return AIO endpoint
+     */
     public String getAioEndpoint(String sessionId) {
-        // 1. 从 aioSandboxStore 获取
-        if (aioSandboxStore.hasSandbox(sessionId)) {
-            return aioSandboxStore.getEndpoint(sessionId);
+        Long userId = getUserIdForSession(sessionId);
+        if (userId != null) {
+            return getAioEndpointForUser(userId);
         }
 
-        // 2. 通过 userId 从 UserSandboxEntity 获取
-        Long userId = getUserIdForSession(sessionId);
+        throw new SessionNotFoundException("No AIO sandbox for session: " + sessionId);
+    }
+
+    /**
+     * 根据用户 ID 获取当前最新 AIO endpoint。
+     *
+     * <p>沙箱视图代理只在 token 中保存 userId，因此每次 HTTP 或 WebSocket 请求都通过该方法
+     * 读取当前用户沙箱 endpoint，避免沙箱重建后继续代理到旧端口。</p>
+     *
+     * @param userId 用户 ID
+     * @return 当前用户沙箱的 AIO endpoint
+     */
+    public String getAioEndpointForUser(Long userId) {
         if (userId != null) {
             String endpoint = findEndpointForUser(userId, userSandboxMap.get(userId));
             if (endpoint != null) {
                 return endpoint;
             }
         }
-
-        throw new SessionNotFoundException("No AIO sandbox for session: " + sessionId);
+        throw new SessionNotFoundException("No AIO sandbox for user: " + userId);
     }
 
     private boolean isCurrentImageAio() {

@@ -264,6 +264,7 @@ function createApiClient() {
 
         // VNC
         getAioEndpoint: (sessionId) => request('GET', `/api/sessions/${sessionId}/aio/endpoint`),
+        getAioViewUrl: (sessionId) => request('GET', `/api/sessions/${sessionId}/aio/view-url`),
 
         // 文件
         uploadFile: (sessionId, file) => {
