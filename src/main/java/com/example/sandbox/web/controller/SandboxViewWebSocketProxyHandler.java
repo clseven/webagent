@@ -19,6 +19,9 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.client.WebSocketClient;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
+import jakarta.websocket.WebSocketContainer;
+import jakarta.websocket.ContainerProvider;
+
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
@@ -42,6 +45,12 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
 
     /** 上游握手最长等待时间。 */
     private static final Duration HANDSHAKE_TIMEOUT = Duration.ofSeconds(10);
+
+    /** 上游 WebSocket 文本缓冲区大小（64 KB）。 */
+    private static final int TEXT_BUFFER_SIZE = 64 * 1024;
+
+    /** 上游 WebSocket 二进制缓冲区大小（256 KB）。 */
+    private static final int BINARY_BUFFER_SIZE = 256 * 1024;
 
     /** WebSocket 握手中不应透传的浏览器请求头。 */
     private static final Set<String> SKIPPED_HANDSHAKE_HEADERS = Set.of(
@@ -80,7 +89,7 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
     @Autowired
     public SandboxViewWebSocketProxyHandler(SandboxViewTokenService tokenService,
                                             SandboxServiceImpl sandboxService) {
-        this(tokenService, sandboxService, new StandardWebSocketClient());
+        this(tokenService, sandboxService, createConfiguredWebSocketClient());
     }
 
     /**
@@ -199,6 +208,27 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
     @Override
     public boolean supportsPartialMessages() {
         return false;
+    }
+
+    /**
+     * 创建已配置缓冲区大小的上游 WebSocket 客户端。
+     *
+     * <p>Spring 默认 text buffer 仅 8 KB，code-server Management 通道消息可达 9 KB+，
+     * 触发 1009（Message Too Big）断连。通过 {@link ContainerProvider} 获取独立的
+     * {@link WebSocketContainer} 并调大缓冲区。</p>
+     */
+    private static WebSocketClient createConfiguredWebSocketClient() {
+        try {
+            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+            if (container != null) {
+                container.setDefaultMaxTextMessageBufferSize(TEXT_BUFFER_SIZE);
+                container.setDefaultMaxBinaryMessageBufferSize(BINARY_BUFFER_SIZE);
+            }
+            return new StandardWebSocketClient(container);
+        } catch (Exception e) {
+            log.warn("无法创建已配置的上游 WebSocket 容器，回退到默认值", e);
+            return new StandardWebSocketClient();
+        }
     }
 
     /**
