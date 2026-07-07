@@ -48,9 +48,13 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
             "host",
             "connection",
             "upgrade",
+            "forwarded",
             "sec-websocket-key",
             "sec-websocket-version",
-            "sec-websocket-extensions");
+            "sec-websocket-extensions",
+            "x-forwarded-host",
+            "x-forwarded-prefix",
+            "x-forwarded-proto");
 
     /** WebSocket 子协议请求头名称。 */
     private static final String SEC_WEBSOCKET_PROTOCOL = "Sec-WebSocket-Protocol";
@@ -129,7 +133,7 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
         bridges.put(downstream.getId(), bridge);
 
         try {
-            webSocketClient.execute(new UpstreamHandler(bridge), handshakeHeaders(downstream), upstreamUri)
+            webSocketClient.execute(new UpstreamHandler(bridge), handshakeHeaders(downstream, token.get()), upstreamUri)
                     .get(HANDSHAKE_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
             log.info("沙箱视图 WebSocket 代理已连接: token={}, userId={}, endpoint={}, path={}",
                     token.get(), target.get().userId(), endpoint, upstreamPath);
@@ -203,7 +207,7 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
      * @param downstream 浏览器侧 WebSocket 会话
      * @return 上游握手头
      */
-    private WebSocketHttpHeaders handshakeHeaders(WebSocketSession downstream) {
+    private WebSocketHttpHeaders handshakeHeaders(WebSocketSession downstream, String token) {
         WebSocketHttpHeaders headers = new WebSocketHttpHeaders();
         HttpHeaders source = downstream.getHandshakeHeaders();
         source.forEach((name, values) -> {
@@ -216,7 +220,62 @@ public class SandboxViewWebSocketProxyHandler implements WebSocketHandler {
         if (protocols != null && !protocols.isEmpty()) {
             headers.put(SEC_WEBSOCKET_PROTOCOL, protocols);
         }
+        headers.set("X-Forwarded-Host", forwardedHost(source, downstream));
+        headers.set("X-Forwarded-Proto", forwardedProto(source, downstream));
+        headers.set("X-Forwarded-Prefix", SandboxViewProxySupport.proxyPrefix(token));
         return headers;
+    }
+
+    /**
+     * 解析 WebSocket 外部访问 Host。
+     *
+     * @param headers 浏览器侧握手头
+     * @param downstream 浏览器侧 WebSocket 会话
+     * @return 外部访问 Host
+     */
+    private String forwardedHost(HttpHeaders headers, WebSocketSession downstream) {
+        String forwardedHost = firstForwardedValue(headers.getFirst("X-Forwarded-Host"));
+        if (forwardedHost != null) {
+            return forwardedHost;
+        }
+        String host = headers.getFirst(HttpHeaders.HOST);
+        if (host != null && !host.isBlank()) {
+            return host;
+        }
+        URI uri = downstream.getUri();
+        return uri != null && uri.getRawAuthority() != null ? uri.getRawAuthority() : "";
+    }
+
+    /**
+     * 解析 WebSocket 外部访问协议。
+     *
+     * <p>浏览器侧使用 wss 时，对上游服务应表达为 https；使用 ws 时表达为 http。</p>
+     *
+     * @param headers 浏览器侧握手头
+     * @param downstream 浏览器侧 WebSocket 会话
+     * @return 外部访问协议
+     */
+    private String forwardedProto(HttpHeaders headers, WebSocketSession downstream) {
+        String forwardedProto = firstForwardedValue(headers.getFirst("X-Forwarded-Proto"));
+        if (forwardedProto != null) {
+            return forwardedProto;
+        }
+        URI uri = downstream.getUri();
+        return uri != null && "wss".equalsIgnoreCase(uri.getScheme()) ? "https" : "http";
+    }
+
+    /**
+     * 提取 X-Forwarded-* 头中的第一个有效值。
+     *
+     * @param value 原始请求头
+     * @return 第一个有效值，缺失时返回 null
+     */
+    private String firstForwardedValue(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String first = value.split(",", 2)[0].trim();
+        return first.isBlank() ? null : first;
     }
 
     /**

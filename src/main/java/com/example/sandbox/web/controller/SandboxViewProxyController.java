@@ -35,11 +35,22 @@ public class SandboxViewProxyController {
 
     /** 不应转发给上游 AIO 服务的 hop-by-hop 请求头。 */
     private static final Set<String> SKIPPED_REQUEST_HEADERS = Set.of(
-            "host", "connection", "content-length", "transfer-encoding", "upgrade");
+            "host",
+            "connection",
+            "content-length",
+            "transfer-encoding",
+            "upgrade",
+            "forwarded",
+            "x-forwarded-host",
+            "x-forwarded-prefix",
+            "x-forwarded-proto");
 
     /** 不应直接写回浏览器的 hop-by-hop 响应头。 */
     private static final Set<String> SKIPPED_RESPONSE_HEADERS = Set.of(
             "connection", "transfer-encoding", "content-length");
+
+    /** WebSocket 握手请求头；带有该头的请求应交给 WebSocket 代理处理。 */
+    private static final String NON_WEBSOCKET_REQUEST = "!Sec-WebSocket-Key";
 
     /** 沙箱视图 token 服务。 */
     private final SandboxViewTokenService tokenService;
@@ -101,7 +112,8 @@ public class SandboxViewProxyController {
                     RequestMethod.PATCH,
                     RequestMethod.HEAD,
                     RequestMethod.OPTIONS
-            })
+            },
+            headers = NON_WEBSOCKET_REQUEST)
     public void proxy(@PathVariable String token,
                       HttpServletRequest request,
                       HttpServletResponse response) throws IOException {
@@ -121,7 +133,7 @@ public class SandboxViewProxyController {
 
         String upstreamPath = SandboxViewProxySupport.upstreamPath(token, request);
         try {
-            HttpRequest upstreamRequest = buildUpstreamRequest(endpoint, upstreamPath, request);
+            HttpRequest upstreamRequest = buildUpstreamRequest(endpoint, upstreamPath, token, request);
             HttpResponse<byte[]> upstreamResponse = httpClient.send(
                     upstreamRequest,
                     HttpResponse.BodyHandlers.ofByteArray());
@@ -151,6 +163,7 @@ public class SandboxViewProxyController {
      */
     private HttpRequest buildUpstreamRequest(String endpoint,
                                              String upstreamPath,
+                                             String token,
                                              HttpServletRequest request) throws IOException {
         URI targetUri = URI.create("http://" + endpoint + upstreamPath);
         String method = request.getMethod().toUpperCase(Locale.ROOT);
@@ -170,7 +183,63 @@ public class SandboxViewProxyController {
                 builder.header(name, values.nextElement());
             }
         }
+        builder.header("X-Forwarded-Host", forwardedHost(request));
+        builder.header("X-Forwarded-Proto", forwardedProto(request));
+        builder.header("X-Forwarded-Prefix", SandboxViewProxySupport.proxyPrefix(token));
         return builder.build();
+    }
+
+    /**
+     * 解析可信的外部访问 Host。
+     *
+     * <p>优先使用边界反向代理写入的 X-Forwarded-Host；若不存在则回退到浏览器请求的 Host。</p>
+     *
+     * @param request 当前浏览器请求
+     * @return 外部访问 Host
+     */
+    private String forwardedHost(HttpServletRequest request) {
+        String forwardedHost = firstForwardedValue(request.getHeader("X-Forwarded-Host"));
+        if (forwardedHost != null) {
+            return forwardedHost;
+        }
+        String host = request.getHeader(HttpHeaders.HOST);
+        if (host != null && !host.isBlank()) {
+            return host;
+        }
+        int port = request.getServerPort();
+        boolean defaultPort = port == 80 || port == 443;
+        return defaultPort ? request.getServerName() : request.getServerName() + ":" + port;
+    }
+
+    /**
+     * 解析可信的外部访问协议。
+     *
+     * <p>云端 TLS 通常终止在 Nginx 或负载均衡层，后端看到的 request scheme 可能仍是 http；
+     * 因此优先使用 X-Forwarded-Proto，再回退到当前请求安全标记。</p>
+     *
+     * @param request 当前浏览器请求
+     * @return 外部访问协议，通常为 http 或 https
+     */
+    private String forwardedProto(HttpServletRequest request) {
+        String forwardedProto = firstForwardedValue(request.getHeader("X-Forwarded-Proto"));
+        if (forwardedProto != null) {
+            return forwardedProto;
+        }
+        return request.isSecure() ? "https" : "http";
+    }
+
+    /**
+     * 提取 X-Forwarded-* 头中的第一个有效值。
+     *
+     * @param value 原始请求头
+     * @return 第一个有效值，缺失时返回 null
+     */
+    private String firstForwardedValue(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String first = value.split(",", 2)[0].trim();
+        return first.isBlank() ? null : first;
     }
 
     /**

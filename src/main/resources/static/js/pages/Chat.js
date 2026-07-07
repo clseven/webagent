@@ -783,7 +783,10 @@ const ChatPage = {
                             </div>
                             <div class="tool-sandbox-actions">
                                 <span>{{ vncStatus }}</span>
-                                <button type="button" @click="loadVncView" :disabled="!currentSessionId">刷新</button>
+                                <button type="button" @click="loadVncView" :disabled="!currentSessionId || isSandboxResetting">刷新</button>
+                                <button type="button" @click="resetSandbox" :disabled="!currentSessionId || isSandboxResetting">
+                                    {{ isSandboxResetting ? '重置中...' : '重置' }}
+                                </button>
                             </div>
                         </div>
                         <div class="tool-sandbox-frame">
@@ -987,7 +990,7 @@ const ChatPage = {
         const toolDockOpen = Vue.computed(() => Boolean(activeToolDock.value));
         const toolDockTitle = Vue.computed(() => activeToolDock.value === 'workspace' ? '工作目录' : '沙箱');
         const sandboxViews = [
-            { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true' },
+            { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true', websocketPath: 'websockify' },
             { id: 'terminal', label: '终端', title: '打开 Web 终端', path: '/terminal' },
             { id: 'vscode', label: 'VSCode', title: '打开 VSCode 工作区', path: '/code-server/?folder=/home/gem' },
             { id: 'files', label: '文件', title: '打开工作目录', dock: 'workspace' },
@@ -1004,6 +1007,7 @@ const ChatPage = {
         const vncUrl = Vue.ref('');
         const vncStatus = Vue.ref('未连接');
         const vncPlaceholder = Vue.ref('请先创建会话');
+        const isSandboxResetting = Vue.ref(false);
         let isResizing = false, startX = 0, pendingToolDockWidth = 0, toolDockResizeFrame = 0;
 
         const currentApp = Vue.computed(() => {
@@ -1925,10 +1929,30 @@ const ChatPage = {
         const closeToolDock = () => {
             activeToolDock.value = '';
         };
+        const sandboxProxyPath = (baseUrl) => {
+            try {
+                const url = new URL(baseUrl, window.location.origin);
+                return url.pathname.split('/').filter(Boolean).join('/');
+            } catch (e) {
+                return String(baseUrl || '').split('/').filter(Boolean).join('/');
+            }
+        };
+        const sandboxWebsocketPath = (baseUrl, websocketPath) => {
+            const proxyPath = sandboxProxyPath(baseUrl);
+            return '/' + [proxyPath, websocketPath.replace(/^\/+/, '')]
+                .filter(Boolean)
+                .join('/');
+        };
         const sandboxViewUrl = (baseUrl, view) => {
             if (!baseUrl || !view || !view.path) return '';
             const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-            return base + view.path;
+            let path = view.path;
+            if (view.websocketPath) {
+                const params = new URLSearchParams();
+                params.set('path', sandboxWebsocketPath(baseUrl, view.websocketPath));
+                path += (path.includes('?') ? '&' : '?') + params.toString();
+            }
+            return base + path;
         };
         const toggleToolDock = (dock) => {
             activeToolDock.value = activeToolDock.value === dock ? '' : dock;
@@ -1953,6 +1977,33 @@ const ChatPage = {
                 }
             }
             catch (e) { vncPlaceholder.value = '连接错误'; vncStatus.value = '失败'; }
+        };
+        const resetSandbox = async () => {
+            const sessionId = currentSessionId.value;
+            if (!sessionId || isSandboxResetting.value) return;
+            const confirmed = window.confirm('重置沙箱会中断当前浏览器、终端和 VSCode 连接，沙箱内未保存状态可能丢失。确定继续吗？');
+            if (!confirmed) return;
+
+            isSandboxResetting.value = true;
+            sandboxBaseUrl.value = '';
+            vncUrl.value = '';
+            vncStatus.value = '重置中...';
+            vncPlaceholder.value = '正在重置沙箱...';
+            try {
+                await api.resetSandbox(sessionId);
+                if (currentSessionId.value === sessionId) {
+                    vncStatus.value = '重置完成';
+                    vncPlaceholder.value = '沙箱已重置，正在重新连接...';
+                    await loadVncView();
+                }
+            } catch (e) {
+                if (currentSessionId.value === sessionId) {
+                    vncStatus.value = '重置失败';
+                    vncPlaceholder.value = '重置失败，请稍后重试';
+                }
+            } finally {
+                isSandboxResetting.value = false;
+            }
         };
         const switchSandboxView = async (viewId) => {
             const view = sandboxViewById(viewId);
@@ -2088,7 +2139,8 @@ const ChatPage = {
             activeToolDock, toolDockOpen, toolDockWidth, toolDockTitle, toolDockSubtitle, isToolDockResizing,
             toggleToolDock, closeToolDock, startToolDockResize,
             sandboxViews, activeSandboxView, switchSandboxView,
-            vncOpen, vncUrl, vncStatus, vncPlaceholder, toggleVnc, loadVncView, resizeVnc, startResize, scrollToBottom
+            vncOpen, vncUrl, vncStatus, vncPlaceholder, isSandboxResetting,
+            toggleVnc, loadVncView, resetSandbox, resizeVnc, startResize, scrollToBottom
         };
     }
 };

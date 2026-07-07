@@ -18,6 +18,15 @@ public interface SandboxService {
     void createSandbox(String sessionId);
 
     /**
+     * 重置当前会话所属用户的沙箱。
+     *
+     * <p>会清理旧的用户级沙箱绑定，并为当前会话重新创建沙箱。</p>
+     *
+     * @param sessionId 会话 ID
+     */
+    void resetSandbox(String sessionId);
+
+    /**
      * 检查沙箱是否已创建
      *
      * @param sessionId 会话 ID

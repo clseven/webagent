@@ -273,6 +273,21 @@ public class SandboxServiceImpl implements SandboxService {
         }
     }
 
+    @Override
+    public void resetSandbox(String sessionId) {
+        Long userId = getUserIdForSession(sessionId);
+        if (userId == null) {
+            throw new SessionNotFoundException("无法解析会话所属用户: " + sessionId);
+        }
+
+        String oldSandboxId = resolveCurrentUserSandboxId(userId);
+        log.info("重置用户沙箱: userId={}, sessionId={}, oldSandboxId={}", userId, sessionId, oldSandboxId);
+        detachUserSandbox(userId, oldSandboxId);
+        softDeleteUserSandboxRecord(userId);
+        clearUserSessionSandboxRecords(userId, oldSandboxId);
+        createSandbox(sessionId);
+    }
+
     /**
      * 将当前会话所属用户绑定到沙箱。
      *
@@ -407,6 +422,100 @@ public class SandboxServiceImpl implements SandboxService {
                 log.error("关闭沙箱失败: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * 解析用户当前绑定的沙箱 ID。
+     *
+     * <p>优先使用内存映射；应用重启后内存可能为空，因此再回退到用户沙箱表。</p>
+     *
+     * @param userId 用户 ID
+     * @return 当前沙箱 ID，若用户没有活动沙箱则返回 null
+     */
+    private String resolveCurrentUserSandboxId(Long userId) {
+        String sandboxId = userSandboxMap.get(userId);
+        if (sandboxId != null && !sandboxId.isBlank()) {
+            return sandboxId;
+        }
+        return userSandboxRepository.findByUserIdAndDeletedFalse(userId)
+                .map(UserSandboxEntity::getSandboxId)
+                .filter(value -> value != null && !value.isBlank())
+                .orElse(null);
+    }
+
+    /**
+     * 断开用户与旧沙箱的运行时绑定。
+     *
+     * <p>关闭旧 SandboxAgent 失败不会阻断 reset，因为旧沙箱卡住时更需要继续创建新沙箱；
+     * 数据库绑定清理和新沙箱创建仍由后续步骤负责。</p>
+     *
+     * @param userId    用户 ID
+     * @param sandboxId 旧沙箱 ID
+     */
+    private void detachUserSandbox(Long userId, String sandboxId) {
+        userSandboxMap.remove(userId);
+        aioSandboxStore.remove(userSandboxKey(userId));
+        if (sandboxId == null || sandboxId.isBlank()) {
+            return;
+        }
+
+        sandboxUserMap.remove(sandboxId);
+        SandboxAgent agent = sandboxAgents.remove(sandboxId);
+        if (agent == null) {
+            return;
+        }
+
+        try {
+            agent.close();
+            log.info("已关闭重置前的旧沙箱: userId={}, sandboxId={}", userId, sandboxId);
+        } catch (Exception e) {
+            log.warn("关闭旧沙箱失败，继续重建: userId={}, sandboxId={}, error={}",
+                    userId, sandboxId, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 将用户沙箱记录标记为已删除。
+     *
+     * @param userId 用户 ID
+     */
+    private void softDeleteUserSandboxRecord(Long userId) {
+        userSandboxRepository.findByUserIdAndDeletedFalse(userId).ifPresent(entity -> {
+            entity.setDeleted(true);
+            userSandboxRepository.save(entity);
+        });
+    }
+
+    /**
+     * 清理用户所有会话上的旧沙箱记录和本地映射。
+     *
+     * <p>用户级沙箱是同一用户所有会话共享的资源，因此 reset 时需要清空该用户所有会话的
+     * session 缓存，避免后续视图或工具继续命中旧绑定。</p>
+     *
+     * @param userId    用户 ID
+     * @param sandboxId 旧沙箱 ID，可能为 null
+     */
+    private void clearUserSessionSandboxRecords(Long userId, String sandboxId) {
+        List<ConversationSessionEntity> changedSessions = new ArrayList<>();
+        for (ConversationSessionEntity session : sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId)) {
+            sessionSandboxMap.remove(session.getId());
+            sessionTypeMap.remove(session.getId());
+            if (isCurrentImageAio()) {
+                aioSandboxStore.remove(session.getId());
+            }
+
+            String sessionSandboxId = session.getSandboxId();
+            if (sessionSandboxId == null) {
+                continue;
+            }
+            session.setSandboxId(null);
+            changedSessions.add(session);
+        }
+        if (!changedSessions.isEmpty()) {
+            sessionRepository.saveAll(changedSessions);
+        }
+        log.info("清理用户会话旧沙箱记录完成: userId={}, sandboxId={}, count={}",
+                userId, sandboxId, changedSessions.size());
     }
 
     @Transactional

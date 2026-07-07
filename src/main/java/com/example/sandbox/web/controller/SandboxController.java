@@ -137,6 +137,22 @@ public class SandboxController {
     }
 
     /**
+     * 重置当前会话所属用户的沙箱。
+     *
+     * <p>重置会断开旧沙箱绑定并创建新沙箱，适合沙箱视图、浏览器或 code-server 卡住时手动恢复。</p>
+     *
+     * @param id 会话 ID
+     * @return 空成功响应
+     */
+    @PostMapping("/{id}/sandbox/reset")
+    public ApiResponse<Void> resetSandbox(@PathVariable String id) {
+        log.info("收到沙箱重置请求: session={}", id);
+        agentService.getSession(id);
+        sandboxService.resetSandbox(id);
+        return ApiResponse.success();
+    }
+
+    /**
      * 刷新工作空间相关状态。
      *
      * <p>前端工作空间刷新按钮会调用本接口。当前主要清理 MCP 工具发现缓存，
