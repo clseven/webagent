@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
  *
  * <h3>工具调用解析策略</h3>
  * <ol>
- *   <li>优先解析 LLM 原生 tool_calls 字段（OpenAI 标准）</li>
+ *   <li>优先解析 LLM 原生 tool_calls 字段，收集全部 tool_call 到列表供并发调度（OpenAI 标准）</li>
  *   <li>回退到 ReAct 文本解析（兼容老模型）</li>
  * </ol>
  *
@@ -192,7 +192,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * <h3>解析流程</h3>
      * <ol>
      *   <li>调用 LLM API</li>
-     *   <li>优先解析原生 tool_calls（OpenAI 标准格式）</li>
+     *   <li>优先解析原生 tool_calls，收集全部合法 tool_call 到列表（一轮可能多个，供并发调度）</li>
      *   <li>如果 LLM 没有返回 tool_calls，尝试 ReAct 文本格式解析</li>
      *   <li>都没有则作为普通文本返回</li>
      * </ol>
@@ -200,7 +200,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * @param systemPrompt 系统提示词
      * @param messages     消息列表
      * @param tools        可用工具定义
-     * @return LLM 响应（可能包含工具调用）
+     * @return LLM 响应（可能包含一个或多个工具调用）
      */
     @Override
     public LlmResponse chatWithTools(String systemPrompt, List<ChatMessage> messages, List<ToolDefinition> tools) {
@@ -217,12 +217,22 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             String content = assistantMsg != null ? assistantMsg.getContent() : "";
             String reasoning = assistantMsg != null ? assistantMsg.getReasoningContent() : null;
 
-            // 优先解析原生 tool_calls
+            // 优先解析原生 tool_calls（一轮可能有多个，全部接出供并发调度）
             if (completion.hasToolCalls()) {
-                LlmToolCall toolCall = assistantMsg.getToolCalls().get(0);
-                if (isValidToolName(toolCall.name())) {
-                    log.info("LLM 工具调用: {} 参数: {}", toolCall.name(), toolCall.arguments());
-                    return LlmResponse.toolCall(toolCall, content, reasoning, usage);
+                List<LlmToolCall> validCalls = new ArrayList<>();
+                for (LlmToolCall tc : assistantMsg.getToolCalls()) {
+                    if (isValidToolName(tc.name())) {
+                        validCalls.add(tc);
+                    }
+                }
+                if (!validCalls.isEmpty()) {
+                    if (validCalls.size() == 1) {
+                        log.info("LLM 工具调用: {} 参数: {}", validCalls.get(0).name(), validCalls.get(0).arguments());
+                    } else {
+                        log.info("LLM 并发工具调用: {} 个 {}", validCalls.size(),
+                                validCalls.stream().map(LlmToolCall::name).toList());
+                    }
+                    return LlmResponse.toolCalls(validCalls, content, reasoning, usage);
                 }
             }
 
@@ -973,7 +983,7 @@ public abstract class BaseLlmServiceImpl implements LlmService {
      * <ul>
      *   <li>token — LLM 输出的 token</li>
      *   <li>reasoning — 思考链 token</li>
-     *   <li>tool_call — 工具调用（流式累积）</li>
+     *   <li>tool_call — 工具调用（按 tool_calls[].index 累积，流完成时按序统一发出多个）</li>
      *   <li>finish — 流结束</li>
      * </ul>
      */
@@ -989,8 +999,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
 
                 logRequest(messages.size(), tools != null ? tools.size() : 0);
 
-                // 累积工具调用参数（流式中可能跨多个 chunk）
-                AtomicReference<LlmToolCall.Builder> toolCallBuilder = new AtomicReference<>();
+                // 按 OpenAI tool_calls[].index 分开累积（一轮可能并发多个工具调用，参数跨多个 chunk）
+                Map<Integer, LlmToolCall.Builder> toolCallBuilders = new java.util.TreeMap<>();
                 AtomicReference<LlmUsage> usageRef = new AtomicReference<>();
 
                 callLlmStream(apiFormat)
@@ -998,7 +1008,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                         chunk -> {
                             if (emitter.isCancelled()) return;
 
-                            List<LlmStreamChunk> chunks = parseStreamChunkWithTools(chunk, toolCallBuilder, usageRef);
+                            // 只累积 token/reasoning 直接透传，工具调用累积到 map，完成时统一发出
+                            List<LlmStreamChunk> chunks = parseStreamChunkWithTools(chunk, toolCallBuilders, usageRef);
                             for (LlmStreamChunk c : chunks) {
                                 emitter.next(c);
                             }
@@ -1011,10 +1022,11 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                         },
                         () -> {
                             if (!emitter.isCancelled()) {
-                                // 如果有累积的工具调用，发出 tool_call 事件
-                                LlmToolCall.Builder builder = toolCallBuilder.get();
-                                if (builder != null && builder.getName() != null) {
-                                    emitter.next(LlmStreamChunk.toolCall(builder.build()));
+                                // 按 index 顺序发出所有累积的工具调用（TreeMap 保序）
+                                for (LlmToolCall.Builder builder : toolCallBuilders.values()) {
+                                    if (builder != null && builder.getName() != null) {
+                                        emitter.next(LlmStreamChunk.toolCall(builder.build()));
+                                    }
                                 }
                                 // 发出 finish 事件
                                 emitter.next(LlmStreamChunk.finish(usageRef.get()));
@@ -1074,18 +1086,23 @@ public abstract class BaseLlmServiceImpl implements LlmService {
     }
 
     /**
-     * 解析流式响应（带工具支持）
+     * 解析流式响应（带工具支持）。
+     *
+     * <p>按 {@code tool_calls[].index} 分开累积多个工具调用（参数跨多个 chunk），
+     * <b>不</b>在 finish_reason 处发出——所有累积的工具调用在流完成时（onComplete）
+     * 由调用方按 index 顺序统一发出，避免并发下多个工具调用被中途截断或漏发。</p>
      *
      * <p>OpenAI 流式格式：</p>
      * <pre>
      * data: {"choices":[{"delta":{"content":"xxx"}}]}
-     * data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"read_file","arguments":"..."}}]}}]}
+     * data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"web_search","arguments":"..."}}]}}]}
+     * data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"read_file","arguments":"..."}}]}}]}
      * data: [DONE]
      * </pre>
      */
     @SuppressWarnings("unchecked")
     private List<LlmStreamChunk> parseStreamChunkWithTools(String chunk,
-                                                            AtomicReference<LlmToolCall.Builder> toolCallBuilder,
+                                                            Map<Integer, LlmToolCall.Builder> toolCallBuilders,
                                                             AtomicReference<LlmUsage> usageRef) {
         List<LlmStreamChunk> result = new ArrayList<>();
 
@@ -1125,16 +1142,13 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                 result.add(LlmStreamChunk.reasoning(reasoning));
             }
 
-            // 3. 处理工具调用（流式累积）
+            // 3. 处理工具调用（按 index 分开累积；并发下一轮多个工具，参数跨多个 chunk）
             List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) delta.get("tool_calls");
             if (toolCalls != null && !toolCalls.isEmpty()) {
                 for (Map<String, Object> tc : toolCalls) {
-                    // 初始化或获取 builder
-                    LlmToolCall.Builder builder = toolCallBuilder.get();
-                    if (builder == null) {
-                        builder = LlmToolCall.builder();
-                        toolCallBuilder.set(builder);
-                    }
+                    // 以 OpenAI 的 index 作为该工具调用的稳定键；缺失时退化为 0（单工具兼容）
+                    int index = tc.get("index") instanceof Number n ? n.intValue() : 0;
+                    LlmToolCall.Builder builder = toolCallBuilders.computeIfAbsent(index, k -> LlmToolCall.builder());
 
                     String id = (String) tc.get("id");
                     if (id != null && !id.isBlank()) {
@@ -1158,16 +1172,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                 }
             }
 
-            // 4. 检查 finish_reason
-            String finishReason = (String) choice.get("finish_reason");
-            if ("tool_calls".equals(finishReason)) {
-                // 工具调用完成，发出 tool_call 事件
-                LlmToolCall.Builder builder = toolCallBuilder.get();
-                if (builder != null && builder.getName() != null) {
-                    result.add(LlmStreamChunk.toolCall(builder.build()));
-                    toolCallBuilder.set(null); // 重置
-                }
-            }
+            // 注：不在 finish_reason 处发出 tool_call。所有累积的工具调用在流完成时（onComplete）
+            // 按 index 顺序统一发出，确保并发的多个工具调用不被中途截断或漏发。
 
         } catch (Exception e) {
             log.debug("解析流式响应失败: {}", chunk, e);

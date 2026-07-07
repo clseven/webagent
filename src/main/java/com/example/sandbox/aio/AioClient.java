@@ -125,6 +125,17 @@ public class AioClient implements SandboxClient {
     }
 
     /**
+     * 判断文件是否已存在（列父目录间接判断，用于区分新建与覆盖）。
+     *
+     * @param path 文件路径
+     * @return true 表示文件已存在
+     */
+    @Override
+    public boolean fileExists(String path) {
+        return files.exists(path);
+    }
+
+    /**
      * 下载文件字节。
      *
      * @param path 文件路径

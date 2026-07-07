@@ -21,6 +21,26 @@ public class AgentConfigProperties {
     private Skill skill = new Skill();
     private Llm llm = new Llm();
     private Storage storage = new Storage();
+    private Hook hook = new Hook();
+
+    /**
+     * Hook 层开关配置。
+     */
+    @Setter
+    @Getter
+    public static class Hook {
+        /**
+         * 是否启用文件状态检查（State Checks）。出问题可置 false 立即恢复无校验。
+         * 默认开启：单线程下低开销待命，并发落地后防 TOCTOU。
+         */
+        private boolean stateCheckEnabled = true;
+
+        /**
+         * 是否启用工具并发执行。出问题可置 false 退化为串行（仍遍历 tool_calls 列表）。
+         * 默认开启：READ 类并发、WRITE/EXCLUSIVE 串行。
+         */
+        private boolean concurrentToolExecutionEnabled = true;
+    }
 
     @Setter
     @Getter

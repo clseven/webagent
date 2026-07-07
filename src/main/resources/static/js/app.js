@@ -87,6 +87,7 @@
                 currentThinking: '',
                 currentReasoning: '',
                 currentToolCall: null,
+                currentStepIndex: 0,
                 finalAnswer: '',
                 finalAnswerSaved: false,
                 streamPhase: 'idle',

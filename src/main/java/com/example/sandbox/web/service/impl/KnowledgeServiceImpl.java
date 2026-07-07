@@ -18,7 +18,6 @@ import com.example.sandbox.web.service.enhance.RerankService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -50,12 +49,6 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     private KnowledgeChunkRepository chunkRepository;
 
     @Autowired
-    private DocumentParserService documentParserService;
-
-    @Autowired
-    private TextSplitterService textSplitterService;
-
-    @Autowired
     private EmbeddingService embeddingService;
 
     @Autowired
@@ -80,7 +73,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     private OfficePreviewService officePreviewService;
 
     @Autowired
-    private OfficePreviewAsyncService officePreviewAsyncService;
+    private KnowledgeDocumentProcessor documentProcessor;
 
     // ========== 知识库 CRUD ==========
 
@@ -214,143 +207,10 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         document.setStoragePath(storagePath);
         documentRepository.save(document);
 
-        // 3. 异步处理：解析 → 切片 → 向量化
-        processDocumentAsync(document.getId(), storagePath, splitMode, chunkSize, overlap);
+        // 3. 异步处理：解析 → 切片 → 向量化（跨 Bean 调用，@Async 通过代理生效）
+        documentProcessor.processDocumentAsync(document.getId(), storagePath, splitMode, chunkSize, overlap);
 
         return document;
-    }
-
-    @Async
-    public void processDocumentAsync(Long docId, String filePath,
-                                     String splitMode, Integer chunkSize, Integer overlap) {
-        try {
-            KnowledgeDocumentEntity document = documentRepository.findById(docId).orElse(null);
-            if (document == null) {
-                log.error("文档不存在: {}", docId);
-                return;
-            }
-
-            document.setStatus("PROCESSING");
-            documentRepository.save(document);
-
-            // 1. 解析文档
-            log.info("开始解析文档: {}", document.getFileName());
-            String content = documentParserService.parse(filePath);
-
-            // 2. 切片（带位置信息）
-            log.info("开始切片文档: {}, 模式: {}", document.getFileName(), splitMode);
-            List<TextSplitterService.ChunkWithPosition> chunkPositions;
-            if ("custom".equals(splitMode) && chunkSize != null && chunkSize > 0) {
-                int overlapVal = (overlap != null && overlap > 0) ? overlap : 0;
-                chunkPositions = textSplitterService.splitCustomWithPosition(content, chunkSize, overlapVal);
-            } else {
-                chunkPositions = textSplitterService.splitSmartWithPosition(content);
-            }
-
-            if (chunkPositions.isEmpty()) {
-                document.setStatus("FAILED");
-                document.setErrorMsg("文档内容为空或无法切分");
-                documentRepository.save(document);
-                return;
-            }
-
-            List<String> chunks = new ArrayList<>();
-            for (TextSplitterService.ChunkWithPosition cp : chunkPositions) {
-                chunks.add(cp.getContent());
-            }
-
-            // 3. 向量化（从 API 获取真实 token 数）
-            log.info("开始向量化文档: {}, 切片数: {}", document.getFileName(), chunks.size());
-            EmbeddingService.EmbeddingResult embeddingResult = embeddingService.embedBatch(chunks);
-            List<float[]> embeddings = embeddingResult.embeddings();
-            int totalTokens = embeddingResult.promptTokens();
-            int avgTokensPerChunk = totalTokens / chunks.size();
-
-            // 4. 保存切片到 MySQL（带位置信息）
-            List<Map<String, Object>> vectorItems = new ArrayList<>();
-            for (int i = 0; i < chunkPositions.size(); i++) {
-                TextSplitterService.ChunkWithPosition cp = chunkPositions.get(i);
-                KnowledgeChunkEntity chunkEntity = new KnowledgeChunkEntity();
-                chunkEntity.setDocumentId(docId);
-                chunkEntity.setUserId(document.getUserId());
-                chunkEntity.setKbId(document.getKbId());
-                chunkEntity.setChunkIndex(i);
-                chunkEntity.setContent(cp.getContent());
-                chunkEntity.setTokenCount(avgTokensPerChunk);
-                chunkEntity.setStartOffset(cp.getStartOffset());
-                chunkEntity.setEndOffset(cp.getEndOffset());
-                chunkRepository.save(chunkEntity);
-
-                vectorItems.add(Map.of("chunkIndex", i, "embedding", (Object) embeddings.get(i)));
-            }
-
-            // 5. 保存向量到 Milvus
-            vectorStoreService.insertBatch(document.getUserId(), document.getKbId(), docId, vectorItems);
-
-            // 6. 同步文件到沙箱（用于预览，不阻塞主流程）
-            boolean sandboxSynced = syncToSandbox(document, filePath);
-
-            // 7. 异步预转换 Office 文件（不阻塞主流程）
-            if (sandboxSynced) {
-                String sandboxPath = workspaceStorage.knowledgeSandboxPath(
-                        document.getKbId(), document.getFileName());
-                officePreviewAsyncService.convertKnowledgeFileAsync(
-                        document.getUserId(), document.getKbId(), docId, sandboxPath);
-            }
-
-            // 8. 更新状态
-            document.setChunkCount(chunks.size());
-            document.setTotalTokens(totalTokens);
-            document.setSandboxSynced(sandboxSynced);
-            document.setStatus("READY");
-            documentRepository.save(document);
-
-            log.info("文档处理完成: {}, 切片数: {}, 总 tokens: {}, 沙箱同步: {}",
-                    document.getFileName(), chunks.size(), totalTokens, sandboxSynced);
-
-        } catch (Exception e) {
-            log.error("文档处理失败: docId={}", docId, e);
-            KnowledgeDocumentEntity document = documentRepository.findById(docId).orElse(null);
-            if (document != null) {
-                document.setStatus("FAILED");
-                document.setErrorMsg(e.getMessage());
-                documentRepository.save(document);
-            }
-        }
-    }
-
-    /**
-     * 同步文件到用户沙箱（/home/gem/knowledge/）
-     * <p>使用用户上传时的原始文件名（而不是 doc_{id}.{ext}），
-     * 这样用户在沙箱里能直接看到自己上传的文件名。</p>
-     *
-     * @return 是否成功同步
-     */
-    private boolean syncToSandbox(KnowledgeDocumentEntity document, String localFilePath) {
-        try {
-            AioClient client = sandboxClientFactory.getAioClientByUserId(document.getUserId());
-            if (client == null) {
-                log.warn("用户 {} 无沙箱，跳过沙箱同步: docId={}", document.getUserId(), document.getId());
-                return false;
-            }
-
-            String sandboxPath = workspaceStorage.knowledgeSandboxPath(
-                    document.getKbId(), document.getFileName());
-            client.execCommand("mkdir -p " + quoteShell(parentPath(sandboxPath)));
-
-            // 读取本地文件并写入沙箱
-            byte[] fileBytes = Files.readAllBytes(Paths.get(localFilePath));
-            boolean ok = client.files().writeBytes(sandboxPath, fileBytes);
-            if (ok) {
-                log.info("文件已同步到沙箱: docId={}, path={}", document.getId(), sandboxPath);
-            } else {
-                log.warn("文件同步到沙箱失败: docId={}, path={}", document.getId(), sandboxPath);
-            }
-            return ok;
-        } catch (Exception e) {
-            log.error("同步文件到沙箱异常: docId={}", document.getId(), e);
-            return false;
-        }
     }
 
     @Override
@@ -480,8 +340,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         document.setSandboxSynced(false);
         documentRepository.save(document);
 
-        // 6. 异步处理：解析 → 切片 → 向量化
-        processDocumentAsync(document.getId(), document.getStoragePath(), splitMode, chunkSize, overlap);
+        // 6. 异步处理：解析 → 切片 → 向量化（跨 Bean 调用，@Async 通过代理生效）
+        documentProcessor.processDocumentAsync(document.getId(), document.getStoragePath(), splitMode, chunkSize, overlap);
 
         return document;
     }
@@ -613,18 +473,26 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         }
         List<Map<String, Object>> vectorResults = new ArrayList<>(dedupMap.values());
 
-        // 3. 补充切片文本
+        // 3. 批量补充切片文本（按 docId IN 一次查回，避免 N+1 查询）
+        List<Long> docIds = vectorResults.stream()
+                .map(r -> ((Number) r.get("docId")).longValue())
+                .distinct()
+                .toList();
+        Map<Long, List<KnowledgeChunkEntity>> chunksByDoc = new HashMap<>();
+        if (!docIds.isEmpty()) {
+            for (KnowledgeChunkEntity c : chunkRepository.findByDocumentIdIn(docIds)) {
+                chunksByDoc.computeIfAbsent(c.getDocumentId(), k -> new ArrayList<>()).add(c);
+            }
+        }
         for (Map<String, Object> vr : vectorResults) {
             Long docId = ((Number) vr.get("docId")).longValue();
             int chunkIndex = ((Number) vr.get("chunkIndex")).intValue();
-
-            KnowledgeChunkEntity chunk = chunkRepository.findByDocumentIdOrderByChunkIndex(docId)
-                    .stream()
+            String content = chunksByDoc.getOrDefault(docId, List.of()).stream()
                     .filter(c -> c.getChunkIndex() == chunkIndex)
                     .findFirst()
-                    .orElse(null);
-
-            vr.put("content", chunk != null ? chunk.getContent() : "");
+                    .map(KnowledgeChunkEntity::getContent)
+                    .orElse("");
+            vr.put("content", content);
         }
 
         // 4. Rerank

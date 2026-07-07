@@ -14,6 +14,7 @@ import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.LlmService;
 import com.example.sandbox.web.service.Tool;
+import com.example.sandbox.web.service.ToolSideEffect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -40,8 +41,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * while (未完成 && 迭代次数 < 25) {
  *     1. LLM 思考：分析当前情况，决定下一步
  *     2. LLM 决策：调用工具 OR 直接回答
- *     3. 如果调工具 → 执行 → 把结果告诉 LLM → 继续循环
- *     4. 如果回答 → 返回结果
+ *     3. 如果调工具 → 收集本轮全部 tool_call → 交 ToolScheduler 调度
+ *        （READ 并发、WRITE/EXCLUSIVE 串行）→ 结果按原序追加消息 → 继续循环
+ *     4. 如果回答 → Stop Hook 自检 → 放行则返回结果
  * }
  * </pre>
  *
@@ -130,6 +132,32 @@ public class ReactAgent {
     /** 对话摘要（当历史消息超出 token 预算时生成），实际作为 user 消息保留在 messages 中 */
     private String conversationSummary;
 
+    /**
+     * 收尾尝试计数（选项 C：状态归执行器，Stop Hook 只读）。
+     *
+     * <p>模型每次准备收尾、触发 Stop Hook 前 +1；模型实际调用工具后归零。
+     * Stop Hook 据此判断“注入自检”还是“已到阈值强制放行”。实例级字段即可——
+     * 一个 {@link ReactAgent} 实例只跑一条路径（run 或 runStream），由工厂按会话新建，
+     * 天然按会话隔离，无需跨路径共享。</p>
+     */
+    private int finalizeAttemptCount = 0;
+
+    /**
+     * 工具调用并发调度器。READ 类并发、WRITE/EXCLUSIVE 串行，结果按原序对齐。
+     * 单实例只跑一条路径，复用即可。默认启用并发；可由 {@link #setConcurrentToolExecutionEnabled}
+     * 在装配时关闭，退化为串行遍历（回滚开关）。
+     */
+    private ToolScheduler toolScheduler = new ToolScheduler();
+
+    /**
+     * 设置是否启用工具并发执行（由装配层按配置传入）。
+     *
+     * @param enabled true 并发；false 退化为串行遍历
+     */
+    public void setConcurrentToolExecutionEnabled(boolean enabled) {
+        this.toolScheduler = new ToolScheduler(ToolScheduler.DEFAULT_READ_CONCURRENCY, enabled);
+    }
+
     // ==================== Hook 系统 ====================
 
     /**
@@ -152,11 +180,21 @@ public class ReactAgent {
     }
 
     /**
-     * 停止前 Hook：接收当前消息列表，返回 null 表示允许退出，返回非 null 字符串表示强制继续（作为新 user 消息注入）。
+     * 停止前 Hook：接收当前消息列表和本会话已连续收尾的次数，返回 null 表示允许退出，
+     * 返回非 null 字符串表示强制继续（作为新 user 消息注入）。
+     *
+     * <p>{@code finalizeAttempt} 由 {@link ReactAgent} 持有并传入（选项 C：状态归执行器、
+     * hook 只读不持有）：模型每次准备收尾时递增，模型实际调用工具后清零。hook 据此实现
+     * “连续多次想收尾却不补查则强制放行”的收敛防线，无需自己维护计数状态。</p>
      */
     @FunctionalInterface
     public interface StopHook {
-        String run(List<ChatMessage> messages);
+        /**
+         * @param messages        当前对话消息
+         * @param finalizeAttempt 本会话内模型连续准备收尾的次数（从 1 开始，第一次收尾时为 1）
+         * @return null = 允许退出；非 null = 强制继续，返回值作为新 user 消息注入
+         */
+        String run(List<ChatMessage> messages, int finalizeAttempt);
     }
 
     /** 后台任务管理器（为 null 时后台功能不启用，如流式路径） */
@@ -231,17 +269,32 @@ public class ReactAgent {
     /**
      * 触发 Stop 事件：遍历所有注册的回调，任一返回非 null 即阻止退出（返回值作为新的 user 消息注入）。
      *
+     * <p>调用前先递增收尾尝试计数并传给 hook；返回 null（放行）时计数无需清零——真正的清零发生在
+     * 模型实际调用工具时（见 {@link #onToolExecuted()}）。这样“连续多次想收尾却不补查”才会累积计数，
+     * 触发 hook 的强制放行防线。</p>
+     *
      * @return null = 允许退出，非 null = 强制继续
      */
     @SuppressWarnings("unchecked")
     private String triggerStopHooks(List<ChatMessage> messages) {
         List<Object> callbacks = hooks.get("Stop");
         if (callbacks == null) return null;
+        finalizeAttemptCount++;
         for (Object cb : callbacks) {
-            String result = ((StopHook) cb).run(messages);
+            String result = ((StopHook) cb).run(messages, finalizeAttemptCount);
             if (result != null) return result;
         }
         return null;
+    }
+
+    /**
+     * 模型实际执行了一次工具，重置收尾尝试计数。
+     *
+     * <p>语义：模型“认真补查”了，把机会重新给它——下次收尾自检从第 1 次重新计。
+     * 只在工具真正执行（未被 Pre Hook 拦截）时调用。</p>
+     */
+    private void onToolExecuted() {
+        finalizeAttemptCount = 0;
     }
 
     // ==================== 子代理支持 ====================
@@ -384,8 +437,9 @@ public class ReactAgent {
      * <p>循环流程：</p>
      * <ol>
      *   <li>调用 LLM，让它分析当前情况并决定下一步</li>
-     *   <li>如果 LLM 返回工具调用 → 执行工具 → 结果追加到消息 → 继续循环</li>
-     *   <li>如果 LLM 返回最终答案 → 结束循环，返回结果</li>
+     *   <li>如果 LLM 返回工具调用 → 收集全部 tool_call 交 ToolScheduler 调度
+     *       （单调用走快捷路径，多调用按副作用分类并发/串行）→ 结果按原序追加消息 → 继续循环</li>
+     *   <li>如果 LLM 返回最终答案 → Stop Hook 自检 → 放行则结束循环返回结果</li>
      *   <li>如果达到最大迭代次数 → 返回失败提示</li>
      * </ol>
      *
@@ -455,7 +509,10 @@ public class ReactAgent {
                     String remaining = backgroundTaskManager.awaitPending(sessionId, 30_000);
                     if (remaining != null) {
                         messages.add(ChatMessage.userMessage(remaining));
-                        // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮
+                        // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮。
+                        // 注意：此处用裸 executeTool，不走 executeOneToolWithHooks，即不触发
+                        // Pre/Post Hook（含 State Checks 写后 invalidate）、不重置收尾自检计数、
+                        // 也不按并发协议组装多 tool_call 消息——digest 为后台任务消化的简化路径。
                         for (int digest = 0; digest < 6; digest++) {
                             LlmResponse digestResponse = llmService.chatWithTools(
                                     prompt, messages, toolDefinitions);
@@ -491,56 +548,46 @@ public class ReactAgent {
             }
 
             if (response.hasToolCall()) {
-                LlmToolCall toolCall = response.getToolCall();
-                String toolName = toolCall.name();
-                Map<String, Object> arguments = toolCall.arguments();
-
+                List<LlmToolCall> toolCalls = response.getToolCalls();
                 String llmContent = response.getContent();
                 if (llmContent != null && !llmContent.isEmpty()) {
                     log.debug("LLM 思考: {}", llmContent.length() > 500 ? llmContent.substring(0, 500) + "..." : llmContent);
                 }
 
-                // 执行工具并记录耗时
-                log.info("执行工具: {} 参数: {}", toolName, arguments);
-                String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
-                long startTime = System.currentTimeMillis();
-
-                // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
-                String blocked = triggerPreToolUseHooks(toolCall, sessionId);
-                String observation;
-                if (blocked != null) {
-                    log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
-                    observation = blocked;
+                // 一轮可能多个 tool_call：并发执行（READ 并发、WRITE/EXCLUSIVE 串行），结果按原序对齐
+                if (toolCalls.size() == 1) {
+                    ToolExecResult tr = executeOneToolWithHooks(sessionId, toolCalls.get(0));
+                    LlmToolCall historyToolCall = ensureToolCallId(toolCalls.get(0));
+                    addToolStep(steps, iteration, llmContent, response, historyToolCall, tr);
+                    messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                    messages.add(ChatMessage.toolMessage(historyToolCall.id(), tr.observation()));
+                    for (ChatMessage inj : tr.injections()) {
+                        messages.add(inj);
+                    }
                 } else {
-                    observation = executeTool(sessionId, toolName, arguments);
-                }
-
-                long durationMs = System.currentTimeMillis() - startTime;
-
-                // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
-                List<ChatMessage> hookInjections = blocked == null
-                        ? triggerPostToolUseHooks(toolCall, observation, sessionId)
-                        : List.of();
-
-                log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
-
-                LlmToolCall historyToolCall = ensureToolCallId(toolCall);
-
-                // 记录本轮步骤
-                LlmToolResult toolResult = LlmToolResult.success(
-                        historyToolCall.id(), toolName, observation, durationMs, displayReason);
-                AgentStep step = new AgentStep(iteration, llmContent, response.getReasoningContent(),
-                        historyToolCall, toolResult, response.getTokenUsage());
-                steps.add(step);
-
-                // 追加到消息历史（原生 tool calling 协议）
-                messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
-                messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
-
-                // Hook 注入额外消息（如图片数据），可能有多个 PostToolUse Hook 各自注入
-                for (ChatMessage hookInjection : hookInjections) {
-                    messages.add(hookInjection);
-                    log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
+                    log.info("本轮并发工具调用 {} 个: {}", toolCalls.size(),
+                            toolCalls.stream().map(LlmToolCall::name).toList());
+                    List<ToolExecResult> results = toolScheduler.execute(
+                            toolCalls,
+                            tc -> classifyToolSideEffect(tc.name()),
+                            tc -> executeOneToolWithHooks(sessionId, tc));
+                    List<LlmToolCall> historyCalls = new ArrayList<>();
+                    for (LlmToolCall tc : toolCalls) {
+                        historyCalls.add(ensureToolCallId(tc));
+                    }
+                    for (int i = 0; i < toolCalls.size(); i++) {
+                        addToolStep(steps, iteration, llmContent, response, historyCalls.get(i), results.get(i));
+                    }
+                    // 并发 tool calling 协议：一条 assistant 消息带全部 tool_calls，再各跟一条 tool 结果
+                    messages.add(ChatMessage.assistantToolCallsMessage(historyCalls));
+                    for (int i = 0; i < toolCalls.size(); i++) {
+                        messages.add(ChatMessage.toolMessage(historyCalls.get(i).id(), results.get(i).observation()));
+                    }
+                    for (ToolExecResult tr : results) {
+                        for (ChatMessage inj : tr.injections()) {
+                            messages.add(inj);
+                        }
+                    }
                 }
             } else {
                 String finalContent = response.getContent();
@@ -872,6 +919,172 @@ public class ReactAgent {
         }
     }
 
+    /**
+     * 单个工具调用的完整执行结果：observation + Post Hook 注入消息 + 耗时 + 行动说明。
+     *
+     * @param observation    工具结果（含被 Hook 拦截时的拦截原因）
+     * @param injections     Post Hook 注入的额外消息
+     * @param durationMs     执行耗时
+     * @param displayReason  面向用户的行动说明
+     */
+    private record ToolExecResult(
+            String observation,
+            List<ChatMessage> injections,
+            long durationMs,
+            String displayReason
+    ) {
+    }
+
+    /**
+     * 执行单个工具调用的完整流程：Pre Hook 拦截判定 → 实际执行 → Post Hook 收集注入。
+     * 同步与流式路径共用，保证 Hook 语义一致。任务内异常自身消化，不向调度器外抛。
+     *
+     * @param sessionId 会话 ID
+     * @param toolCall  工具调用
+     * @return 执行结果（observation + 注入消息 + 耗时 + 行动说明）
+     */
+    private ToolExecResult executeOneToolWithHooks(String sessionId, LlmToolCall toolCall) {
+        String toolName = toolCall.name();
+        Map<String, Object> arguments = toolCall.arguments();
+        String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
+        long startTime = System.currentTimeMillis();
+
+        log.info("执行工具: {} 参数: {}", toolName, arguments);
+
+        // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
+        String blocked = triggerPreToolUseHooks(toolCall, sessionId);
+        String observation;
+        if (blocked != null) {
+            log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
+            observation = blocked;
+        } else {
+            observation = executeTool(sessionId, toolName, arguments);
+            // 模型认真补查了，重置收尾自检计数
+            onToolExecuted();
+        }
+        long durationMs = System.currentTimeMillis() - startTime;
+
+        // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
+        List<ChatMessage> injections = blocked == null
+                ? triggerPostToolUseHooks(toolCall, observation, sessionId)
+                : List.of();
+        if (observation != null) {
+            log.debug("工具结果: {}", observation.length() > 200 ? observation.substring(0, 200) + "..." : observation);
+        }
+        return new ToolExecResult(observation, injections, durationMs, displayReason);
+    }
+
+    /**
+     * 把一次工具调用记录为一个 AgentStep。
+     *
+     * @param steps            步骤列表
+     * @param iteration        当前迭代
+     * @param llmContent       本轮 LLM 思考内容
+     * @param response         本轮 LLM 响应
+     * @param historyToolCall  带稳定 id 的工具调用
+     * @param tr               执行结果
+     */
+    private void addToolStep(List<AgentStep> steps, int iteration, String llmContent,
+                             LlmResponse response, LlmToolCall historyToolCall, ToolExecResult tr) {
+        LlmToolResult toolResult = LlmToolResult.success(
+                historyToolCall.id(), historyToolCall.name(), tr.observation(), tr.durationMs(), tr.displayReason());
+        steps.add(new AgentStep(iteration, llmContent, response.getReasoningContent(),
+                historyToolCall, toolResult, response.getTokenUsage()));
+    }
+
+    /**
+     * 按工具名查副作用类型（供调度器分类）。未知工具保守当 EXCLUSIVE 串行。
+     *
+     * @param toolName 工具名
+     * @return 副作用类型
+     */
+    private ToolSideEffect classifyToolSideEffect(String toolName) {
+        Tool tool = tools.get(toolName);
+        if (tool == null) {
+            return ToolSideEffect.EXCLUSIVE;
+        }
+        try {
+            return tool.getSideEffect();
+        } catch (Exception e) {
+            return ToolSideEffect.EXCLUSIVE;
+        }
+    }
+
+    /**
+     * 流式路径：执行单个工具调用并发送 SSE 事件（tool_call + observation）。
+     * 与 {@link #executeOneToolWithHooks} 的 Hook 语义一致，区别在于执行用带心跳版本、并向前端发事件。
+     *
+     * @param sessionId   会话 ID
+     * @param toolCall    工具调用
+     * @param sink        SSE 发射器
+     * @param currentStep 当前轮次
+     * @return 执行结果
+     */
+    private ToolExecResult executeOneStreamToolWithHooks(String sessionId, LlmToolCall toolCall,
+                                                        reactor.core.publisher.FluxSink<SseEvent> sink,
+                                                        int currentStep) {
+        String toolName = toolCall.name();
+        Map<String, Object> arguments = toolCall.arguments();
+        String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
+        long startTime;
+
+        log.info("执行工具: {} 参数: {}", toolName, arguments);
+
+        // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
+        String blocked = triggerPreToolUseHooks(toolCall, sessionId);
+        String observation;
+        if (blocked != null) {
+            log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
+            observation = blocked;
+            startTime = System.currentTimeMillis();
+            // 不实际执行，但发送事件告知前端
+            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason, toolCall.id()));
+        } else {
+            // 发送工具调用事件
+            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason, toolCall.id()));
+            // 执行工具并发送心跳
+            startTime = System.currentTimeMillis();
+            observation = executeToolWithHeartbeat(sessionId, toolName, arguments, sink);
+            // 模型认真补查了，重置收尾自检计数
+            onToolExecuted();
+        }
+        long durationMs = System.currentTimeMillis() - startTime;
+
+        // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
+        List<ChatMessage> injections = blocked == null
+                ? triggerPostToolUseHooks(toolCall, observation, sessionId)
+                : List.of();
+
+        // 发送工具执行结果事件
+        sink.next(SseEvent.observation(toolName, observation, durationMs, displayReason, toolCall.id()));
+        return new ToolExecResult(observation, injections, durationMs, displayReason);
+    }
+
+    /**
+     * 把一次流式工具调用记录为 AgentStep 并持久化事件。
+     *
+     * @param steps            步骤列表
+     * @param currentStep      当前轮次
+     * @param currentThinking  本轮思考内容
+     * @param currentReasoning 本轮思考链
+     * @param historyToolCall  带稳定 id 的工具调用
+     * @param tr               执行结果
+     * @param usageRef         token 用量
+     * @param persistedEvents  持久化事件列表
+     */
+    private void addStreamToolStep(List<AgentStep> steps, int currentStep,
+                                   StringBuilder currentThinking, StringBuilder currentReasoning,
+                                   LlmToolCall historyToolCall, ToolExecResult tr,
+                                   AtomicReference<LlmUsage> usageRef,
+                                   List<Map<String, Object>> persistedEvents) {
+        LlmToolResult toolResult = LlmToolResult.success(
+                historyToolCall.id(), historyToolCall.name(), tr.observation(), tr.durationMs(), tr.displayReason());
+        AgentStep step = new AgentStep(currentStep, currentThinking.toString(),
+                currentReasoning.toString(), historyToolCall, toolResult, usageRef.get());
+        steps.add(step);
+        persistedEvents.addAll(AgentEventMapper.fromStep(step));
+    }
+
     /** 心跳间隔（毫秒） */
     private static final long HEARTBEAT_INTERVAL_MS = 15_000;
 
@@ -1038,7 +1251,8 @@ public class ReactAgent {
                     // 累积本轮的思考内容和思考链
                     StringBuilder currentThinking = new StringBuilder();
                     StringBuilder currentReasoning = new StringBuilder();
-                    AtomicReference<LlmToolCall> toolCallRef = new AtomicReference<>();
+                    // 收集本轮全部 tool_call（流式可能跨多个 chunk、并发出多个）
+                    java.util.List<LlmToolCall> toolCallsCollected = new java.util.concurrent.CopyOnWriteArrayList<>();
                     AtomicReference<LlmUsage> usageRef = new AtomicReference<>();
 
                     // 调用 LLM 流式 API
@@ -1059,7 +1273,9 @@ public class ReactAgent {
                                         sink.next(SseEvent.reasoningToken(chunk.reasoning()));
                                         break;
                                     case "tool_call":
-                                        toolCallRef.set(chunk.toolCall());
+                                        if (chunk.toolCall() != null) {
+                                            toolCallsCollected.add(chunk.toolCall());
+                                        }
                                         break;
                                     case "finish":
                                         usageRef.set(chunk.usage());
@@ -1100,60 +1316,43 @@ public class ReactAgent {
                     }
 
                     // 判断 LLM 返回的是工具调用还是最终答案
-                    LlmToolCall toolCall = toolCallRef.get();
-                    if (toolCall != null) {
-                        String toolName = toolCall.name();
-                        Map<String, Object> arguments = toolCall.arguments();
-                        String displayReason = AgentActionNarrator.describe(toolName, arguments, plan);
+                    if (!toolCallsCollected.isEmpty()) {
+                        List<LlmToolCall> toolCalls = new ArrayList<>(toolCallsCollected);
 
-                        log.info("执行工具: {} 参数: {}", toolName, arguments);
-
-                        // 🪝 PreToolUse Hook：任一回调返回非 null 即阻止执行
-                        String blocked = triggerPreToolUseHooks(toolCall, sessionId);
-                        String observation;
-                        long startTime;
-                        if (blocked != null) {
-                            log.info("工具 {} 被 Hook 阻止: {}", toolName, blocked);
-                            observation = blocked;
-                            startTime = System.currentTimeMillis();
-                            // 不实际执行，但发送事件告知前端
-                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason));
+                        if (toolCalls.size() == 1) {
+                            LlmToolCall historyToolCall = ensureToolCallId(toolCalls.get(0));
+                            ToolExecResult tr = executeOneStreamToolWithHooks(sessionId, historyToolCall, sink, currentStep);
+                            addStreamToolStep(steps, currentStep, currentThinking, currentReasoning,
+                                    historyToolCall, tr, usageRef, persistedEvents);
+                            messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                            messages.add(ChatMessage.toolMessage(historyToolCall.id(), tr.observation()));
+                            for (ChatMessage inj : tr.injections()) {
+                                messages.add(inj);
+                            }
                         } else {
-                            // 发送工具调用事件
-                            sink.next(SseEvent.toolCall(toolName, arguments, currentStep, displayReason));
-
-                            // 执行工具并发送心跳
-                            startTime = System.currentTimeMillis();
-                            observation = executeToolWithHeartbeat(sessionId, toolName, arguments, sink);
-                        }
-                        long durationMs = System.currentTimeMillis() - startTime;
-
-                        // 🪝 PostToolUse Hook：仅在实际执行时触发，全部跑完收集所有注入消息
-                        List<ChatMessage> hookInjections = blocked == null
-                                ? triggerPostToolUseHooks(toolCall, observation, sessionId)
-                                : List.of();
-
-                        // 发送工具执行结果事件
-                        sink.next(SseEvent.observation(toolName, observation, durationMs, displayReason));
-
-                        LlmToolCall historyToolCall = ensureToolCallId(toolCall);
-
-                        // 记录本轮步骤
-                        LlmToolResult toolResult = LlmToolResult.success(
-                                historyToolCall.id(), toolName, observation, durationMs, displayReason);
-                        AgentStep step = new AgentStep(currentStep, currentThinking.toString(),
-                                currentReasoning.toString(), historyToolCall, toolResult, usageRef.get());
-                        steps.add(step);
-                        persistedEvents.addAll(AgentEventMapper.fromStep(step));
-
-                        // 追加到消息历史（原生 tool calling 协议）
-                        messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
-                        messages.add(ChatMessage.toolMessage(historyToolCall.id(), observation));
-
-                        // Hook 注入额外消息（如图片数据），可能有多个 PostToolUse Hook 各自注入
-                        for (ChatMessage hookInjection : hookInjections) {
-                            messages.add(hookInjection);
-                            log.debug("PostToolUse Hook 注入消息: role={}", hookInjection.getRole());
+                            log.info("本轮并发工具调用 {} 个: {}", toolCalls.size(),
+                                    toolCalls.stream().map(LlmToolCall::name).toList());
+                            List<LlmToolCall> historyCalls = new ArrayList<>();
+                            for (LlmToolCall tc : toolCalls) {
+                                historyCalls.add(ensureToolCallId(tc));
+                            }
+                            List<ToolExecResult> results = toolScheduler.execute(
+                                    historyCalls,
+                                    tc -> classifyToolSideEffect(tc.name()),
+                                    tc -> executeOneStreamToolWithHooks(sessionId, tc, sink, currentStep));
+                            for (int i = 0; i < historyCalls.size(); i++) {
+                                addStreamToolStep(steps, currentStep, currentThinking, currentReasoning,
+                                        historyCalls.get(i), results.get(i), usageRef, persistedEvents);
+                            }
+                            messages.add(ChatMessage.assistantToolCallsMessage(historyCalls));
+                            for (int i = 0; i < historyCalls.size(); i++) {
+                                messages.add(ChatMessage.toolMessage(historyCalls.get(i).id(), results.get(i).observation()));
+                            }
+                            for (ToolExecResult tr : results) {
+                                for (ChatMessage inj : tr.injections()) {
+                                    messages.add(inj);
+                                }
+                            }
                         }
 
                     } else {
@@ -1185,7 +1384,11 @@ public class ReactAgent {
                                 messages.add(ChatMessage.userMessage(remaining));
                                 sink.next(SseEvent.status("后台子代理结果已返回，正在消化..."));
 
-                                // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮
+                                // 消化循环：LLM 看到通知后可能又调工具，最多 6 轮。
+                                // 注意：此处用裸 executeTool（手动发 SSE 事件、手动记消息），
+                                // 不走 executeOneStreamToolWithHooks，即不触发 Pre/Post Hook
+                                // （含 State Checks）、不重置收尾自检计数、不记 AgentStep——
+                                // digest 为后台任务消化的简化路径。
                                 for (int digest = 0; digest < 6; digest++) {
                                     if (sink.isCancelled()) break;
 
@@ -1210,22 +1413,21 @@ public class ReactAgent {
                                         break;
                                     }
                                     if (digestResponse.hasToolCall()) {
-                                        LlmToolCall tc = digestResponse.getToolCall();
+                                        LlmToolCall historyTc = ensureToolCallId(digestResponse.getToolCall());
                                         log.info("[后台子代理] 消化步骤 {}/{} 调用工具: {}",
-                                                digest + 1, 6, tc.name());
+                                                digest + 1, 6, historyTc.name());
 
                                         int digestStep = currentStep + digest + 1;
-                                        String digestDisplayReason = AgentActionNarrator.describe(tc.name(), tc.arguments(), plan);
-                                        sink.next(SseEvent.toolCall(tc.name(), tc.arguments(), digestStep, digestDisplayReason));
+                                        String digestDisplayReason = AgentActionNarrator.describe(historyTc.name(), historyTc.arguments(), plan);
+                                        sink.next(SseEvent.toolCall(historyTc.name(), historyTc.arguments(), digestStep, digestDisplayReason, historyTc.id()));
 
-                                        String obs = executeTool(sessionId, tc.name(), tc.arguments());
-                                        LlmToolCall historyTc = ensureToolCallId(tc);
+                                        String obs = executeTool(sessionId, historyTc.name(), historyTc.arguments());
                                         messages.add(ChatMessage.assistantToolCallMessage(historyTc));
                                         messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
 
-                                        sink.next(SseEvent.observation(tc.name(), obs, 0, digestDisplayReason));
+                                        sink.next(SseEvent.observation(historyTc.name(), obs, 0, digestDisplayReason, historyTc.id()));
                                         log.info("[后台子代理] 消化步骤 {}/{} 工具 {} 结果: {} 字符",
-                                                digest + 1, 6, tc.name(),
+                                                digest + 1, 6, historyTc.name(),
                                                 obs != null ? obs.length() : 0);
                                     }
                                 }

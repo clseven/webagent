@@ -171,6 +171,20 @@ public class ChatMessage {
     }
 
     /**
+     * 创建携带多个工具调用的助手消息（并发 tool calling 协议）。
+     *
+     * <p>OpenAI 规范要求：一轮并发的多个 tool_call 放在同一条 assistant 消息的 tool_calls 数组里，
+     * 随后每个 tool_call 各跟一条 tool 结果消息。</p>
+     *
+     * @param toolCalls 本轮全部工具调用
+     * @return assistant 工具调用消息
+     */
+    public static ChatMessage assistantToolCallsMessage(List<LlmToolCall> toolCalls) {
+        return new ChatMessage("assistant", null, null, Instant.now().toEpochMilli(),
+                null, null, List.copyOf(toolCalls), null, null);
+    }
+
+    /**
      * 创建系统消息
      */
     public static ChatMessage systemMessage(String content) {

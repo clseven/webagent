@@ -85,11 +85,11 @@ public final class AgentHookExamples {
      * 收尾统计 Hook：循环即将退出时打印工具调用次数。
      */
     public static ReactAgent.StopHook summaryHook() {
-        return (messages) -> {
+        return (messages, finalizeAttempt) -> {
             long toolCount = messages.stream()
                     .filter(m -> "assistant".equals(m.getRole()) && !m.getToolCalls().isEmpty())
                     .count();
-            log.info("[Hook] Stop: 本轮共 {} 次工具调用", toolCount);
+            log.info("[Hook] Stop: 本轮共 {} 次工具调用，第 {} 次收尾", toolCount, finalizeAttempt);
             return null; // 允许退出
         };
     }

@@ -3820,6 +3820,37 @@ input:checked + .slider:before {
   font-family: var(--font-mono);
 }
 
+/* 一轮分组的卡片容器：区别于内层工具行，给「一轮」一个独立块感 */
+.process-item.live-step > summary {
+  min-height: 30px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+/* 外层轮标题允许换行+省略，避免长串撑爆 nowrap 标题列；细节徽章进可收缩的 preview 列 */
+.process-item.live-step > summary .process-item-title {
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 分组内的思考/推理文本块（区别于工具原因小字） */
+.process-step-text {
+  margin-bottom: 8px;
+  padding: 2px 0;
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.process-step-text:last-child {
+  margin-bottom: 0;
+}
+/* 内层工具行时间线嵌套在外层 process-detail 内：收紧间距，避免与外层端线叠加错位 */
+.process-detail > .process-timeline {
+  margin: 6px 0 2px;
+}
+.process-detail .process-timeline .process-item > summary {
+  min-height: 26px;
+}
+
 .process-tool-reason {
   margin-bottom: 10px;
   padding: 7px 9px;

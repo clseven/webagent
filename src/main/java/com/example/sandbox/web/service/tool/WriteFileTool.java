@@ -28,7 +28,8 @@ import java.util.Map;
  * </ul>
  *
  * <h3>注意</h3>
- * <p>写入操作会覆盖已有文件，不会询问确认。</p>
+ * <p>写入操作会覆盖已有文件。覆盖已存在但未读取过的文件会被文件状态检查（State Checks）
+ * 拦截，要求先 read_file 确认当前内容；新建文件不受此约束。</p>
  */
 @Component
 public class WriteFileTool implements Tool {

@@ -36,6 +36,20 @@ public interface SandboxClient {
     void writeFile(String path, String content);
 
     /**
+     * 判断文件是否已存在（用于区分"新建"与"覆盖"）。
+     *
+     * <p>沙箱没有单独的 stat 端点，实现可通过列父目录间接判断。默认实现返回
+     * {@code false}（当作新建放行），仅 AIO 客户端提供真实判断；这样接入 State Checks
+     * 的写前校验时，无法判断存在性的沙箱不会误拦新建。</p>
+     *
+     * @param path 文件路径
+     * @return true 表示文件已存在
+     */
+    default boolean fileExists(String path) {
+        return false;
+    }
+
+    /**
      * 下载文件（部分沙箱支持）
      *
      * @param path 文件路径

@@ -31,8 +31,8 @@ public class TextSplitterServiceImpl implements TextSplitterService {
 
     /**
      * 智能切片：按段落自然切分
-     * - 段落 <= 2000 字符：保留完整
-     * - 段落 > 2000 字符：按自定义默认参数（1500/200）二次切分
+     * - 段落 <= SMART_MAX_LENGTH(1500) 字符：保留完整
+     * - 段落 > SMART_MAX_LENGTH(1500) 字符：按 SMART_CHUNK_SIZE(750)/SMART_OVERLAP(75) 二次切分
      */
     @Override
     public List<String> splitSmart(String text) {
@@ -99,7 +99,9 @@ public class TextSplitterServiceImpl implements TextSplitterService {
                 if (para.length() > chunkSize) {
                     List<String> subChunks = splitLongText(para, chunkSize, overlap);
                     chunks.addAll(subChunks);
-                    currentChunk = new StringBuilder();
+                    // 保留最后一片的尾部 overlap，与后续段落衔接，避免上下文断裂
+                    String lastSub = subChunks.get(subChunks.size() - 1);
+                    currentChunk = new StringBuilder(getOverlapText(lastSub, overlap));
                 } else {
                     currentChunk.append(para);
                 }
@@ -139,6 +141,17 @@ public class TextSplitterServiceImpl implements TextSplitterService {
                 continue;
             }
 
+            // 单句本身超过 chunkSize：先保存已积累内容，再按字符硬截断兜底，保证单片不超过 chunkSize
+            if (sentence.length() > chunkSize) {
+                if (!currentChunk.isEmpty()) {
+                    chunks.add(currentChunk.toString().trim());
+                    currentChunk = new StringBuilder(getOverlapText(currentChunk.toString(), overlap));
+                }
+                chunks.addAll(splitHard(sentence, chunkSize, overlap));
+                currentChunk = new StringBuilder();
+                continue;
+            }
+
             String candidate = currentChunk.isEmpty() ? sentence : currentChunk + " " + sentence;
 
             if (candidate.length() > chunkSize && !currentChunk.isEmpty()) {
@@ -158,6 +171,28 @@ public class TextSplitterServiceImpl implements TextSplitterService {
             }
         }
 
+        return chunks;
+    }
+
+    /**
+     * 按固定字符数硬截断，带 overlap 滚动窗口。
+     * <p>用于 splitLongText 的兜底：当单个句子超过 chunkSize 时保证每片不超过 chunkSize。</p>
+     */
+    private List<String> splitHard(String text, int chunkSize, int overlap) {
+        List<String> chunks = new ArrayList<>();
+        int step = Math.max(chunkSize - overlap, 1);
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + chunkSize, text.length());
+            String piece = text.substring(start, end).trim();
+            if (!piece.isEmpty()) {
+                chunks.add(piece);
+            }
+            if (end >= text.length()) {
+                break;
+            }
+            start += step;
+        }
         return chunks;
     }
 

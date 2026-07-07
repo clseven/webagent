@@ -30,6 +30,9 @@ public class AioHttpClient {
 
     /** 安静健康检查使用的 JDK HTTP 客户端，避免 Reactor Netty 在预期失败时刷 WARN 日志。 */
     private static final java.net.http.HttpClient QUIET_HEALTH_CLIENT = java.net.http.HttpClient.newBuilder()
+            // 强制 HTTP/1.1：默认 HTTP/2 会在明文连接上发起 h2c 升级，沙箱 nginx 不支持，
+            // 可能导致健康检查路径返回 502 而误判沙箱不健康。
+            .version(java.net.http.HttpClient.Version.HTTP_1_1)
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 

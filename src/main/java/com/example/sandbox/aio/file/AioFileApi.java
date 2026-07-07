@@ -8,6 +8,7 @@ import org.springframework.http.MediaType;
 
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -165,6 +166,69 @@ public class AioFileApi {
             body.put("max_depth", maxDepth);
         }
         return http.postMap("/v1/file/list", body);
+    }
+
+    /**
+     * 判断文件是否已存在。
+     *
+     * <p>沙箱无单独 stat 端点，这里列目标文件的父目录（非递归），在返回项里按文件名匹配。
+     * 任何异常或无法解析都保守返回 false（当作新建），避免误拦。</p>
+     *
+     * @param path Sandbox 内绝对路径
+     * @return true 表示文件已存在
+     */
+    @SuppressWarnings("unchecked")
+    public boolean exists(String path) {
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        String normalized = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
+        int slash = normalized.lastIndexOf('/');
+        String parent = slash <= 0 ? "/" : normalized.substring(0, slash);
+        String name = normalized.substring(slash + 1);
+        if (name.isEmpty()) {
+            return false;
+        }
+        try {
+            Map<String, Object> response = list(parent, false, true, 1, false, "name", false);
+            if (!success(response)) {
+                return false;
+            }
+            Object data = response.get("data");
+            List<Map<String, Object>> entries = extractEntries(data);
+            for (Map<String, Object> entry : entries) {
+                Object entryName = entry.get("name");
+                if (entryName != null && name.equals(entryName.toString())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            log.warn("AIO 判断文件存在失败，保守当作新建: path={}, reason={}", path, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 从 `/v1/file/list` 的 data 字段提取目录项列表，兼容 data 直接为数组或 data.files/data.entries 的形态。
+     *
+     * @param data list 响应的 data 字段
+     * @return 目录项列表，无法解析时为空列表
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> extractEntries(Object data) {
+        if (data instanceof List<?> list) {
+            return (List<Map<String, Object>>) list;
+        }
+        if (data instanceof Map<?, ?> map) {
+            for (String key : new String[]{"files", "entries", "items", "list"}) {
+                Object value = ((Map<String, Object>) map).get(key);
+                if (value instanceof List<?> list) {
+                    return (List<Map<String, Object>>) list;
+                }
+            }
+        }
+        return List.of();
     }
 
     /**

@@ -369,6 +369,30 @@ const KnowledgePage = {
             }
         }
 
+        // 后端文档处理为真异步，上传接口返回时文档仍是 PENDING/PROCESSING，
+        // 需要前端轮询直到状态稳定为 READY/FAILED，否则界面会一直停在"等待处理"。
+        let pollTimer = null;
+
+        function stopStatusPolling() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        function startStatusPolling() {
+            stopStatusPolling();
+            pollTimer = setInterval(async () => {
+                await loadDocuments();
+                const hasPending = documents.value.some(
+                    d => d.status === 'PENDING' || d.status === 'PROCESSING'
+                );
+                if (!hasPending) {
+                    stopStatusPolling();
+                }
+            }, 3000);
+        }
+
         function handleFileSelect(event) {
             const files = Array.from(event.target.files);
             addToQueue(files);
@@ -459,6 +483,8 @@ const KnowledgePage = {
             uploading.value = false;
             uploadQueue.value = uploadQueue.value.filter(f => f.status !== 'success');
             await loadDocuments();
+            // 文档已进入异步处理，启动轮询直到全部 READY/FAILED
+            startStatusPolling();
         }
 
         async function deleteDoc(doc) {
@@ -531,6 +557,10 @@ const KnowledgePage = {
 
         Vue.onMounted(() => {
             loadKnowledgeBases();
+        });
+
+        Vue.onUnmounted(() => {
+            stopStatusPolling();
         });
 
         return {

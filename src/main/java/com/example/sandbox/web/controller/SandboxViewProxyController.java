@@ -60,6 +60,10 @@ public class SandboxViewProxyController {
     public SandboxViewProxyController(SandboxViewTokenService tokenService,
                                       SandboxServiceImpl sandboxService) {
         this(tokenService, sandboxService, HttpClient.newBuilder()
+                // 强制 HTTP/1.1：默认 HTTP/2 会在明文连接上发起 h2c 升级，附带
+                // Upgrade: h2c / HTTP2-Settings 头。沙箱容器内的 nginx 不支持 h2c，
+                // 把这些头转发给 code-server 后端会触发 502 Bad Gateway。
+                .version(HttpClient.Version.HTTP_1_1)
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .build());
     }

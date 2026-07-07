@@ -52,4 +52,19 @@ public interface Tool {
      * @return 执行结果（成功返回结果，失败返回错误消息）
      */
     String execute(String sessionId, Map<String, Object> arguments);
+
+    /**
+     * 声明工具的副作用类型，供并发调度器决定能否并行执行。
+     *
+     * <p>默认返回 {@link ToolSideEffect#EXCLUSIVE}（最保守，完全串行）。覆盖建议：
+     * 确认无副作用的纯读类工具覆盖为 {@link ToolSideEffect#READ}（可并发）；
+     * 改文件/沙箱状态的工具覆盖为 {@link ToolSideEffect#WRITE}（串行，与 READ 互斥）；
+     * 其余保持默认 EXCLUSIVE。漏标不会导致数据竞争，只是失去并发收益；标错（把有副作用
+     * 标成 READ）才危险。</p>
+     *
+     * @return 工具副作用类型
+     */
+    default ToolSideEffect getSideEffect() {
+        return ToolSideEffect.EXCLUSIVE;
+    }
 }

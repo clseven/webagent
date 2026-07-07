@@ -2,6 +2,7 @@ package com.example.sandbox.web.service.tool;
 
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
+import com.example.sandbox.web.service.ToolSideEffect;
 import com.example.sandbox.web.service.search.SearchProvider;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -86,6 +87,16 @@ public class WebSearchTool implements Tool {
             }
         }
         return webClient;
+    }
+
+    /**
+     * 网络搜索为纯读操作，不碰共享状态，可安全并发。
+     *
+     * @return {@link ToolSideEffect#READ}
+     */
+    @Override
+    public ToolSideEffect getSideEffect() {
+        return ToolSideEffect.READ;
     }
 
     @Override

@@ -87,12 +87,32 @@ public record SseEvent(
      * @param displayReason 面向用户展示的调用原因，可为空
      */
     public static SseEvent toolCall(String tool, Map<String, ?> args, int stepIndex, String displayReason) {
+        return toolCall(tool, args, stepIndex, displayReason, null);
+    }
+
+    /**
+     * 工具调用开始，并携带用户可见的行动说明与工具调用 ID。
+     *
+     * <p>并发执行下，前端靠 {@code toolCallId} 把 tool_call 与 observation 配对到同一工具行，
+     * 不再依赖到达顺序。单工具或旧调用点可传 null。</p>
+     *
+     * @param tool          工具名称
+     * @param args          工具参数
+     * @param stepIndex     当前轮次
+     * @param displayReason 面向用户展示的调用原因，可为空
+     * @param toolCallId    工具调用 ID，可为空（兼容旧调用点）
+     */
+    public static SseEvent toolCall(String tool, Map<String, ?> args, int stepIndex,
+                                    String displayReason, String toolCallId) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("tool", tool);
         data.put("args", args != null ? args : Map.of());
         data.put("stepIndex", stepIndex);
         if (displayReason != null && !displayReason.isBlank()) {
             data.put("displayReason", displayReason);
+        }
+        if (toolCallId != null && !toolCallId.isBlank()) {
+            data.put("toolCallId", toolCallId);
         }
         return new SseEvent("tool_call", data);
     }
@@ -163,10 +183,24 @@ public record SseEvent(
      * @param elapsed 已执行毫秒数
      */
     public static SseEvent toolExecuting(String tool, long elapsed) {
-        return new SseEvent("tool_executing", Map.of(
-            "tool", tool,
-            "elapsed", elapsed
-        ));
+        return toolExecuting(tool, elapsed, null);
+    }
+
+    /**
+     * 工具执行中（可选，前端显示转圈动画和耗时）。
+     *
+     * @param tool       工具名称
+     * @param elapsed    已执行毫秒数
+     * @param toolCallId 工具调用 ID，可为空；并发下前端据此定位正在执行的工具行
+     */
+    public static SseEvent toolExecuting(String tool, long elapsed, String toolCallId) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("tool", tool);
+        data.put("elapsed", elapsed);
+        if (toolCallId != null && !toolCallId.isBlank()) {
+            data.put("toolCallId", toolCallId);
+        }
+        return new SseEvent("tool_executing", data);
     }
 
     /**
@@ -189,12 +223,31 @@ public record SseEvent(
      * @param displayReason 面向用户展示的调用原因，可为空
      */
     public static SseEvent observation(String tool, String result, long duration, String displayReason) {
+        return observation(tool, result, duration, displayReason, null);
+    }
+
+    /**
+     * 工具执行结果，并携带与调用开始一致的用户可见行动说明和工具调用 ID。
+     *
+     * <p>{@code toolCallId} 必须与对应的 {@link #toolCall} 一致，前端据此把结果配对到工具行。</p>
+     *
+     * @param tool          工具名称
+     * @param result        执行结果
+     * @param duration      执行耗时（毫秒）
+     * @param displayReason 面向用户展示的调用原因，可为空
+     * @param toolCallId    工具调用 ID，可为空（兼容旧调用点）
+     */
+    public static SseEvent observation(String tool, String result, long duration,
+                                       String displayReason, String toolCallId) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("tool", tool);
         data.put("result", result);
         data.put("duration", duration);
         if (displayReason != null && !displayReason.isBlank()) {
             data.put("displayReason", displayReason);
+        }
+        if (toolCallId != null && !toolCallId.isBlank()) {
+            data.put("toolCallId", toolCallId);
         }
         return new SseEvent("observation", data);
     }

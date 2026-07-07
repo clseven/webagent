@@ -47,10 +47,9 @@ updated: 2026-07-06
 
 ## Hook 行为
 
-- `AgentSearchPolicyHook` 可以根据用户任务和计划限制不合适的搜索路径。
 - `viewImageHook` 在 `view_image` 后调用视觉模型，并把观察文本注入。
 - `largeOutputHook` 可处理过大的工具输出。
-- `FinalTodoGuardHook` 在 TodoState 未闭环时阻止最终回答。
+- `FinalTodoGuardHook`（Stop Hook）两层把关最终回答：先看 TodoState 前置硬信号（未闭环/缺证据直接拦），干净后注入证据自检提示让模型基于证据自判该不该收尾。由 `ReactAgent` 持有的收尾尝试计数收敛（连续想收尾却不补查则强制放行），另一端由 `MAX_ITERATIONS` 兜底。搜索不再有专属 Hook，所有工具一视同仁接受证据验收。
 
 ## 失败行为
 

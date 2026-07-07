@@ -115,9 +115,146 @@ const ChatArtifactGallery = {
     `,
 };
 
+// 工具行/步骤文案纯函数：提到模块顶层，供 setup 与子组件、流式与历史共用，保证两态渲染一致。
+const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
+const completedActionText = (text) => {
+    const value = String(text || '').trim();
+    return value.startsWith('正在') ? `已${value.substring(2)}` : value;
+};
+const argText = (args, keys, max = 90) => {
+    if (!args) return '';
+    for (const key of keys) {
+        const value = args[key];
+        if (value == null || value === '') continue;
+        const text = Array.isArray(value) ? value.join(' ') : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+        const trimmed = previewText(text, max);
+        if (trimmed) return trimmed;
+    }
+    return '';
+};
+const firstUrl = (value) => {
+    const match = String(value || '').match(/https?:\/\/[^\s"'<>]+/i);
+    return match ? match[0].replace(/[),.;，。]+$/, '') : '';
+};
+const toolPreview = (e) => {
+    const tool = e.tool || '';
+    const args = e.args || {};
+    const resultUrl = firstUrl(e.result);
+    const argUrl = firstUrl(argText(args, ['url', 'href', 'target'], 140));
+    const codeUrl = firstUrl(args.code || args.script);
+    if (resultUrl) return previewText(resultUrl, 140);
+    if (argUrl) return previewText(argUrl, 140);
+    if (codeUrl) return previewText(codeUrl, 140);
+    if (tool.includes('search')) return argText(args, ['query', 'q', 'keyword', 'keywords'], 120);
+    if (['read_file', 'write_file', 'file_replace', 'str_replace_editor', 'download_file', 'parse_document', 'convert_to_markdown', 'view_image'].includes(tool)) {
+        return argText(args, ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'source_path', 'sourcePath', 'relativePath'], 120);
+    }
+    if (tool === 'list_files') return argText(args, ['path', 'directory', 'dir'], 120);
+    if (tool === 'execute_command') return argText(args, ['command', 'cmd'], 120);
+    if (tool === 'browser_action') return argText(args, ['action_type', 'key', 'keys'], 80);
+    if (tool === 'todo_write' && Array.isArray(args.todos)) return `${args.todos.length} 项`;
+    return '';
+};
+const processTitle = (e) => {
+    if (e.type === 'toolCall' || e.type === 'toolResult') {
+        const reason = e.displayReason || '';
+        if (reason) return e.type === 'toolResult' ? completedActionText(reason) : reason;
+        return e.type === 'toolResult' ? '已处理当前任务' : '正在处理当前任务';
+    }
+    switch (e.type) {
+        case 'plan': return '规划任务';
+        case 'thinking': return '已思考';
+        case 'reasoning': return '已推理';
+        case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新');
+        default: return '处理';
+    }
+};
+const processPreview = (e) => {
+    if (e.type === 'toolCall' || e.type === 'toolResult') {
+        const meta = toolPreview(e);
+        if (meta) return meta;
+    }
+    if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
+    if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
+    return previewText(e.content, 90);
+};
+
+// 把扁平事件流按 stepIndex 聚合成轮：流式与历史共用同一套分层渲染。
+// stepIndex 缺失时回退 groups.length（新建独立轮），避免无序号事件堆到第 0 轮。
+const ChatStepGrouper = {
+    group(events) {
+        const groups = [];
+        const stepMap = new Map();
+        const ensureStep = (stepIndex) => {
+            let g = stepMap.get(stepIndex);
+            if (!g) {
+                g = { kind: 'step', stepIndex, thinking: '', reasoning: '', tools: [] };
+                stepMap.set(stepIndex, g);
+                groups.push(g);
+            }
+            return g;
+        };
+        for (const e of events || []) {
+            if (e.type === 'plan') { groups.push({ kind: 'plan', content: e.content || '' }); continue; }
+            if (e.type === 'status') { groups.push({ kind: 'status', content: e.content || '' }); continue; }
+            const si = e.stepIndex != null ? e.stepIndex : groups.length;
+            const g = ensureStep(si);
+            if (e.type === 'thinking') g.thinking = e.content || '';
+            else if (e.type === 'reasoning') g.reasoning = e.content || '';
+            else if (e.type === 'toolCall' || e.type === 'toolResult') g.tools.push(e);
+        }
+        return groups;
+    },
+    allDone(group) {
+        return Array.isArray(group?.tools) && group.tools.length > 0
+            && group.tools.every(t => t.status === 'completed');
+    },
+    // 返回 {title, badge}：title 进 nowrap 标题列（短），badge 进可收缩的 preview 列，避免长串撑爆布局。
+    overview(group) {
+        if (!group || group.kind !== 'step') {
+            if (group?.kind === 'plan') return { title: '规划任务', badge: '' };
+            if (group?.kind === 'status') return { title: '状态更新', badge: '' };
+            return { title: '处理中', badge: '' };
+        }
+        const tools = group.tools || [];
+        if (!tools.length) return { title: group.thinking ? '思考中…' : '处理中', badge: '' };
+        const names = tools.map(t => String(t.tool || ''));
+        const allSearch = names.every(n => n.toLowerCase().includes('search'));
+        const allCommand = names.every(n => n === 'execute_command' || n === 'execute_bash');
+        const action = allSearch ? '搜索' : (allCommand ? '命令运行' : '执行');
+        if (this.allDone(group)) return { title: `已完成 ${tools.length} 个工具`, badge: '' };
+        const running = tools.filter(t => t.status === 'running').length;
+        return { title: `${action}中…`, badge: `${tools.length} 个工具 · ${running} 进行中` };
+    },
+};
+if (typeof window !== 'undefined') window.ChatStepGrouper = ChatStepGrouper;
+
+// 单个工具调用行：流式与历史共用，消除两处手写模板重复。
+const ChatToolStep = {
+    props: {
+        event: { type: Object, required: true },
+    },
+    template: `
+        <details class="process-item">
+            <summary>
+                <span :class="['process-dot', event.status === 'running' ? 'active' : 'completed']"></span>
+                <span class="process-item-title">{{ processTitle(event) }}</span>
+                <span class="process-preview">{{ processPreview(event) }}</span>
+            </summary>
+            <div class="process-detail">
+                <div v-if="event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
+                <div class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
+                <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
+                <div v-else>执行中...</div>
+            </div>
+        </details>
+    `,
+    methods: { processTitle, processPreview },
+};
+
 // 对话页组件
 const ChatPage = {
-    components: { ChatArtifactCard, ChatArtifactGallery },
+    components: { ChatArtifactCard, ChatArtifactGallery, ChatToolStep },
     template: `
         <div
             class="chat-workspace chatgpt-workspace"
@@ -218,22 +355,31 @@ const ChatPage = {
                                             <summary class="process-summary">
                                                 <span class="process-check">✓</span>
                                                 <span>已处理</span>
-                                                <span class="process-count">{{ msg.events.length }} 个步骤</span>
+                                                <span class="process-count">{{ historySteps(msg).length }} 轮</span>
                                             </summary>
                                             <div class="process-timeline">
-                                                <details v-for="(event, idx) in msg.events" :key="msg.timestamp + '-event-' + idx" class="process-item">
-                                                    <summary>
-                                                        <span :class="['process-dot', event.status === 'running' ? 'active' : 'completed']"></span>
-                                                        <span class="process-item-title">{{ processTitle(event) }}</span>
-                                                        <span class="process-preview">{{ processPreview(event) }}</span>
+                                                <details v-for="(group, gi) in historySteps(msg)" :key="msg.timestamp + '-step-' + gi" class="process-item live-step">
+                                                    <summary v-if="group.kind === 'step'">
+                                                        <span :class="['process-dot', stepAllDone(group) ? 'completed' : 'active']"></span>
+                                                        <span class="process-item-title">{{ stepOverview(group) }}</span>
+                                                        <span v-if="stepOverviewBadge(group)" class="process-preview">{{ stepOverviewBadge(group) }}</span>
                                                     </summary>
-                                                    <div class="process-detail">
-                                                        <div v-if="(event.type === 'toolCall' || event.type === 'toolResult') && event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
-                                                        <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
-                                                        <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
-                                                        <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
-                                                        <div v-else>执行中...</div>
+                                                    <summary v-else-if="group.kind === 'plan'">
+                                                        <span class="process-dot completed"></span>
+                                                        <span class="process-item-title">规划任务</span>
+                                                    </summary>
+                                                    <summary v-else>
+                                                        <span class="process-dot active"></span>
+                                                        <span class="process-item-title">{{ group.content ? previewText(group.content, 40) : '状态更新' }}</span>
+                                                    </summary>
+                                                    <div class="process-detail" v-if="group.kind === 'step'">
+                                                        <div v-if="group.thinking" class="process-step-text" v-html="renderMarkdown(group.thinking)"></div>
+                                                        <div v-if="group.reasoning" class="process-step-text" v-html="renderMarkdown(group.reasoning)"></div>
+                                                        <div v-if="group.tools && group.tools.length" class="process-timeline">
+                                                            <chat-tool-step v-for="(tool, ti) in group.tools" :key="msg.timestamp + '-tool-' + gi + '-' + ti" :event="tool"></chat-tool-step>
+                                                        </div>
                                                     </div>
+                                                    <div class="process-detail" v-else v-html="renderMarkdown(group.content || '')"></div>
                                                 </details>
                                             </div>
                                         </details>
@@ -268,27 +414,37 @@ const ChatPage = {
                                     <summary class="process-summary">
                                         <span class="thinking-spinner small"></span>
                                         <span>{{ streamingStatus }}</span>
-                                        <span v-if="currentEvents.length" class="process-count">已完成 {{ currentEvents.length }} 个步骤</span>
+                                        <span v-if="groupedSteps.length" class="process-count">{{ groupedSteps.length }} 轮</span>
                                     </summary>
                                     <div class="process-timeline">
-                                        <details v-for="(event, idx) in currentEvents" :key="'live-event-' + idx" class="process-item">
-                                            <summary>
-                                                <span :class="['process-dot', event.status === 'running' ? 'active' : 'completed']"></span>
-                                                <span class="process-item-title">{{ processTitle(event) }}</span>
-                                                <span class="process-preview">{{ processPreview(event) }}</span>
+                                        <details v-for="(group, gi) in groupedSteps" :key="'live-step-' + gi"
+                                                 class="process-item live-step" :open="gi === groupedSteps.length - 1">
+                                            <summary v-if="group.kind === 'step'">
+                                                <span :class="['process-dot', stepAllDone(group) ? 'completed' : 'active']"></span>
+                                                <span class="process-item-title">{{ stepOverview(group) }}</span>
+                                                <span v-if="stepOverviewBadge(group)" class="process-preview">{{ stepOverviewBadge(group) }}</span>
                                             </summary>
-                                            <div class="process-detail">
-                                                <div v-if="(event.type === 'toolCall' || event.type === 'toolResult') && event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
-                                                <div v-if="event.type === 'toolCall' || event.type === 'toolResult'" class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
-                                                <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
-                                                <div v-else-if="event.type !== 'toolCall'" v-html="renderMarkdown(event.content || '')"></div>
-                                                <div v-else>执行中...</div>
+                                            <summary v-else-if="group.kind === 'plan'">
+                                                <span class="process-dot completed"></span>
+                                                <span class="process-item-title">规划任务</span>
+                                            </summary>
+                                            <summary v-else>
+                                                <span class="process-dot active"></span>
+                                                <span class="process-item-title">{{ group.content ? previewText(group.content, 40) : '状态更新' }}</span>
+                                            </summary>
+                                            <div class="process-detail" v-if="group.kind === 'step'">
+                                                <div v-if="group.thinking" class="process-step-text" v-html="renderMarkdown(group.thinking)"></div>
+                                                <div v-if="group.reasoning" class="process-step-text" v-html="renderMarkdown(group.reasoning)"></div>
+                                                <div v-if="group.tools && group.tools.length" class="process-timeline">
+                                                    <chat-tool-step v-for="(tool, ti) in group.tools" :key="'live-tool-' + gi + '-' + ti" :event="tool"></chat-tool-step>
+                                                </div>
                                             </div>
+                                            <div class="process-detail" v-else v-html="renderMarkdown(group.content || '')"></div>
                                         </details>
                                         <details v-if="currentReasoning" class="process-item active" open>
                                             <summary>
                                                 <span class="process-dot active"></span>
-                                                <span class="process-item-title">正在推理</span>
+                                                <span class="process-item-title">实时推理中…</span>
                                                 <span class="process-preview">{{ previewText(currentReasoning, 80) }}</span>
                                             </summary>
                                             <div class="process-detail" v-html="renderMarkdown(currentReasoning)"></div>
@@ -799,16 +955,29 @@ const ChatPage = {
             return [...messages.value, stream.pendingUserMessage];
         });
 
+        // 流式事件按 stepIndex 聚合成轮；纯函数见模块顶层 ChatStepGrouper。
+        const groupedSteps = Vue.computed(() => ChatStepGrouper.group(currentEvents.value));
+        // 历史消息事件同样按轮聚合，让流式与完成态走同一套分层渲染，避免收尾时视觉跳变。
+        const historySteps = (msg) => ChatStepGrouper.group(msg?.events || []);
+        const stepAllDone = ChatStepGrouper.allDone;
+        const stepOverview = (group) => ChatStepGrouper.overview(group).title;
+        const stepOverviewBadge = (group) => ChatStepGrouper.overview(group).badge;
+
         const streamingStatus = Vue.computed(() => {
-            switch (streamPhase.value) {
+            const phase = streamPhase.value;
+            switch (phase) {
                 case 'planning': return '正在规划';
                 case 'plan_ready': return '规划完成';
+                case 'answer': return '整理回答';
+            }
+            const groups = groupedSteps.value;
+            const last = groups.length ? groups[groups.length - 1] : null;
+            if (last && last.kind === 'step' && last.tools && last.tools.length) return stepOverview(last);
+            switch (phase) {
                 case 'thinking': return '正在思考';
                 case 'generating': return '正在生成';
                 case 'processing': return '正在处理';
-                case 'tool': return currentToolCall.value ? (currentToolCall.value.displayReason || '正在处理当前任务') : '执行工具';
-                case 'tool_done': return '工具完成';
-                case 'answer': return '整理回答';
+                case 'tool': case 'tool_done': return last ? stepOverview(last) : '执行工具';
                 default: return '处理中';
             }
         });
@@ -1245,11 +1414,12 @@ const ChatPage = {
             const event = {
                 type: 'toolCall',
                 tool: data.tool,
+                toolCallId: data.toolCallId || '',
                 args: data.args || {},
                 displayReason: data.displayReason || '',
                 elapsed: data.elapsed || 0,
                 status: 'running',
-                stepIndex: data.stepIndex || nextStepIndex(stream, 'toolCall')
+                stepIndex: data.stepIndex || stream.currentStepIndex || nextStepIndex(stream, 'toolCall')
             };
             stream.currentEvents.push(event);
             stream.currentToolCall = { ...event, eventIndex: stream.currentEvents.length - 1 };
@@ -1257,9 +1427,21 @@ const ChatPage = {
 
         // 将工具结果合并回对应的运行中步骤；如果开始事件丢失，则补一条完整结果。
         const completeToolCallEvent = (stream, data) => {
-            let eventIndex = stream.currentToolCall && stream.currentToolCall.eventIndex != null
-                ? stream.currentToolCall.eventIndex
-                : -1;
+            // 并发下到达顺序不保证，优先按 toolCallId 把结果配对到对应工具行
+            let eventIndex = -1;
+            if (data.toolCallId) {
+                for (let i = stream.currentEvents.length - 1; i >= 0; i--) {
+                    const event = stream.currentEvents[i];
+                    if (event.type === 'toolCall' && event.status === 'running' && event.toolCallId === data.toolCallId) {
+                        eventIndex = i;
+                        break;
+                    }
+                }
+            }
+            // id 缺失时回退到单一 currentToolCall（兼容未带 id 的旧流，如消化路径）
+            if (eventIndex < 0 && stream.currentToolCall && stream.currentToolCall.eventIndex != null) {
+                eventIndex = stream.currentToolCall.eventIndex;
+            }
             if (eventIndex < 0) {
                 for (let i = stream.currentEvents.length - 1; i >= 0; i--) {
                     const event = stream.currentEvents[i];
@@ -1274,17 +1456,21 @@ const ChatPage = {
                 type: 'toolResult',
                 originalType: 'toolCall',
                 tool: data.tool || previous?.tool || stream.currentToolCall?.tool || '',
+                toolCallId: previous?.toolCallId || data.toolCallId || '',
                 args: previous?.args || stream.currentToolCall?.args || {},
                 displayReason: data.displayReason || previous?.displayReason || stream.currentToolCall?.displayReason || '',
                 result: data.result || '',
                 duration: data.duration,
                 elapsed: data.duration || previous?.elapsed || 0,
                 status: 'completed',
-                stepIndex: previous?.stepIndex || nextStepIndex(stream, 'toolCall')
+                stepIndex: previous?.stepIndex || stream.currentStepIndex || nextStepIndex(stream, 'toolCall')
             };
             if (eventIndex >= 0) stream.currentEvents.splice(eventIndex, 1, completed);
             else stream.currentEvents.push(completed);
-            stream.currentToolCall = null;
+            // 并发下 currentToolCall 可能指向别的工具行，仅在配对的就是它时才清空
+            if (stream.currentToolCall && stream.currentToolCall.eventIndex === eventIndex) {
+                stream.currentToolCall = null;
+            }
         };
 
         // 处理某个会话的 SSE 事件；所有写入都限定在该会话对应的 live stream 上。
@@ -1294,21 +1480,29 @@ const ChatPage = {
             const { type, data = {} } = event || {};
             switch (type) {
                 case 'plan': stream.currentEvents.push({ type: 'plan', content: data.content }); stream.streamPhase = 'plan_ready'; scrollToBottom(); break;
-                case 'thinking_start': stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'thinking'; scrollToBottom(); break;
+                case 'thinking_start': stream.currentThinking = ''; stream.currentReasoning = ''; stream.currentStepIndex = data.stepIndex || 0; stream.streamPhase = 'thinking'; scrollToBottom(); break;
                 case 'token': stream.currentThinking += data.content || ''; stream.streamPhase = 'generating'; scrollToBottom(); break;
                 case 'reasoning_token': stream.currentReasoning += data.content || ''; stream.streamPhase = 'thinking'; scrollToBottom(); break;
                 case 'thinking_end':
-                    if (stream.currentThinking) stream.currentEvents.push({ type: 'thinking', content: stream.currentThinking, stepIndex: nextStepIndex(stream, 'thinking') });
-                    if (stream.currentReasoning) stream.currentEvents.push({ type: 'reasoning', content: stream.currentReasoning, stepIndex: nextStepIndex(stream, 'reasoning') });
+                    if (stream.currentThinking) stream.currentEvents.push({ type: 'thinking', content: stream.currentThinking, stepIndex: stream.currentStepIndex || nextStepIndex(stream, 'thinking') });
+                    if (stream.currentReasoning) stream.currentEvents.push({ type: 'reasoning', content: stream.currentReasoning, stepIndex: stream.currentStepIndex || nextStepIndex(stream, 'reasoning') });
                     stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'processing'; scrollToBottom(); break;
                 case 'tool_call': appendToolCallEvent(stream, data); stream.streamPhase = 'tool'; scrollToBottom(); break;
-                case 'tool_executing':
-                    if (stream.currentToolCall) {
-                        stream.currentToolCall.elapsed = data.elapsed || 0;
-                        const eventIndex = stream.currentToolCall.eventIndex;
-                        if (eventIndex != null && stream.currentEvents[eventIndex]) stream.currentEvents[eventIndex].elapsed = stream.currentToolCall.elapsed;
+                case 'tool_executing': {
+                    // 并发下按 toolCallId 定位正在执行的工具行；id 缺失时回退到 currentToolCall
+                    const execId = data.toolCallId;
+                    const targetIndex = execId
+                        ? stream.currentEvents.findIndex(e => e.type === 'toolCall' && e.status === 'running' && e.toolCallId === execId)
+                        : (stream.currentToolCall ? stream.currentToolCall.eventIndex : -1);
+                    if (targetIndex >= 0 && stream.currentEvents[targetIndex]) {
+                        stream.currentEvents[targetIndex].elapsed = data.elapsed || 0;
+                        if (stream.currentToolCall && stream.currentToolCall.eventIndex === targetIndex) {
+                            stream.currentToolCall.elapsed = data.elapsed || 0;
+                        }
                     }
-                    stream.streamPhase = 'tool'; break;
+                    stream.streamPhase = 'tool';
+                    break;
+                }
                 case 'observation':
                     completeToolCallEvent(stream, data); stream.streamPhase = 'tool_done'; scrollToBottom(); break;
                 case 'answer':
@@ -1699,68 +1893,7 @@ const ChatPage = {
         };
         const renderContent = (msg) => msg.role === 'assistant' ? marked.parse(msg.content || '', { renderer: chatMarkdownRenderer }) : renderUserContent(msg);
         const renderMarkdown = (c) => c ? marked.parse(c, { renderer: chatMarkdownRenderer }) : '';
-        const previewText = (c, max = 90) => { if (!c) return ''; const t = String(c).replace(/\s+/g, ' ').trim(); return t.length > max ? t.substring(0, max) + '...' : t; };
-        const completedActionText = (text) => {
-            const value = String(text || '').trim();
-            return value.startsWith('正在') ? `已${value.substring(2)}` : value;
-        };
-        const argText = (args, keys, max = 90) => {
-            if (!args) return '';
-            for (const key of keys) {
-                const value = args[key];
-                if (value == null || value === '') continue;
-                const text = Array.isArray(value) ? value.join(' ') : (typeof value === 'object' ? JSON.stringify(value) : String(value));
-                const trimmed = previewText(text, max);
-                if (trimmed) return trimmed;
-            }
-            return '';
-        };
-        const firstUrl = (value) => {
-            const match = String(value || '').match(/https?:\/\/[^\s"'<>]+/i);
-            return match ? match[0].replace(/[),.;，。]+$/, '') : '';
-        };
-        const toolPreview = (e) => {
-            const tool = e.tool || '';
-            const args = e.args || {};
-            const resultUrl = firstUrl(e.result);
-            const argUrl = firstUrl(argText(args, ['url', 'href', 'target'], 140));
-            const codeUrl = firstUrl(args.code || args.script);
-            if (resultUrl) return previewText(resultUrl, 140);
-            if (argUrl) return previewText(argUrl, 140);
-            if (codeUrl) return previewText(codeUrl, 140);
-            if (tool.includes('search')) return argText(args, ['query', 'q', 'keyword', 'keywords'], 120);
-            if (['read_file', 'write_file', 'file_replace', 'str_replace_editor', 'download_file', 'parse_document', 'convert_to_markdown', 'view_image'].includes(tool)) {
-                return argText(args, ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'source_path', 'sourcePath', 'relativePath'], 120);
-            }
-            if (tool === 'list_files') return argText(args, ['path', 'directory', 'dir'], 120);
-            if (tool === 'execute_command') return argText(args, ['command', 'cmd'], 120);
-            if (tool === 'browser_action') return argText(args, ['action_type', 'key', 'keys'], 80);
-            if (tool === 'todo_write' && Array.isArray(args.todos)) return `${args.todos.length} 项`;
-            return '';
-        };
-        const processTitle = (e) => {
-            if (e.type === 'toolCall' || e.type === 'toolResult') {
-                const reason = e.displayReason || '';
-                if (reason) return e.type === 'toolResult' ? completedActionText(reason) : reason;
-                return e.type === 'toolResult' ? '已处理当前任务' : '正在处理当前任务';
-            }
-            switch (e.type) {
-                case 'plan': return '规划任务';
-                case 'thinking': return '已思考';
-                case 'reasoning': return '已推理';
-                case 'status': return (e.content || '').length > 40 ? (e.content || '').substring(0, 40) + '...' : (e.content || '状态更新');
-                default: return '处理';
-            }
-        };
-        const processPreview = (e) => {
-            if (e.type === 'toolCall' || e.type === 'toolResult') {
-                const meta = toolPreview(e);
-                if (meta) return meta;
-            }
-            if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
-            if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
-            return previewText(e.content, 90);
-        };
+        // previewText / processTitle / processPreview / toolPreview 等纯函数已提到模块顶层，供子组件与历史/流式共用。
         const formatTime = (ts) => { if (!ts) return ''; const d = new Date(ts); const now = new Date(); const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0'); return d.toDateString() === now.toDateString() ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`; };
 
         const scrollToBottom = () => { Vue.nextTick(() => { if (messagesEl.value) { messagesEl.value.scrollTop = messagesEl.value.scrollHeight; checkScrollPosition(); } }); };
@@ -1942,7 +2075,7 @@ const ChatPage = {
             batchDeletePending, batchDeleteError, batchDeleting,
             sessionPendingDelete, deleteSessionError, deletingSessionId,
             streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
-            finalAnswer, finalAnswerSaved, currentEvents,
+            finalAnswer, finalAnswerSaved, currentEvents, groupedSteps, historySteps, stepOverview, stepOverviewBadge, stepAllDone,
             liveArtifacts, messageArtifacts, artifactBlobUrl, artifactLoadError,
             previewArtifact, previewArtifactGallery, downloadArtifact,
             onAppChange, selectApp, selectSession, createSession,

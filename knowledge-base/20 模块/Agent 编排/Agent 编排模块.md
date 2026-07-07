@@ -25,7 +25,7 @@ Agent 编排模块负责把一次用户消息转成“准备上下文 → 规划
 - `AgentTurnContextService`：准备历史、上传文件上下文、应用配置、Skill prompt、知识库增强和工具上下文。
 - `AgentPlannerService`：调用 PlanAgent 生成任务计划，并记录规划 token。
 - `ReactAgentFactory`：按同步或流式路径创建 `ReactAgent`。
-- `ReactAgentHookService`：集中注册 Hook，注入 `view_image` 视觉观察、搜索策略门禁、TodoState 最终门禁和 `run_subagent` 父 Agent。
+- `ReactAgentHookService`：集中注册 Hook，注入 `view_image` 视觉观察、最终回答门禁（TodoState 前置 + 证据自检）和 `run_subagent` 父 Agent。
 
 ## 同步与流式入口
 
@@ -48,7 +48,7 @@ Agent 编排模块负责把一次用户消息转成“准备上下文 → 规划
 
 - 规划和执行分离：PlanAgent 提供目标、成功信号和初始策略，ReactAgent 负责行动。
 - 多模型分工：DeepSeek 默认负责 planner/executor，Agnes 只负责图片观察。
-- Hook 化扩展：图片观察、搜索策略、TodoState 最终门禁和大输出处理都通过 Hook 进入执行循环。
+- Hook 化扩展：图片观察、最终回答门禁（TodoState + 证据自检）和大输出处理都通过 Hook 进入执行循环。
 - TodoState 闭环：多步任务可用 `todo_write` 显式维护目标、状态、证据和阻塞原因。
 - 子代理：`run_subagent` 通过父 Agent fork 出受限工具集执行子任务，可同步或后台运行。
 - MCP 动态工具：MCP server 的工具会由 `McpClientToolProvider` 转成普通 `Tool`，再进入同一执行器。

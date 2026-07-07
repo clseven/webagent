@@ -457,3 +457,66 @@ endpoint。代理层支持常见 HTTP 方法、Location 头改写和 WebSocket U
 **理由**：该方案更接近 OpenSandbox Ingress 的 URI mode，既保持公网同源访问，也能复用 AIO 内部
 VNC、code-server 和 terminal 路由。endpoint 动态解析可以适配用户级沙箱绑定和沙箱重建；Location
 改写和 WebSocket 代理则保证 code-server/noVNC 这类视图不会跳出同源代理或在 Upgrade 阶段失败。
+
+### ADR-012 收尾治理改为 Stop Hook 证据自检，删除 `AgentSearchPolicyHook`
+
+**时间**：2026-07
+
+**决策**：删除基于硬规则的 `AgentSearchPolicyHook`（Pre Hook），把“该不该继续/该不该收尾”的判断挪到 Stop Hook 让模型基于证据自判。`FinalTodoGuardHook` 升级为两层：先看 TodoState 前置硬信号（未闭环/缺证据直接拦），干净后注入证据自检提示（B 方案，harness 不解析模型输出，只靠模型行为——继续调工具则循环继续、给答案则放行）。收敛由 `ReactAgent` 持有的“收尾尝试计数”控制：模型准备收尾时 +1、实际调工具时归零，连续 `MAX_SELF_CHECK_ROUNDS`(=2) 次仍想收尾则第 3 次强制放行；另一端由现有 `MAX_ITERATIONS` 兜底。
+
+**排除方案**：
+- 保留 `AgentSearchPolicyHook` 的方向闸/预算闸：不看证据，只按搜索词正则和写死次数上限判断，简单任务被多搜、复杂任务被掐断；方向判断靠英文标识符正则，对纯中文请求失效；且只约束搜索，读文件/跑命令等不受治理，不一致。
+- 为搜索单造一套编排：搜索只是工具之一，不该有特殊待遇，靠通用 `ReactAgent` 循环消化发散即可。
+- harness 解析模型自检输出再判定：增加脆弱的文本解析耦合；B 方案靠模型二选一行动，harness 只注入提示、不解析标记，更稳。
+- 计数器放在 hook 实例里：hook 感知不到“模型调了工具”这个发生在主循环里的事件；故状态归 `ReactAgent`（选项 C），hook 只读传入的计数。
+
+**理由**：“该不该收尾”本质是需要看证据才能判断的决策，硬塞进 Pre Hook 用正则常量干只是创可贴。移到 Stop Hook 后，方向判断由自检第 1 条（模型拆解子问题自然发现跑题）接管，预算由拦截计数 + `MAX_ITERATIONS` 接管，搜索不再有专属逻辑——读文件、跑命令、搜索一视同仁接受证据验收。不新增 Agent、不新增循环，复用现有 Stop Hook 机制。
+
+**约束**：`ReactAgent` 由工厂按会话新建、一个实例只跑一条路径（`run` 或 `runStream`），故收尾计数用实例级字段即可，天然按会话隔离；`StopHook` 接口签名带 `finalizeAttempt` 入参（状态归执行器、hook 只读不持有）；自检提示要求“在思考中完成”，避免污染最终答案；本方案为三方案（Stop Hook 自检 / State Checks / 并发执行）中的第一批，后两者独立立项、分批上线。
+
+### ADR-013 文件状态检查用写前现场 re-read hash，不追踪中间事件
+
+**时间**：2026-07
+
+**决策**：新增 per-session `FileCognitionState`（`{路径→内容 hash}`，LRU 上限 256）与 `FileStateCheckHook`（同时为 Pre 与 Post Hook）。read 后由 Post Hook 存内容 hash；write_file/file_replace 前由 Pre Hook 现场验证：先判新建 vs 覆盖（`SandboxClient.fileExists` 经 `/v1/file/list` 列父目录间接判断，新建放行），覆盖已有文件时没读过则拦、re-read 算当前 hash 与记录不符则拦、一致则放行并刷新记录；写后由 Post Hook 清除该路径记录。大文件（>1MB）降级为只查"读过没"，跳过 hash。
+
+**排除方案**：
+- 追踪 read 和 write 之间到底谁改了文件：shell 是黑盒、模型自述不可全信，且要解析 shell 命令，复杂且不可靠。
+- 用 mtime 判过时：`/v1/file/read` 不返回 mtime，read 时需额外调 list 取 mtime（0 额外 API 优势消失）；且 mtime 可被 `touch`/`cp -p` 重置，不如内容 hash 可靠。
+- 在工具内部做匹配失败兜底（如 file_replace 的 old_str）：那是改一半才发现，state checks 执行前拦更早，且防"恰好匹配但内容已变"的误替换。
+
+**理由**：走法 C（写前现场 re-read hash）让 shell 难题消失——不管中间是 shell、并发工具还是外部改的，写前 hash 一比就知道；不波及其他文件，只验证要写的那个；不依赖模型自述，harness 自己算。read-before-edit 与 staleness 合并：写前那次 re-read 同时确认"读过"和"没过时"。主要价值在并发落地后防 TOCTOU（见 ADR-014），单线程下基本不触发、低开销待命。
+
+**约束**：`SandboxClient` 新增 `fileExists` 默认返回 false（仅 AIO 客户端提供真实判断），无法判断存在性的沙箱不会误拦新建；State Checks 受 `agent.hook.state-check-enabled` 配置开关控制，出问题可立即关闭恢复无校验；并发落地后，本 hook 的 re-read+verify+write 必须整体在 per-session 写锁临界区内（当前单线程不涉及，待并发扩展时落实）。
+
+### ADR-014 工具并发执行：READ 并发、WRITE/EXCLUSIVE 串行，按原序对齐
+
+**时间**：2026-07
+
+**决策**：`Tool` 接口新增 `getSideEffect()` 返回 `ToolSideEffect`（READ/WRITE/EXCLUSIVE，默认 EXCLUSIVE 最保守）；仅 `web_search` 显式标 READ，其余默认 EXCLUSIVE（最小可行起点，方案 §9.5）。`LlmResponse` 新增 `getToolCalls()` 列表（保留 `getToolCall()` 兼容），`BaseLlmServiceImpl` 同步取全部 tool_calls、流式按 OpenAI `index` 分开累积并按序发出。新增 `ToolScheduler`：READ 批次并发（限流 3）、遇 WRITE/EXCLUSIVE 先 flush 当前 READ 批次再串行执行、结果按模型原序对齐。`ReactAgent` 同步与流式两条主循环改为遍历 `getToolCalls()` 交调度器，多 tool_call 用一条带 `tool_calls` 数组的 assistant 消息 + 各跟一条 tool 结果（OpenAI 并发协议）。
+
+**排除方案**：
+- 全量并发（所有 READ 类一起跑，含 read_file/grep）：沙箱并发访问与 ImageBuffer 等隐式共享状态会撞，需先解决 per-session 锁和 buffer 关联键，风险高。最小可行起点只对纯网络读（web_search）开并发，规避此风险。
+- 解析模型自检输出再决定并发度：增加脆弱的文本解析耦合；调度器只按副作用类型静态分组即可。
+- 流式仍用单 builder 合并所有 tool_calls：会把并发的多个工具调用揉成一个损坏的调用，必须按 index 分开累积。
+
+**理由**：联网调研场景模型一轮抛 3-5 个搜索时，串行 = 3-5 倍延迟，并发 ≈ 1 倍，收益确定。真正的地基是先让 LLM 接入层能拿到并正确解析"一轮多个 tool_call"（流式按 index 累积），再加调度器。默认 EXCLUSIVE 保证漏标工具不会因误并发导致数据竞争——失去并发收益是可接受的，标错才危险。
+
+**约束**：`ToolScheduler` 受 `agent.hook.concurrent-tool-execution-enabled` 开关控制，置 false 退化为串行遍历（仍遍历列表，回滚不影响多 tool_call 协议）；SSE 事件按模型原序回灌，前端暂不改（并发折叠 UI 见 `docs/superpowers/specs/2026-07-07-frontend-concurrent-tools-ui-todo.md`，待后端稳定后再做）；并发下 ImageBuffer 按 sessionId 关联的隐患在最小可行起点（只 web_search 并发）下不触发，扩大并发前需改为按 tool_call_id 关联或对 view_image 标 EXCLUSIVE；流式并发工具暂用 `executeTool`（非心跳版），单工具仍走 `executeToolWithHeartbeat`。
+
+---
+
+### ADR-015 文档异步处理拆到独立 Bean，避免 @Async 自调用失效
+
+**时间**：2026-07
+
+**决策**：知识库文档异步处理（解析→切片→向量化→沙箱同步）从 `KnowledgeServiceImpl` 拆到独立 Bean `KnowledgeDocumentProcessor`，用 `@Async("knowledgeTaskExecutor")` 指向 `AsyncConfig` 定义的有界线程池（core=2/max=8/queue=100/`CallerRunsPolicy`）；`KnowledgeServiceImpl.upload`/`replaceDocument` 改为跨 Bean 调用 `documentProcessor.processDocumentAsync(...)`。前端 `Knowledge.js` 在上传/替换完成后启动轮询（每 3s `loadDocuments`），直到所有文档稳定为 `READY`/`FAILED` 停止，组件卸载时清理定时器。
+
+**排除方案**：
+- 同类自调用 + `@Lazy` 注入自身代理：能生效但保留自调用歧义，且 `processDocumentAsync` 不在 `KnowledgeService` 接口里，需注入 impl 类型，不优雅。
+- `AopContext.currentProxy()`（开 `exposeProxy=true`）：侵入业务代码、耦合 Spring AOP API。
+- 维持同步、删掉误导性的 `@Async`：不动前端最省事，但大 PDF 会阻塞上传请求线程、超时风险高，且与"异步处理"的产品语义矛盾。
+
+**理由**：Spring `@Async` 靠代理实现，同类内部方法直接调用（`this.processDocumentAsync`）不走代理，注解完全失效——原实现实际是同步执行，上传接口要等解析+切片+向量化全部完成才返回，所谓"立即返回"并不成立。拆到独立 Bean 是消除自调用的根本解，顺带用有界线程池替代默认无界 `SimpleAsyncTaskExecutor`，一并解决并发上传线程失控风险。真异步后上传接口立即返回 `PENDING`，故前端必须配套轮询，否则界面会停在"等待处理"。
+
+**约束**：`knowledgeTaskExecutor` 队列满时 `CallerRunsPolicy` 回退为调用线程执行，天然限流但会让该次上传同步阻塞，属可接受的背压；异步方法无事务包裹，中途失败时已写入的切片/向量不会回滚，`FAILED` 文档可能残留脏数据，需靠后续 `replaceDocument`/`deleteDocument` 清理；前端轮询固定 3s 间隔。

@@ -1,5 +1,6 @@
 package com.example.sandbox.web.service.impl;
 
+import com.example.sandbox.web.config.AgentConfigProperties;
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.llm.LlmResponse;
 import com.example.sandbox.web.service.Tool;
@@ -17,7 +18,10 @@ import java.util.List;
  * ReactAgent Hook 装配服务。
  *
  * <p>集中注册执行器 Hook 和需要父 Agent 引用的工具，让编排层不需要关心
- * Hook 的注册顺序和细节。</p>
+ * Hook 的注册顺序和细节。具体包括：日志 Hook、文件状态检查 Hook（State Checks，
+ * 受 {@code agent.hook.state-check-enabled} 开关控制）、图片观察 Hook、最终 TodoState
+ * 门禁、工具并发执行开关（{@code agent.hook.concurrent-tool-execution-enabled}，回滚用），
+ * 以及 run_subagent 父 Agent 注入。</p>
  */
 @Service
 public class ReactAgentHookService {
@@ -33,19 +37,37 @@ public class ReactAgentHookService {
     /** TodoState 服务，用于最终回答门禁读取当前运行时任务清单。 */
     private final AgentTodoService todoService;
 
+    /** 沙箱客户端工厂，用于文件状态检查写前 re-read。 */
+    private final SandboxClientFactory sandboxClientFactory;
+
+    /** 文件认知状态存储，用于 State Checks。 */
+    private final FileCognitionState fileCognitionState;
+
+    /** Agent 配置，用于读取 Hook 层开关。 */
+    private final AgentConfigProperties agentConfig;
+
     /**
      * 创建 Hook 装配服务。
      *
-     * @param imageBuffer 图片缓冲区
-     * @param visionLlm   视觉模型服务
-     * @param todoService  TodoState 服务
+     * @param imageBuffer          图片缓冲区
+     * @param visionLlm            视觉模型服务
+     * @param todoService          TodoState 服务
+     * @param sandboxClientFactory 沙箱客户端工厂
+     * @param fileCognitionState   文件认知状态存储
+     * @param agentConfig          Agent 配置
      */
     public ReactAgentHookService(ImageBuffer imageBuffer,
                                  @Qualifier("visionLlm") LlmService visionLlm,
-                                 AgentTodoService todoService) {
+                                 AgentTodoService todoService,
+                                 SandboxClientFactory sandboxClientFactory,
+                                 FileCognitionState fileCognitionState,
+                                 AgentConfigProperties agentConfig) {
         this.imageBuffer = imageBuffer;
         this.visionLlm = visionLlm;
         this.todoService = todoService;
+        this.sandboxClientFactory = sandboxClientFactory;
+        this.fileCognitionState = fileCognitionState;
+        this.agentConfig = agentConfig;
     }
 
     /**
@@ -83,9 +105,10 @@ public class ReactAgentHookService {
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
                                  String sessionId, String userMessage, String plan) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
-        reactAgent.registerPreToolUseHook(new AgentSearchPolicyHook(userMessage, plan));
+        registerFileStateCheck(reactAgent);
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
         registerFinalTodoGuard(reactAgent, sessionId);
+        applyConcurrencyToggle(reactAgent);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
@@ -124,10 +147,11 @@ public class ReactAgentHookService {
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
                                    String sessionId, String userMessage, String plan) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
-        reactAgent.registerPreToolUseHook(new AgentSearchPolicyHook(userMessage, plan));
+        registerFileStateCheck(reactAgent);
         reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
         registerFinalTodoGuard(reactAgent, sessionId);
+        applyConcurrencyToggle(reactAgent);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
@@ -145,6 +169,32 @@ public class ReactAgentHookService {
                 return;
             }
         }
+    }
+
+    /**
+     * 注册文件状态检查 Hook（Pre + Post），受配置开关控制。
+     *
+     * <p>同一实例同时作为 Pre（写前校验）和 Post（read 存 hash / write 清 hash）注册。</p>
+     *
+     * @param reactAgent 执行器实例
+     */
+    private void registerFileStateCheck(ReactAgent reactAgent) {
+        if (!agentConfig.getHook().isStateCheckEnabled()) {
+            return;
+        }
+        FileStateCheckHook hook = new FileStateCheckHook(sandboxClientFactory, fileCognitionState);
+        reactAgent.registerPreToolUseHook(hook);
+        reactAgent.registerPostToolUseHook(hook);
+    }
+
+    /**
+     * 按配置开关设置执行器是否启用工具并发（回滚开关，出问题置 false 退化为串行）。
+     *
+     * @param reactAgent 执行器实例
+     */
+    private void applyConcurrencyToggle(ReactAgent reactAgent) {
+        reactAgent.setConcurrentToolExecutionEnabled(
+                agentConfig.getHook().isConcurrentToolExecutionEnabled());
     }
 
     /**
