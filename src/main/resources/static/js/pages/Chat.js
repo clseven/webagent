@@ -1939,7 +1939,7 @@ const ChatPage = {
         };
         const sandboxWebsocketPath = (baseUrl, websocketPath) => {
             const proxyPath = sandboxProxyPath(baseUrl);
-            return '/' + [proxyPath, websocketPath.replace(/^\/+/, '')]
+            return [proxyPath, websocketPath.replace(/^\/+/, '')]
                 .filter(Boolean)
                 .join('/');
         };
