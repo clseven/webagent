@@ -52,9 +52,8 @@ final class SandboxViewProxySupport {
      */
     static String upstreamPath(String token, String requestPath, String query) {
         String prefix = proxyPrefix(token);
-        String normalized = collapseSlashes(requestPath);
-        String path = normalized != null && normalized.startsWith(prefix)
-                ? normalized.substring(prefix.length())
+        String path = requestPath != null && requestPath.startsWith(prefix)
+                ? requestPath.substring(prefix.length())
                 : "/";
         if (path == null || path.isBlank()) {
             path = "/";
@@ -68,18 +67,14 @@ final class SandboxViewProxySupport {
     /**
      * 从浏览器路径中提取 token。
      *
-     * <p>部分 WebSocket 客户端（如 noVNC）可能在 host 后拼接路径时引入多余斜杠，
-     * 导致请求路径以 {@code //sandbox-view/...} 开头。此处先做归一化再匹配。</p>
-     *
      * @param requestPath 浏览器请求路径
      * @return 提取到的 token，不存在时返回空
      */
     static Optional<String> tokenFromPath(String requestPath) {
-        String normalized = collapseSlashes(requestPath);
-        if (normalized == null || !normalized.startsWith(PROXY_PREFIX)) {
+        if (requestPath == null || !requestPath.startsWith(PROXY_PREFIX)) {
             return Optional.empty();
         }
-        String rest = normalized.substring(PROXY_PREFIX.length());
+        String rest = requestPath.substring(PROXY_PREFIX.length());
         int slash = rest.indexOf('/');
         String token = slash >= 0 ? rest.substring(0, slash) : rest;
         return token == null || token.isBlank() ? Optional.empty() : Optional.of(token);
@@ -150,21 +145,5 @@ final class SandboxViewProxySupport {
             return "/";
         }
         return path.startsWith("/") ? path : "/" + path;
-    }
-
-    /**
-     * 压缩路径中连续重复的斜杠为一个。
-     *
-     * <p>noVNC 等客户端可能构造 {@code //sandbox-view/...} 的路径，
-     * 归一化为 {@code /sandbox-view/...} 后再匹配前缀。</p>
-     *
-     * @param path 原始路径
-     * @return 归一化后的路径；null 输入返回 null
-     */
-    private static String collapseSlashes(String path) {
-        if (path == null) {
-            return null;
-        }
-        return path.replaceAll("/{2,}", "/");
     }
 }
