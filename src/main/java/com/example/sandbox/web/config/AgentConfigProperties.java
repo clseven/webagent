@@ -89,6 +89,12 @@ public class AgentConfigProperties {
              */
             private boolean thinkingEnabled = false;
 
+            /**
+             * 思考强度控制（仅 DeepSeek 专有参数）。
+             * 可选值：low / medium / high / max。low 和 medium 会映射为 high，xhigh 映射为 max。
+             */
+            private String reasoningEffort = "high";
+
         }
 
         @Setter

@@ -990,7 +990,7 @@ const ChatPage = {
         const toolDockOpen = Vue.computed(() => Boolean(activeToolDock.value));
         const toolDockTitle = Vue.computed(() => activeToolDock.value === 'workspace' ? '工作目录' : '沙箱');
         const sandboxViews = [
-            { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true', websocketPath: 'websockify' },
+            { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true&resize=scale', websocketPath: 'websockify' },
             { id: 'terminal', label: '终端', title: '打开 Web 终端', path: '/terminal' },
             { id: 'vscode', label: 'VSCode', title: '打开 VSCode 工作区', path: '/code-server/?folder=/home/gem' },
             { id: 'files', label: '文件', title: '打开工作目录', dock: 'workspace' },

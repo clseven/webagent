@@ -28,34 +28,13 @@ public class ReactAgentHookService {
 
     private static final Logger log = LoggerFactory.getLogger(ReactAgentHookService.class);
 
-    /** 图片缓冲区，用于 view_image 工具和 PostToolUseHook 之间传递图片字节。 */
     private final ImageBuffer imageBuffer;
-
-    /** 视觉模型，用于把图片字节转换为主 Agent 可读取的文本观察。 */
     private final LlmService visionLlm;
-
-    /** TodoState 服务，用于最终回答门禁读取当前运行时任务清单。 */
     private final AgentTodoService todoService;
-
-    /** 沙箱客户端工厂，用于文件状态检查写前 re-read。 */
     private final SandboxClientFactory sandboxClientFactory;
-
-    /** 文件认知状态存储，用于 State Checks。 */
     private final FileCognitionState fileCognitionState;
-
-    /** Agent 配置，用于读取 Hook 层开关。 */
     private final AgentConfigProperties agentConfig;
 
-    /**
-     * 创建 Hook 装配服务。
-     *
-     * @param imageBuffer          图片缓冲区
-     * @param visionLlm            视觉模型服务
-     * @param todoService          TodoState 服务
-     * @param sandboxClientFactory 沙箱客户端工厂
-     * @param fileCognitionState   文件认知状态存储
-     * @param agentConfig          Agent 配置
-     */
     public ReactAgentHookService(ImageBuffer imageBuffer,
                                  @Qualifier("visionLlm") LlmService visionLlm,
                                  AgentTodoService todoService,
@@ -70,97 +49,85 @@ public class ReactAgentHookService {
         this.agentConfig = agentConfig;
     }
 
-    /**
-     * 为同步执行器注册 Hook。
-     *
-     * @param reactAgent 执行器实例
-     * @param filteredTools 当前可用工具
-     */
+    // ---- 同步执行器（无 TurnPolicy，默认全能力） ----
+
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools) {
-        configureForChat(reactAgent, filteredTools, null, null, null);
+        configureForChat(reactAgent, filteredTools, null, null, null, TurnPolicy.FULL);
     }
 
-    /**
-     * 为同步执行器注册 Hook，并注入本轮任务边界。
-     *
-     * @param reactAgent 执行器实例
-     * @param filteredTools 当前可用工具
-     * @param userMessage 本轮用户原始请求
-     * @param plan PlanAgent 生成的计划文本
-     */
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
                                  String userMessage, String plan) {
-        configureForChat(reactAgent, filteredTools, null, userMessage, plan);
+        configureForChat(reactAgent, filteredTools, null, userMessage, plan, TurnPolicy.FULL);
     }
 
-    /**
-     * 为同步执行器注册 Hook，并注入本轮任务边界。
-     *
-     * @param reactAgent   执行器实例
-     * @param filteredTools 当前可用工具
-     * @param sessionId    当前会话 ID，可为空
-     * @param userMessage  本轮用户原始请求
-     * @param plan         PlanAgent 生成的计划文本
-     */
     public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
                                  String sessionId, String userMessage, String plan) {
+        configureForChat(reactAgent, filteredTools, sessionId, userMessage, plan, TurnPolicy.FULL);
+    }
+
+    // ---- 同步执行器（带 TurnPolicy） ----
+
+    /**
+     * 为同步执行器注册 Hook，并注入本轮策略开关。
+     *
+     * @param reactAgent    执行器实例
+     * @param filteredTools 当前可用工具
+     * @param sessionId     当前会话 ID，可为空
+     * @param userMessage   本轮用户原始请求
+     * @param plan          PlanAgent 生成的计划文本
+     * @param policy        本轮策略开关
+     */
+    public void configureForChat(ReactAgent reactAgent, List<Tool> filteredTools,
+                                 String sessionId, String userMessage, String plan,
+                                 TurnPolicy policy) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         registerFileStateCheck(reactAgent);
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
-        registerFinalTodoGuard(reactAgent, sessionId);
+        registerFinalTodoGuard(reactAgent, sessionId, policy);
         applyConcurrencyToggle(reactAgent);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
-    /**
-     * 为流式执行器注册 Hook。
-     *
-     * @param reactAgent 执行器实例
-     * @param filteredTools 当前可用工具
-     */
+    // ---- 流式执行器（无 TurnPolicy，默认全能力） ----
+
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools) {
-        configureForStream(reactAgent, filteredTools, null, null, null);
+        configureForStream(reactAgent, filteredTools, null, null, null, TurnPolicy.FULL);
     }
 
-    /**
-     * 为流式执行器注册 Hook，并注入本轮任务边界。
-     *
-     * @param reactAgent 执行器实例
-     * @param filteredTools 当前可用工具
-     * @param userMessage 本轮用户原始请求
-     * @param plan PlanAgent 生成的计划文本
-     */
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
                                    String userMessage, String plan) {
-        configureForStream(reactAgent, filteredTools, null, userMessage, plan);
+        configureForStream(reactAgent, filteredTools, null, userMessage, plan, TurnPolicy.FULL);
     }
 
-    /**
-     * 为流式执行器注册 Hook，并注入本轮任务边界。
-     *
-     * @param reactAgent   执行器实例
-     * @param filteredTools 当前可用工具
-     * @param sessionId    当前会话 ID，可为空
-     * @param userMessage  本轮用户原始请求
-     * @param plan         PlanAgent 生成的计划文本
-     */
     public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
                                    String sessionId, String userMessage, String plan) {
+        configureForStream(reactAgent, filteredTools, sessionId, userMessage, plan, TurnPolicy.FULL);
+    }
+
+    // ---- 流式执行器（带 TurnPolicy） ----
+
+    /**
+     * 为流式执行器注册 Hook，并注入本轮策略开关。
+     *
+     * @param reactAgent    执行器实例
+     * @param filteredTools 当前可用工具
+     * @param sessionId     当前会话 ID，可为空
+     * @param userMessage   本轮用户原始请求
+     * @param plan          PlanAgent 生成的计划文本
+     * @param policy        本轮策略开关
+     */
+    public void configureForStream(ReactAgent reactAgent, List<Tool> filteredTools,
+                                   String sessionId, String userMessage, String plan,
+                                   TurnPolicy policy) {
         reactAgent.registerPreToolUseHook(AgentHookExamples.logHook());
         registerFileStateCheck(reactAgent);
         reactAgent.registerPostToolUseHook(AgentHookExamples.largeOutputHook());
         reactAgent.registerPostToolUseHook(viewImageHook(userMessage, plan));
-        registerFinalTodoGuard(reactAgent, sessionId);
+        registerFinalTodoGuard(reactAgent, sessionId, policy);
         applyConcurrencyToggle(reactAgent);
         wireSubAgentParent(reactAgent, filteredTools);
     }
 
-    /**
-     * 将父 Agent 引用注入 run_subagent 工具。
-     *
-     * @param reactAgent 父执行器
-     * @param filteredTools 当前可用工具
-     */
     private void wireSubAgentParent(ReactAgent reactAgent, List<Tool> filteredTools) {
         for (Tool tool : filteredTools) {
             if (tool instanceof RunSubagentTool runSubagentTool) {
@@ -171,13 +138,6 @@ public class ReactAgentHookService {
         }
     }
 
-    /**
-     * 注册文件状态检查 Hook（Pre + Post），受配置开关控制。
-     *
-     * <p>同一实例同时作为 Pre（写前校验）和 Post（read 存 hash / write 清 hash）注册。</p>
-     *
-     * @param reactAgent 执行器实例
-     */
     private void registerFileStateCheck(ReactAgent reactAgent) {
         if (!agentConfig.getHook().isStateCheckEnabled()) {
             return;
@@ -187,45 +147,25 @@ public class ReactAgentHookService {
         reactAgent.registerPostToolUseHook(hook);
     }
 
-    /**
-     * 按配置开关设置执行器是否启用工具并发（回滚开关，出问题置 false 退化为串行）。
-     *
-     * @param reactAgent 执行器实例
-     */
     private void applyConcurrencyToggle(ReactAgent reactAgent) {
         reactAgent.setConcurrentToolExecutionEnabled(
                 agentConfig.getHook().isConcurrentToolExecutionEnabled());
     }
 
-    /**
-     * 注册最终 TodoState 门禁。
-     *
-     * @param reactAgent 执行器实例
-     * @param sessionId  当前会话 ID，可为空
-     */
-    private void registerFinalTodoGuard(ReactAgent reactAgent, String sessionId) {
+    private void registerFinalTodoGuard(ReactAgent reactAgent, String sessionId, TurnPolicy policy) {
+        if (!policy.shouldEnableStopHook()) {
+            return;
+        }
         if (sessionId == null || sessionId.isBlank()) {
             return;
         }
         reactAgent.registerStopHook(new FinalTodoGuardHook(todoService, sessionId));
     }
 
-    /**
-     * 构建 view_image 工具的图片注入 Hook。
-     *
-     * @return PostToolUseHook 实例
-     */
     ReactAgent.PostToolUseHook viewImageHook() {
         return viewImageHook(null, null);
     }
 
-    /**
-     * 构建 view_image 工具的图片观察 Hook。
-     *
-     * @param userMessage 本轮用户请求，可为空
-     * @param plan        本轮规划文本，可为空
-     * @return PostToolUseHook 实例
-     */
     private ReactAgent.PostToolUseHook viewImageHook(String userMessage, String plan) {
         return (toolCall, result, sessionId) -> {
             if (!"view_image".equals(toolCall.name())) {
@@ -242,14 +182,6 @@ public class ReactAgentHookService {
         };
     }
 
-    /**
-     * 调用视觉模型生成图片观察文本，并封装为主 Agent 可读取的上下文消息。
-     *
-     * @param entry       图片缓冲区条目
-     * @param userMessage 本轮用户请求，可为空
-     * @param plan        本轮规划文本，可为空
-     * @return 文本形式的图片观察消息
-     */
     private ChatMessage buildVisionObservationMessage(ImageBuffer.Entry entry, String userMessage, String plan) {
         String prompt = buildVisionUserPrompt(entry.path(), userMessage, plan);
         ChatMessage imageMessage = ChatMessage.userMessageWithImage(prompt, entry.bytes(), entry.mimeType());
@@ -275,11 +207,6 @@ public class ReactAgentHookService {
         }
     }
 
-    /**
-     * 构建视觉模型系统提示词。
-     *
-     * @return 视觉观察提示词
-     */
     private String visionSystemPrompt() {
         return """
                 你是视觉观察器。请根据图片内容输出给主 Agent 使用的客观观察结果。
@@ -290,14 +217,6 @@ public class ReactAgentHookService {
                 """;
     }
 
-    /**
-     * 构建携带图片的用户消息文本，让视觉模型知道图片路径和任务背景。
-     *
-     * @param path        图片路径
-     * @param userMessage 本轮用户请求，可为空
-     * @param plan        本轮规划文本，可为空
-     * @return 视觉模型用户消息文本
-     */
     private String buildVisionUserPrompt(String path, String userMessage, String plan) {
         StringBuilder builder = new StringBuilder();
         builder.append("图片路径：").append(path);

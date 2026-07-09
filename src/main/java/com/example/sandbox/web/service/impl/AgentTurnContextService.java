@@ -18,47 +18,28 @@ import java.util.List;
  *
  * <p>负责把同步和流式入口完全相同的前置准备收敛到一处，包括历史、沙箱、用户消息入库、
  * 文件上下文、工作区目录记忆、应用知识库、工具上下文和规划技能元数据。</p>
+ *
+ * <p>自 TurnPolicy 升级后，本轮策略（{@link TurnPolicy}）控制各阶段是否组装：
+ * SOCIAL 轮次跳过工具、工作区、知识库和 StopHook；TASK/AMBIGUOUS 保持全能力。</p>
  */
 @Service
 public class AgentTurnContextService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentTurnContextService.class);
 
-    /** 对话服务，用于读取历史并保存本轮用户消息。 */
     private final ConversationServiceImpl conversationService;
-
-    /** 沙箱服务，用于确保当前会话沙箱就绪。 */
     private final SandboxService sandboxService;
-
-    /** 轻量对话路由器，用于决定是否跳过规划器。 */
     private final LightweightChatRouter lightweightChatRouter;
-
-    /** 工作区目录记忆服务。 */
+    private final TurnPolicyResolver turnPolicyResolver;
     private final WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService;
-
-    /** 知识库上下文服务。 */
     private final AgentKnowledgeContextService knowledgeContextService;
-
-    /** 工具上下文服务。 */
     private final AgentToolContextService toolContextService;
-
-    /** 技能运行时服务。 */
     private final AgentSkillRuntimeService skillRuntimeService;
 
-    /**
-     * 创建单轮上下文准备服务。
-     *
-     * @param conversationService            对话服务
-     * @param sandboxService                 沙箱服务
-     * @param lightweightChatRouter          轻量对话路由器
-     * @param workspaceDirectoryMemoryService 工作区目录记忆服务
-     * @param knowledgeContextService        知识库上下文服务
-     * @param toolContextService             工具上下文服务
-     * @param skillRuntimeService            技能运行时服务
-     */
     public AgentTurnContextService(ConversationServiceImpl conversationService,
                                    SandboxService sandboxService,
                                    LightweightChatRouter lightweightChatRouter,
+                                   TurnPolicyResolver turnPolicyResolver,
                                    WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService,
                                    AgentKnowledgeContextService knowledgeContextService,
                                    AgentToolContextService toolContextService,
@@ -66,6 +47,7 @@ public class AgentTurnContextService {
         this.conversationService = conversationService;
         this.sandboxService = sandboxService;
         this.lightweightChatRouter = lightweightChatRouter;
+        this.turnPolicyResolver = turnPolicyResolver;
         this.workspaceDirectoryMemoryService = workspaceDirectoryMemoryService;
         this.knowledgeContextService = knowledgeContextService;
         this.toolContextService = toolContextService;
@@ -86,6 +68,13 @@ public class AgentTurnContextService {
         List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
         log.info("{}历史消息】会话: {} 条数: {}", logPrefix, sessionId, history.size());
 
+        TurnPolicy policy = turnPolicyResolver.resolve(userMessage, history);
+        log.info("{}轮次策略】会话: {} mode={} plan={} tools={} ws={} kb={} stopHook={}",
+                logPrefix, sessionId, policy.mode(),
+                policy.shouldPlan(), policy.shouldGiveTools(),
+                policy.shouldInjectWorkspace(), policy.shouldInjectKB(),
+                policy.shouldEnableStopHook());
+
         boolean skipPlanningByLightweightRoute = lightweightChatRouter.shouldSkipPlanning(userMessage, history);
         boolean shouldRunPlanAgent = UserContext.isPlanningEnabled() && !skipPlanningByLightweightRoute;
         ensureSandboxReady(sessionId);
@@ -96,7 +85,10 @@ public class AgentTurnContextService {
 
         String extraContext = extractFileContext(userMessage);
         String skillPrompt = skillRuntimeService.buildEnabledSkillPrompt(sessionId);
-        String workspaceMemoryContext = buildWorkspaceDirectoryMemoryContext(sessionId);
+
+        String workspaceMemoryContext = policy.shouldInjectWorkspace()
+                ? buildWorkspaceDirectoryMemoryContext(sessionId)
+                : "";
         String systemPrompt = prependContext(workspaceMemoryContext, skillPrompt);
         if (extraContext != null) {
             systemPrompt = prependContext(extraContext, systemPrompt);
@@ -104,11 +96,15 @@ public class AgentTurnContextService {
 
         AgentAppEntity app = knowledgeContextService.loadApp(session);
         String kbDescription = knowledgeContextService.buildKnowledgeDescription(app);
-        AgentToolContext toolContext = toolContextService.build(sessionId, app, kbDescription);
+        AgentToolContext toolContext = policy.shouldGiveTools()
+                ? toolContextService.build(sessionId, app, kbDescription)
+                : AgentToolContext.empty();
 
         Long userId = UserContext.getCurrentUserId();
-        String enhancedContext = knowledgeContextService.enhance(
-                userId, app, userMessage, history, streamMode ? "【Stream 知识库增强】" : "【知识库增强】");
+        String enhancedContext = policy.shouldInjectKB()
+                ? knowledgeContextService.enhance(
+                        userId, app, userMessage, history, streamMode ? "【Stream 知识库增强】" : "【知识库增强】")
+                : "";
         if (!enhancedContext.isEmpty()) {
             systemPrompt = prependContext(enhancedContext, systemPrompt);
         }
@@ -125,6 +121,7 @@ public class AgentTurnContextService {
                 firstTurn,
                 shouldRunPlanAgent,
                 skipPlanningByLightweightRoute,
+                policy,
                 userId,
                 app,
                 systemPrompt,
@@ -136,11 +133,6 @@ public class AgentTurnContextService {
         );
     }
 
-    /**
-     * 确保当前会话沙箱就绪。
-     *
-     * @param sessionId 会话 ID
-     */
     private void ensureSandboxReady(String sessionId) {
         if (!sandboxService.hasSandbox(sessionId)) {
             log.info("Sandbox not ready for session {}, creating now...", sessionId);
@@ -148,14 +140,6 @@ public class AgentTurnContextService {
         }
     }
 
-    /**
-     * 刷新并构建工作区目录记忆上下文。
-     *
-     * <p>目录记忆是增强信息，失败不能阻断主对话链路，因此只记录 WARN 并返回空字符串。</p>
-     *
-     * @param sessionId 会话 ID
-     * @return 工作区目录记忆上下文
-     */
     private String buildWorkspaceDirectoryMemoryContext(String sessionId) {
         try {
             workspaceDirectoryMemoryService.refresh(sessionId);
@@ -166,13 +150,6 @@ public class AgentTurnContextService {
         }
     }
 
-    /**
-     * 将额外上下文放到基础上下文之前。
-     *
-     * @param extraContext 额外上下文
-     * @param baseContext  基础上下文
-     * @return 合并后的上下文
-     */
     private String prependContext(String extraContext, String baseContext) {
         if (extraContext == null || extraContext.isBlank()) {
             return baseContext != null ? baseContext : "";
@@ -183,12 +160,6 @@ public class AgentTurnContextService {
         return extraContext + "\n\n" + baseContext;
     }
 
-    /**
-     * 从用户消息中提取上传文件上下文。
-     *
-     * @param userMessage 用户消息
-     * @return 文件上下文；没有上传文件段落时返回 null
-     */
     private String extractFileContext(String userMessage) {
         if (!userMessage.contains("【上传的文件】")) {
             return null;

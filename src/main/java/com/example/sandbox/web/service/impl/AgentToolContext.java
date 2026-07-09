@@ -21,4 +21,9 @@ public record AgentToolContext(List<Tool> filteredTools,
                                List<ToolDefinition> toolDefinitions,
                                KnowledgeSearchTool knowledgeSearchTool,
                                String targetType) {
+
+    /** 空工具上下文，用于本轮无需注入工具的轮次。 */
+    public static AgentToolContext empty() {
+        return new AgentToolContext(List.of(), List.of(), null, "none");
+    }
 }

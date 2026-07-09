@@ -8,4 +8,4 @@ agent:
     executor:
       api-url: https://api.deepseek.com
       model: deepseek-v4-flash
-      thinking-enabled: false
+      thinking-enabled: true

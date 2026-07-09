@@ -35,6 +35,9 @@ public class DeepSeekLlmServiceImpl extends BaseLlmServiceImpl {
     /** 是否在 DeepSeek 请求中启用思考模式。 */
     private final boolean thinkingEnabled;
 
+    /** 思考强度控制。 */
+    private final String reasoningEffort;
+
     /**
      * 使用执行器配置创建 DeepSeek 服务。
      *
@@ -51,6 +54,7 @@ public class DeepSeekLlmServiceImpl extends BaseLlmServiceImpl {
                 new DeepSeekLlmErrorPolicy()
         );
         this.thinkingEnabled = configProperties.getLlm().getExecutor().isThinkingEnabled();
+        this.reasoningEffort = configProperties.getLlm().getExecutor().getReasoningEffort();
     }
 
     /**
@@ -63,5 +67,6 @@ public class DeepSeekLlmServiceImpl extends BaseLlmServiceImpl {
         requestBody.put("thinking", Map.of(
                 "type", thinkingEnabled ? "enabled" : "disabled"
         ));
+        requestBody.put("reasoning_effort", reasoningEffort);
     }
 }

@@ -117,7 +117,7 @@ agent:
       api-url: ${DEEPSEEK_LLM_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:}
       model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}
-      thinking-enabled: ${DEEPSEEK_THINKING_ENABLED:false}
+      thinking-enabled: ${DEEPSEEK_THINKING_ENABLED:true}
     vision:
       api-url: ${AGNES_LLM_URL:https://apihub.agnes-ai.com/v1}
       api-key: ${AGNES_API_KEY:}

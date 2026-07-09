@@ -50,9 +50,9 @@ public class AgentPlannerService {
      */
     public String plan(AgentTurnContext context, String userMessage,
                        String usageType, String resultLogLabel, int previewLength) {
-        if (!context.shouldRunPlanAgent()) {
-            log.info("【规划跳过】会话: {}, planningEnabled={}, lightweight={}",
-                    context.sessionId(), UserContext.isPlanningEnabled(), context.skipPlanningByLightweightRoute());
+        if (!UserContext.isPlanningEnabled() || !context.policy().shouldPlan()) {
+            log.info("【规划跳过】会话: {}, planningEnabled={}, policy={}",
+                    context.sessionId(), UserContext.isPlanningEnabled(), context.policy().mode());
             return null;
         }
 

@@ -19,6 +19,7 @@ import java.util.List;
  * @param firstTurn 当前轮是否为会话首轮
  * @param shouldRunPlanAgent 是否需要调用规划器
  * @param skipPlanningByLightweightRoute 是否因为轻量路由跳过规划
+ * @param policy 本轮策略开关，控制工具/工作区/知识库/StopHook 的注入
  * @param userId 当前用户 ID
  * @param app 当前会话关联的 Agent 应用；没有或加载失败时为 null
  * @param systemPrompt 执行器系统提示词
@@ -32,8 +33,9 @@ public record AgentTurnContext(ConversationSession session,
                                String userMessage,
                                List<ChatMessage> history,
                                boolean firstTurn,
-                               boolean shouldRunPlanAgent,
-                               boolean skipPlanningByLightweightRoute,
+                               @Deprecated boolean shouldRunPlanAgent,
+                               @Deprecated boolean skipPlanningByLightweightRoute,
+                               TurnPolicy policy,
                                Long userId,
                                AgentAppEntity app,
                                String systemPrompt,
