@@ -2,12 +2,16 @@ package com.example.sandbox.aio.file;
 
 import com.example.sandbox.aio.core.AioApiException;
 import com.example.sandbox.aio.core.AioHttpClient;
+import com.example.sandbox.aio.file.model.FileListRequest;
+import com.example.sandbox.aio.file.model.FileReadRequest;
+import com.example.sandbox.aio.file.model.FileReplaceRequest;
+import com.example.sandbox.aio.file.model.FileSearchRequest;
+import com.example.sandbox.aio.file.model.FileWriteRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -16,6 +20,9 @@ import java.util.Map;
  *
  * <p>该类是新 AIO 客户端的文件能力入口，调用 checked-in OpenAPI 中定义的
  * `/v1/file/*` 接口，不在这里混用旧版 shell/base64 文件写入协议。</p>
+ *
+ * <p>所有请求体均使用 {@code aio.file.model} 下的类型化 record 构造，
+ * 字段与可选性直接由 record 定义，无需查 OpenAPI 文档。</p>
  */
 public class AioFileApi {
 
@@ -41,14 +48,31 @@ public class AioFileApi {
     }
 
     /**
-     * 使用 AIO 文件读取接口读取 UTF-8 文本。
+     * 使用 AIO 文件读取接口读取 UTF-8 文本（整文件）。
      *
      * @param path Sandbox 内绝对路径
      * @return 文件内容；响应不含内容时返回空字符串
      * @throws AioApiException 当 AIO 明确返回读取失败时抛出
      */
     public String readText(String path) {
-        Map<String, Object> response = http.postMap("/v1/file/read", Map.of("file", path));
+        return readText(path, null, null);
+    }
+
+    /**
+     * 使用 AIO 文件读取接口读取指定行范围内的 UTF-8 文本。
+     *
+     * <p>利用 AIO 原生的 {@code start_line}/{@code end_line} 实现服务端分页读取，
+     * 大文件只取需要的窗口，不会整本读入内存。</p>
+     *
+     * @param path      Sandbox 内绝对路径
+     * @param startLine 起始行（0 基）；为 null 时从头读
+     * @param endLine   结束行（不含）；为 null 时读到文件尾
+     * @return 文件内容；响应不含内容时返回空字符串
+     * @throws AioApiException 当 AIO 明确返回读取失败时抛出
+     */
+    public String readText(String path, Integer startLine, Integer endLine) {
+        Map<String, Object> response = http.postMap("/v1/file/read",
+                new FileReadRequest(path, startLine, endLine, null));
         if (response == null || Boolean.FALSE.equals(response.get("success"))) {
             throw new AioApiException("读取 Sandbox 文件失败: " + path);
         }
@@ -112,11 +136,8 @@ public class AioFileApi {
      * @return AIO 完整响应
      */
     public Map<String, Object> replace(String file, String oldStr, String newStr) {
-        return http.postMap("/v1/file/replace", Map.of(
-                "file", file,
-                "old_str", oldStr,
-                "new_str", newStr
-        ));
+        return http.postMap("/v1/file/replace",
+                new FileReplaceRequest(file, oldStr, newStr, null));
     }
 
     /**
@@ -127,11 +148,13 @@ public class AioFileApi {
      * @return AIO 完整响应
      */
     public Map<String, Object> search(String file, String regex) {
-        return http.postMap("/v1/file/search", Map.of("file", file, "regex", regex));
+        return http.postMap("/v1/file/search", new FileSearchRequest(file, regex, null));
     }
 
     /**
      * 调用 AIO 结构化文件编辑器。
+     *
+     * <p>参数由 Anthropic 工具协议定义，调用方按其规范构造，这里直接透传。</p>
      *
      * @param parameters OpenAPI 定义的编辑参数
      * @return AIO 完整响应
@@ -155,16 +178,8 @@ public class AioFileApi {
     public Map<String, Object> list(String path, boolean recursive, boolean showHidden,
                                     Integer maxDepth, boolean includeSize, String sortBy,
                                     boolean sortDesc) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("path", path);
-        body.put("recursive", recursive);
-        body.put("show_hidden", showHidden);
-        body.put("include_size", includeSize);
-        body.put("sort_by", sortBy);
-        body.put("sort_desc", sortDesc);
-        if (maxDepth != null) {
-            body.put("max_depth", maxDepth);
-        }
+        FileListRequest body = new FileListRequest(path, recursive, showHidden, null,
+                maxDepth, includeSize, null, sortBy, sortDesc);
         return http.postMap("/v1/file/list", body);
     }
 
@@ -244,11 +259,7 @@ public class AioFileApi {
      * @return 写入成功返回 true，重试耗尽仍失败返回 false
      */
     private boolean writeWithRetry(String path, String content, String encoding) {
-        Map<String, Object> body = Map.of(
-                "file", path,
-                "content", content,
-                "encoding", encoding
-        );
+        FileWriteRequest body = new FileWriteRequest(path, content, encoding, null, null, null, null);
         for (int attempt = 1; attempt <= WRITE_RETRY_ATTEMPTS; attempt++) {
             try {
                 Map<String, Object> response = http.postMap("/v1/file/write", body);

@@ -3,6 +3,9 @@ package com.example.sandbox.aio.shell;
 import com.example.sandbox.aio.core.AioHttpClient;
 import com.example.sandbox.aio.shell.model.ShellExecRequest;
 import com.example.sandbox.aio.shell.model.ShellExecResult;
+import com.example.sandbox.aio.shell.model.ShellKillProcessRequest;
+import com.example.sandbox.aio.shell.model.ShellViewRequest;
+import com.example.sandbox.aio.shell.model.ShellWaitRequest;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -161,7 +164,7 @@ public class AioShellApi {
      * @return 完整执行响应
      */
     public ShellExecResult view(String sessionId) {
-        Map<String, Object> response = http.postMap("/v1/shell/view", Map.of("id", sessionId));
+        Map<String, Object> response = http.postMap("/v1/shell/view", new ShellViewRequest(sessionId));
         return objectMapper.convertValue(response, ShellExecResult.class);
     }
 
@@ -173,7 +176,7 @@ public class AioShellApi {
      * @return AIO 完整响应
      */
     public Map<String, Object> waitFor(String sessionId, int seconds) {
-        return http.postMap("/v1/shell/wait", Map.of("id", sessionId, "seconds", seconds));
+        return http.postMap("/v1/shell/wait", new ShellWaitRequest(sessionId, seconds));
     }
 
     /**
@@ -183,7 +186,7 @@ public class AioShellApi {
      * @return AIO 完整响应
      */
     public Map<String, Object> kill(String sessionId) {
-        return http.postMap("/v1/shell/kill", Map.of("id", sessionId));
+        return http.postMap("/v1/shell/kill", new ShellKillProcessRequest(sessionId));
     }
 
     /**

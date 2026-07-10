@@ -156,12 +156,38 @@ public class KnowledgeDocumentProcessor {
 
         } catch (Exception e) {
             log.error("文档处理失败: docId={}", docId, e);
+            cleanupPartialData(docId);
             KnowledgeDocumentEntity document = documentRepository.findById(docId).orElse(null);
             if (document != null) {
+                document.setChunkCount(0);
+                document.setTotalTokens(null);
                 document.setStatus("FAILED");
                 document.setErrorMsg(e.getMessage());
                 documentRepository.save(document);
             }
+        }
+    }
+
+    /**
+     * 清理异步处理中途失败留下的脏数据：已写入的 Milvus 向量和 MySQL 切片。
+     *
+     * <p>切片可能只写了一部分（逐条 save），向量可能还没写或写了一部分，
+     * 全部按 docId 删除，保证失败后不残留半份数据。清理本身失败仅记日志，
+     * 不覆盖原始异常。</p>
+     */
+    private void cleanupPartialData(Long docId) {
+        try {
+            vectorStoreService.deleteByDocId(docId);
+        } catch (Exception ex) {
+            log.warn("失败清理：删除 Milvus 向量异常: docId={}, {}", docId, ex.getMessage());
+        }
+        try {
+            List<KnowledgeChunkEntity> chunks = chunkRepository.findByDocumentIdOrderByChunkIndex(docId);
+            if (!chunks.isEmpty()) {
+                chunkRepository.deleteAll(chunks);
+            }
+        } catch (Exception ex) {
+            log.warn("失败清理：删除 MySQL 切片异常: docId={}, {}", docId, ex.getMessage());
         }
     }
 

@@ -12,7 +12,7 @@
 param(
     [string]$HostName = "104.208.99.11",
     [string]$UserName = "azureuser",
-    [string]$KeyPath = "$env:USERPROFILE\.ssh\webagent-vm_key.pem",
+    [string]$KeyPath = "$env:USERPROFILE\Downloads\webagent-vm_key.pem",
     [string]$JarPath = "target\sandbox-1.0-SNAPSHOT.jar",
     [string]$RemoteTmpJar = "/tmp/webagent-app.jar",
     [string]$RemoteAppJar = "/opt/webagent/app.jar",

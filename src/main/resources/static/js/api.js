@@ -224,14 +224,20 @@ function createApiClient() {
                     buffer += decoder.decode();
                     drainFrames(true);
 
+                    // 流正常结束但没收到 done/error/interrupted 终端事件：
+                    // 多数情况是连接被中间件切断或后端异常退出，当作网络断开走兜底，
+                    // 让前端历史轮询继续尝试同步最终结果，而不是直接当作完成。
                     if (!stopped && !terminalEventReceived) {
                         flushIncrementalEvents();
-                        onEvent({ type: 'done', data: {} });
+                        onEvent({ type: 'network_disconnect', data: { reason: 'stream_end_without_terminal' } });
                     }
                 } catch (e) {
+                    // 主动停止（stopped）走 AbortError，不触发断线兜底；
+                    // 其余异常（网络中断、服务端断开）统一发 network_disconnect，
+                    // 让前端保持历史轮询收尾，而不是直接报错收场。
                     if (!stopped && e.name !== 'AbortError') {
                         flushIncrementalEvents();
-                        onEvent({ type: 'error', data: { message: e.message } });
+                        onEvent({ type: 'network_disconnect', data: { message: e.message, reason: 'network_error' } });
                     }
                 }
             };

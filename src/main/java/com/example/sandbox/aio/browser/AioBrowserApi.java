@@ -1,5 +1,6 @@
 package com.example.sandbox.aio.browser;
 
+import com.example.sandbox.aio.browser.model.BrowserConfigRequest;
 import com.example.sandbox.aio.browser.model.BrowserInfo;
 import com.example.sandbox.aio.core.AioHttpClient;
 import org.springframework.http.MediaType;
@@ -60,7 +61,7 @@ public class AioBrowserApi {
      */
     public boolean setResolution(String resolution) {
         Map<String, Object> response = http.postMap(
-                "/v1/browser/config", Map.of("resolution", resolution));
+                "/v1/browser/config", new BrowserConfigRequest(resolution));
         return response != null && Boolean.TRUE.equals(response.get("success"));
     }
 

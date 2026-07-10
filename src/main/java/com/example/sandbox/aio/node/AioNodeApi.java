@@ -1,9 +1,9 @@
 package com.example.sandbox.aio.node;
 
 import com.example.sandbox.aio.core.AioHttpClient;
+import com.example.sandbox.aio.node.model.NodeExecuteRequest;
 import com.example.sandbox.aio.node.model.NodeExecuteResult;
 
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -31,10 +31,8 @@ public class AioNodeApi {
      * @return Node.js 执行结果
      */
     public NodeExecuteResult execute(String code, int timeout) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("code", code);
-        body.put("timeout", timeout);
-        return http.postData("/v1/nodejs/execute", body, NodeExecuteResult.class);
+        return http.postData("/v1/nodejs/execute",
+                new NodeExecuteRequest(code, timeout, null, null), NodeExecuteResult.class);
     }
 
     /**

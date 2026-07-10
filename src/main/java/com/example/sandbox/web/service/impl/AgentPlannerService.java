@@ -1,6 +1,7 @@
 package com.example.sandbox.web.service.impl;
 
 import com.example.sandbox.web.context.UserContext;
+import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.PlanResult;
 import com.example.sandbox.web.model.llm.LlmUsage;
 import com.example.sandbox.web.service.LlmService;
@@ -9,6 +10,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 /**
  * Agent 规划阶段服务。
@@ -67,6 +70,19 @@ public class AgentPlannerService {
         log.info("{}{}", resultLogLabel, truncate(plan, previewLength));
         recordPlanUsage(context, planResult.getTokenUsage(), usageType);
         return plan;
+    }
+
+    /**
+     * 判断本轮意图，供 prepare 决定是否走社交轻量路径。
+     *
+     * <p>委托 {@link PlanAgent#judgeIntent}，复用执行器模型但不带工具/技能/工作区，
+     * 输出 SOCIAL/TASK，判断失败降级 TASK。</p>
+     *
+     * @param context 单轮对话上下文
+     * @return 本轮意图分类
+     */
+    public TurnMode judgeIntent(String userMessage, List<ChatMessage> history) {
+        return PlanAgent.judgeIntent(executorLlm, userMessage, history);
     }
 
     /**

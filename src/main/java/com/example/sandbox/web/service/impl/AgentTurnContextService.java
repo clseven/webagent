@@ -35,6 +35,7 @@ public class AgentTurnContextService {
     private final AgentKnowledgeContextService knowledgeContextService;
     private final AgentToolContextService toolContextService;
     private final AgentSkillRuntimeService skillRuntimeService;
+    private final AgentPlannerService agentPlannerService;
 
     public AgentTurnContextService(ConversationServiceImpl conversationService,
                                    SandboxService sandboxService,
@@ -43,7 +44,8 @@ public class AgentTurnContextService {
                                    WorkspaceDirectoryMemoryService workspaceDirectoryMemoryService,
                                    AgentKnowledgeContextService knowledgeContextService,
                                    AgentToolContextService toolContextService,
-                                   AgentSkillRuntimeService skillRuntimeService) {
+                                   AgentSkillRuntimeService skillRuntimeService,
+                                   AgentPlannerService agentPlannerService) {
         this.conversationService = conversationService;
         this.sandboxService = sandboxService;
         this.lightweightChatRouter = lightweightChatRouter;
@@ -52,6 +54,7 @@ public class AgentTurnContextService {
         this.knowledgeContextService = knowledgeContextService;
         this.toolContextService = toolContextService;
         this.skillRuntimeService = skillRuntimeService;
+        this.agentPlannerService = agentPlannerService;
     }
 
     /**
@@ -68,10 +71,10 @@ public class AgentTurnContextService {
         List<ChatMessage> history = conversationService.getRecentHistory(sessionId, 20);
         log.info("{}历史消息】会话: {} 条数: {}", logPrefix, sessionId, history.size());
 
-        TurnPolicy policy = turnPolicyResolver.resolve(userMessage, history);
-        log.info("{}轮次策略】会话: {} mode={} plan={} tools={} ws={} kb={} stopHook={}",
+        TurnPolicy policy = TurnPolicy.forMode(agentPlannerService.judgeIntent(userMessage, history));
+        log.info("{}轮次策略】会话: {} mode={} plan={} tools={} skill={} ws={} kb={} stopHook={}",
                 logPrefix, sessionId, policy.mode(),
-                policy.shouldPlan(), policy.shouldGiveTools(),
+                policy.shouldPlan(), policy.shouldGiveTools(), policy.shouldInjectSkill(),
                 policy.shouldInjectWorkspace(), policy.shouldInjectKB(),
                 policy.shouldEnableStopHook());
 
@@ -84,7 +87,9 @@ public class AgentTurnContextService {
         log.info("{}用户输入】会话: {} 内容: {}", logPrefix, sessionId, userMessage);
 
         String extraContext = extractFileContext(userMessage);
-        String skillPrompt = skillRuntimeService.buildEnabledSkillPrompt(sessionId);
+        String skillPrompt = policy.shouldInjectSkill()
+                ? skillRuntimeService.buildEnabledSkillPrompt(sessionId)
+                : "";
 
         String workspaceMemoryContext = policy.shouldInjectWorkspace()
                 ? buildWorkspaceDirectoryMemoryContext(sessionId)

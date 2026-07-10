@@ -106,6 +106,16 @@ final class ReactPromptAssembler {
             最终回答前确认关键 todo 已 completed 或 blocked；仍有 pending/in_progress 时继续执行或标记合理阻塞。
             """;
 
+    /** 社交轮对话人格，替代 IDENTITY/WORKSPACE/工具段，避免闲聊时自报能力或目录。 */
+    private static final String CHAT_PERSONA_SECTION = """
+            你是 WebAgent，一个在沙箱环境中协助用户的助手。
+
+            当前是闲聊或简单问答，不需要调用工具，不需要查看工作目录，不需要主动介绍你的能力。
+            - 自然、简洁地回应，像正常对话。
+            - 用户若提出需要执行的任务（操作文件、运行命令、浏览网页等），你再认真处理，那时会进入任务模式。
+            - 不要主动列举能做什么，不要主动描述沙箱目录结构。
+            """;
+
     /** MCP 管理约束，仅在 MCP 管理工具可用时加载。 */
     private static final String MCP_SECTION = """
             ## MCP 动态工具管理
@@ -170,6 +180,18 @@ final class ReactPromptAssembler {
             prompt.append(plan.trim()).append("\n");
         }
         return prompt.toString();
+    }
+
+    /**
+     * 组装社交轮 system prompt。
+     *
+     * <p>社交轮只加载对话人格，跳过执行器身份、工作空间、工具清单和任务策略等所有任务段，
+     * 避免闲聊场景被工具定义或工作目录诱导出自报家门的回复。</p>
+     *
+     * @return 社交轮系统提示词
+     */
+    static String assembleSocial() {
+        return CHAT_PERSONA_SECTION.trim();
     }
 
     /**

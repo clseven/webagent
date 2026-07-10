@@ -168,23 +168,25 @@ public class ReactAgentHookService {
 
     private ReactAgent.PostToolUseHook viewImageHook(String userMessage, String plan) {
         return (toolCall, result, sessionId) -> {
-            if (!"view_image".equals(toolCall.name())) {
+            List<ImageBuffer.Entry> entries = imageBuffer.drain(sessionId);
+            if (entries.isEmpty()) {
                 return null;
             }
-            ImageBuffer.Entry entry = imageBuffer.take(sessionId);
-            if (entry == null) {
-                log.warn("view_image 工具已执行，但 ImageBuffer 中没有图片数据，sessionId={}", sessionId);
-                return null;
-            }
-            log.info("PostToolUseHook 请求视觉观察: path={} size={} bytes",
-                    entry.path(), entry.bytes().length);
-            return buildVisionObservationMessage(entry, userMessage, plan);
+            log.info("PostToolUseHook 请求视觉观察: 工具={} 图片数={}", toolCall.name(), entries.size());
+            return buildVisionObservationMessage(entries, userMessage, plan);
         };
     }
 
-    private ChatMessage buildVisionObservationMessage(ImageBuffer.Entry entry, String userMessage, String plan) {
-        String prompt = buildVisionUserPrompt(entry.path(), userMessage, plan);
-        ChatMessage imageMessage = ChatMessage.userMessageWithImage(prompt, entry.bytes(), entry.mimeType());
+    private ChatMessage buildVisionObservationMessage(List<ImageBuffer.Entry> entries, String userMessage, String plan) {
+        String paths = entries.stream()
+                .map(ImageBuffer.Entry::path)
+                .reduce((a, b) -> a + "\n" + b)
+                .orElse("");
+        String prompt = buildVisionUserPrompt(paths, userMessage, plan);
+        List<ChatMessage.ImageRef> images = entries.stream()
+                .map(e -> new ChatMessage.ImageRef(e.bytes(), e.mimeType()))
+                .toList();
+        ChatMessage imageMessage = ChatMessage.userMessageWithImages(prompt, images);
         try {
             LlmResponse response = visionLlm.chatWithSystemResponse(visionSystemPrompt(), List.of(imageMessage));
             String observation = response != null ? response.getContent() : null;
@@ -193,23 +195,26 @@ public class ReactAgentHookService {
             }
             return ChatMessage.userMessage("""
                     图片观察结果（由视觉模型生成）
-                    路径：%s
+                    路径：
+                    %s
                     观察：
                     %s
-                    """.formatted(entry.path(), observation.trim()));
+                    """.formatted(paths, observation.trim()));
         } catch (Exception e) {
-            log.warn("视觉模型分析图片失败: path={}", entry.path(), e);
+            log.warn("视觉模型分析图片失败: 数量={} 路径={}", entries.size(), paths, e);
             return ChatMessage.userMessage("""
                     图片已加载，但视觉模型暂时无法分析。
-                    路径：%s
+                    路径：
+                    %s
                     错误：%s
-                    """.formatted(entry.path(), e.getMessage()));
+                    """.formatted(paths, e.getMessage()));
         }
     }
 
     private String visionSystemPrompt() {
         return """
                 你是视觉观察器。请根据图片内容输出给主 Agent 使用的客观观察结果。
+                如果有多张图片，分别观察每张图，并指出它们之间的关系（例如前后对照、同一界面的不同状态）。
                 如果用户没有提出具体问题，就概括图片主要内容、可见文字、界面状态和明显细节。
                 如果用户提出了具体问题，就优先提取与问题相关的信息。
                 看不清或不确定的内容要明确说明，不要猜测。

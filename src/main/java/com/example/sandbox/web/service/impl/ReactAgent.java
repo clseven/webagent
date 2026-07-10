@@ -158,6 +158,23 @@ public class ReactAgent {
         this.toolScheduler = new ToolScheduler(ToolScheduler.DEFAULT_READ_CONCURRENCY, enabled);
     }
 
+    /**
+     * 是否跳过 {@link ReactPromptAssembler}，直接把传入的 skillPrompt 当作完整 system prompt。
+     *
+     * <p>社交轮由装配层置 true 并传入 {@link ReactPromptAssembler#assembleSocial()} 的输出，
+     * 避免加载 IDENTITY/WORKSPACE/工具清单等任务段，让闲聊场景不被工具定义或工作目录诱导。</p>
+     */
+    private boolean useRawSystemPrompt = false;
+
+    /**
+     * 设置是否跳过提示词组装。
+     *
+     * @param useRawSystemPrompt true 表示直接使用传入的 skillPrompt 作为完整 system prompt
+     */
+    public void setUseRawSystemPrompt(boolean useRawSystemPrompt) {
+        this.useRawSystemPrompt = useRawSystemPrompt;
+    }
+
     // ==================== Hook 系统 ====================
 
     /**
@@ -1163,6 +1180,9 @@ public class ReactAgent {
      * <p>提示词由 {@link ReactPromptAssembler} 按真实工具能力分段组装，动态上下文和任务策略统一放到尾部。</p>
      */
     private String buildSystemPrompt(String skillPrompt) {
+        if (useRawSystemPrompt) {
+            return skillPrompt != null ? skillPrompt : "";
+        }
         String prompt = ReactPromptAssembler.assemble(toolDefinitions, skillPrompt, plan);
         if (log.isDebugEnabled()) {
             log.debug("执行器提示词组装完成: sections={}, chars={}",

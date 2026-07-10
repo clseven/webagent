@@ -114,8 +114,10 @@
             if (!stream) return;
             if (stream.autoFinishTimer) clearTimeout(stream.autoFinishTimer);
             if (stream.streamSyncTimer) clearInterval(stream.streamSyncTimer);
+            if (stream.disconnectTimeoutTimer) clearTimeout(stream.disconnectTimeoutTimer);
             stream.autoFinishTimer = null;
             stream.streamSyncTimer = null;
+            stream.disconnectTimeoutTimer = null;
             if (stop && stream.stopStreamFn) stream.stopStreamFn();
             stream.stopStreamFn = null;
             stream.streaming = false;

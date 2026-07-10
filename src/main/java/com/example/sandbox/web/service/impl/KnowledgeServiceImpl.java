@@ -406,6 +406,28 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         }
     }
 
+    /**
+     * 删除用户在沙箱内的整个知识库根目录 {@code /home/gem/knowledge}。
+     *
+     * <p>用于账号注销：沙箱按用户独占，该目录整体属于当前用户，一次 {@code rm -rf}
+     * 即可清空所有知识库文件，避免逐文档删除的孤儿残留。失败仅记日志，不抛出。</p>
+     */
+    private void deleteKnowledgeRootFromSandbox(Long userId) {
+        try {
+            AioClient client = sandboxClientFactory.getAioClientByUserId(userId);
+            if (client == null) {
+                log.warn("用户 {} 无沙箱，跳过沙箱知识库目录清理", userId);
+                return;
+            }
+            // 与 UserWorkspaceStorageService.KNOWLEDGE_SANDBOX_ROOT 保持一致
+            String knowledgeRoot = "/home/gem/knowledge";
+            String result = client.execCommand("rm -rf " + quoteShell(knowledgeRoot));
+            log.info("沙箱知识库目录清理: userId={}, path={}, result={}", userId, knowledgeRoot, result);
+        } catch (Exception e) {
+            log.error("删除沙箱知识库目录异常: userId={}", userId, e);
+        }
+    }
+
     @Override
     @Transactional
     public void deleteAllByUser(Long userId) {
@@ -431,6 +453,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         } catch (IOException e) {
             log.warn("删除知识库目录失败: {}", e.getMessage());
         }
+
+        // 删除沙箱内知识库目录（整个 /home/gem/knowledge，沙箱按用户独占，一次清空最彻底）
+        deleteKnowledgeRootFromSandbox(userId);
 
         // 删除文档记录
         List<KnowledgeDocumentEntity> documents = documentRepository.findByUserIdOrderByCreatedAtDesc(userId);

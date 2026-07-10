@@ -14,7 +14,7 @@ source:
   - src/main/java/com/example/sandbox/web/service/impl/AgentActionNarrator.java
   - src/main/java/com/example/sandbox/web/service/Tool.java
   - src/main/java/com/example/sandbox/web/service/tool
-updated: 2026-07-09
+updated: 2026-07-10
 ---
 
 # Agent 工具调用
@@ -68,18 +68,29 @@ updated: 2026-07-09
 
 ## 5. Hook 行为
 
-### 5.1 viewImageHook
+### 5.1 viewImageHook（图片视觉观察）
 
-`view_image` 工具执行后触发：
+触发条件不绑定具体工具名，而是按"ImageBuffer 非空"触发——任何工具执行后只要 buffer 里有图就走这条 hook：
 
-1. 从 `ImageBuffer.take(sessionId)` 取出图片数据。
-2. 构造 vision 消息，调用 `visionLlm.chatWithSystemResponse`。
+1. `ImageBuffer.drain(sessionId)` 取出全部图片（消费型，取走即清空）。
+2. 把多张图拼成一条多模态消息（`ChatMessage.userMessageWithImages`），一次调 `visionLlm`，使其能跨图推理（如 before/after 对照）。
 3. 视觉模型返回客观观察文本，作为 user 消息注入。
-4. 失败降级为"图片已加载但无法分析"提示，不阻断主流程。
+4. 失败降级为"图片已加载但无法分析"提示，buffer 已 drain 清空不残留。
+
+覆盖三类来源：
+- 本地 `view_image` 工具（参数 `paths` 支持一次传多张，全部 append 进 buffer）。
+- MCP 工具返回的 `ImageContent`（`RealMcpTool.execute` 抽出后 append，observation 留占位提示"视觉观察将在下一条消息提供"）。
+- 单图即 list 长度 1，行为不变。
+
+主执行器 deepseek 是纯文本模型不直接吃 `image_url`，图片只能经此 hook 转成文本 observation。`ImageBuffer` 现为按 session 存 `List<Entry>`，支持单工具返回多图。
 
 ### 5.2 largeOutputHook
 
-处理过大的工具输出（仅流式路径注册）。
+处理过大的工具输出（仅流式路径注册，当前只打 warn 日志，不截断）。
+
+- `read_file` 现按行窗口分页（见 [[文件与文档工具]]），单条 observation 有界，不会触发。
+- shell/MCP/文档解析等一次性输出工具仍只靠此 hook 告警；head+tail 截断（`OutputTruncator`）是后续 TODO，防单条巨大 observation 撑爆上下文。
+- 上下文累积由 `ReactAgent.compressIfNeeded` 分层压缩兜底，但单条巨大 observation 在"保留区"不会被压缩，仍需截断层。
 
 ### 5.3 FinalTodoGuardHook
 

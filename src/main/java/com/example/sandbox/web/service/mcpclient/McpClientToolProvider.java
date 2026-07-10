@@ -2,6 +2,7 @@ package com.example.sandbox.web.service.mcpclient;
 
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.mcpclient.McpToolNameCodec;
+import com.example.sandbox.web.service.tool.ImageBuffer;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,16 +36,22 @@ public class McpClientToolProvider {
     /** MCP 配置服务，用于从 sessionId 稳定解析用户身份。 */
     private final McpConfigurationService configurationService;
 
+    /** 图片缓冲区，MCP 工具返回的图片交由视觉 Hook 处理。 */
+    private final ImageBuffer imageBuffer;
+
     /**
      * 创建 MCP 工具提供器。
      *
      * @param manager              MCP Client 生命周期管理器
      * @param configurationService MCP 配置服务
+     * @param imageBuffer          图片缓冲区
      */
     public McpClientToolProvider(McpClientManager manager,
-                                 McpConfigurationService configurationService) {
+                                 McpConfigurationService configurationService,
+                                 ImageBuffer imageBuffer) {
         this.manager = manager;
         this.configurationService = configurationService;
+        this.imageBuffer = imageBuffer;
     }
 
     /**
@@ -79,7 +86,7 @@ public class McpClientToolProvider {
                 }
                 String exposedName = uniqueName(key.serverId(), tool.name(), exposedNames);
                 result.add(new RealMcpTool(
-                        exposedName, key, tool, manager, configurationService));
+                        exposedName, key, tool, manager, configurationService, imageBuffer));
             }
         }
         return List.copyOf(result);

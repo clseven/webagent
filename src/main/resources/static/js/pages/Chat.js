@@ -968,6 +968,7 @@ const ChatPage = {
 
         const streamingStatus = Vue.computed(() => {
             const phase = streamPhase.value;
+            if (phase === 'disconnected') return '连接中断，正在同步结果…';
             switch (phase) {
                 case 'planning': return '正在规划';
                 case 'plan_ready': return '规划完成';
@@ -1362,6 +1363,10 @@ const ChatPage = {
                 clearInterval(stream.streamSyncTimer);
                 stream.streamSyncTimer = null;
             }
+            if (stream.disconnectTimeoutTimer) {
+                clearTimeout(stream.disconnectTimeoutTimer);
+                stream.disconnectTimeoutTimer = null;
+            }
         };
 
         // 后端已保存最终助手消息但 SSE 终止事件未到达时，通过历史接口自动收尾。
@@ -1408,6 +1413,38 @@ const ChatPage = {
                 const latestStream = streamForRun(sessionId, streamId);
                 if (latestStream?.streaming && latestStream.finalAnswer) finishStream(sessionId, streamId, { refreshHistory: true });
             }, 1200);
+        };
+
+        // 网络层断开兜底：后端可能仍在跑完当前轮并保存最终消息，所以保持历史轮询继续工作，
+        // 给它一个超时窗口（默认 60s）；窗口内历史接口拿到助手回复就自动收尾，超时则提示用户重发。
+        const handleNetworkDisconnect = (sessionId, streamId, data = {}) => {
+            const stream = streamForRun(sessionId, streamId);
+            if (!stream || !stream.streaming) return;
+            // 已有断线标记则不重复叠加超时定时器。
+            if (stream.disconnected) return;
+            stream.disconnected = true;
+            stream.disconnectReason = data.reason || data.message || 'network_disconnect';
+            stream.streamPhase = 'disconnected';
+            // 确保历史轮询在跑（发送时已启动，这里幂等重启以防被中途清掉）。
+            startStreamHistorySync(sessionId, streamId);
+            if (stream.disconnectTimeoutTimer) clearTimeout(stream.disconnectTimeoutTimer);
+            stream.disconnectTimeoutTimer = setTimeout(() => {
+                const latestStream = streamForRun(sessionId, streamId);
+                if (!latestStream?.streaming) return;
+                clearStreamTimers(sessionId, streamId);
+                if (currentSessionId.value === sessionId) {
+                    messages.value.push({
+                        role: 'assistant',
+                        content: '⚠️ 连接已断开且未能同步到完整结果，请重新发送。',
+                        timestamp: Date.now(),
+                        error: '连接断开',
+                        _lastText: latestStream.pendingUserMessage?._lastText || ''
+                    });
+                    scrollToBottom();
+                }
+                store.markLiveStreamCompleted(sessionId, { refreshHistory: true });
+            }, 60000);
+            if (currentSessionId.value === sessionId) scrollToBottom();
         };
 
         // 计算同类步骤的展示序号，支持 toolCall 被替换成 toolResult 后仍连续编号。
@@ -1523,6 +1560,12 @@ const ChatPage = {
                 case 'error':
                     finishStream(sessionId, streamId, { refreshHistory: false });
                     if (currentSessionId.value === sessionId) messages.value.push({ role: 'assistant', content: '❌ 错误: ' + (data.message || '未知'), timestamp: Date.now(), error: data.message || '未知错误', _lastText: '' });
+                    break;
+                case 'network_disconnect':
+                    // 前端到后端的连接异常断开：后端可能仍在把当前轮跑完并存最终消息。
+                    // 不能直接 finishStream（会 clearStreamTimers 清掉历史轮询），
+                    // 而是标记断线、确保历史轮询在跑、加超时兜底，让结果从历史接口自动收尾。
+                    handleNetworkDisconnect(sessionId, streamId, data);
                     break;
                 case 'status':
                     stream.currentEvents.push({ type: 'status', content: data.message || '', stepIndex: stream.currentEvents.length + 1 });

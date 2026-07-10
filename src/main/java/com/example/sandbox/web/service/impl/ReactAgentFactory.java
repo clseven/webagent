@@ -5,6 +5,8 @@ import com.example.sandbox.web.service.LlmService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * ReactAgent 工厂。
  *
@@ -51,6 +53,15 @@ public class ReactAgentFactory {
      * @return 已装配 Hook 的执行器
      */
     public ReactAgent createForChat(AgentTurnContext context, String plan) {
+        if (context.policy().mode() == TurnMode.SOCIAL) {
+            ReactAgent socialAgent = new ReactAgent(
+                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(),
+                    null, null, null, backgroundTaskManager);
+            socialAgent.setUseRawSystemPrompt(true);
+            hookService.configureForChat(socialAgent, List.of(),
+                    context.sessionId(), context.userMessage(), null, context.policy());
+            return socialAgent;
+        }
         ReactAgent reactAgent = new ReactAgent(
                 executorLlm,
                 context.toolContext().filteredTools(),
@@ -73,6 +84,15 @@ public class ReactAgentFactory {
      * @return 已装配 Hook 的执行器
      */
     public ReactAgent createForStream(AgentTurnContext context, String plan) {
+        if (context.policy().mode() == TurnMode.SOCIAL) {
+            ReactAgent socialAgent = new ReactAgent(
+                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(),
+                    null, conversationService, context.sessionId(), backgroundTaskManager);
+            socialAgent.setUseRawSystemPrompt(true);
+            hookService.configureForStream(socialAgent, List.of(),
+                    context.sessionId(), context.userMessage(), null, context.policy());
+            return socialAgent;
+        }
         ReactAgent reactAgent = new ReactAgent(
                 executorLlm,
                 context.toolContext().filteredTools(),

@@ -135,6 +135,41 @@ public class ChatMessage {
     }
 
     /**
+     * 创建携带多张图片的用户消息（多模态，仅内存使用）。
+     *
+     * <p>所有图片拼进同一条消息的 content 数组，一次发给视觉模型，使其能跨图推理
+     * （例如 before/after 对照），而非逐张孤立调用。</p>
+     *
+     * @param text   文字说明，可为空字符串
+     * @param images 图片列表，至少一张
+     * @return 多模态用户消息
+     */
+    public static ChatMessage userMessageWithImages(String text, List<ImageRef> images) {
+        List<Map<String, Object>> parts = new java.util.ArrayList<>();
+        if (text != null && !text.isBlank()) {
+            parts.add(Map.of("type", "text", "text", text));
+        }
+        for (ImageRef image : images) {
+            String b64 = java.util.Base64.getEncoder().encodeToString(image.bytes());
+            parts.add(Map.of(
+                    "type", "image_url",
+                    "image_url", Map.of("url", "data:" + image.mimeType() + ";base64," + b64)
+            ));
+        }
+        return new ChatMessage("user", text, null, Instant.now().toEpochMilli(),
+                null, null, null, null, parts);
+    }
+
+    /**
+     * 多模态消息中的图片数据。
+     *
+     * @param bytes    图片原始字节
+     * @param mimeType MIME 类型，如 "image/png"
+     */
+    public record ImageRef(byte[] bytes, String mimeType) {
+    }
+
+    /**
      * 创建助手消息
      */
     public static ChatMessage assistantMessage(String content) {

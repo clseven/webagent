@@ -34,6 +34,11 @@ public interface KnowledgeDocumentRepository extends JpaRepository<KnowledgeDocu
     List<KnowledgeDocumentEntity> findByUserIdAndStatus(Long userId, String status);
 
     /**
+     * 按状态查询（用于启动时自愈卡在 PROCESSING 的僵尸文档）
+     */
+    List<KnowledgeDocumentEntity> findByStatus(String status);
+
+    /**
      * 统计用户文档数
      */
     long countByUserId(Long userId);

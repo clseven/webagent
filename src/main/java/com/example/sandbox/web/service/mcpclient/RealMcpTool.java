@@ -3,8 +3,10 @@ package com.example.sandbox.web.service.mcpclient;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.service.Tool;
 import com.example.sandbox.web.service.mcpclient.McpToolNameCodec;
+import com.example.sandbox.web.service.tool.ImageBuffer;
 import io.modelcontextprotocol.spec.McpSchema;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -34,6 +36,9 @@ public class RealMcpTool implements Tool {
     /** MCP 配置服务，用于执行时复核用户归属。 */
     private final McpConfigurationService configurationService;
 
+    /** 图片缓冲区，MCP 工具返回的图片交由视觉 Hook 处理。 */
+    private final ImageBuffer imageBuffer;
+
     /**
      * 创建真实 MCP 工具适配器。
      *
@@ -42,16 +47,19 @@ public class RealMcpTool implements Tool {
      * @param tool                MCP 工具元数据
      * @param manager             MCP Client 管理器
      * @param configurationService MCP 配置服务
+     * @param imageBuffer         图片缓冲区
      */
     public RealMcpTool(String exposedName, McpClientKey clientKey, McpSchema.Tool tool,
                        McpClientManager manager,
-                       McpConfigurationService configurationService) {
+                       McpConfigurationService configurationService,
+                       ImageBuffer imageBuffer) {
         this.exposedName = exposedName;
         this.clientKey = clientKey;
         this.originalName = tool.name();
         this.tool = tool;
         this.manager = manager;
         this.configurationService = configurationService;
+        this.imageBuffer = imageBuffer;
     }
 
     /**
@@ -95,6 +103,10 @@ public class RealMcpTool implements Tool {
      *
      * <p>失败不在本层重试。MCP 工具可能产生副作用，
      * 由模型或上层根据语义决定是否重试。</p>
+     *
+     * <p>若返回结果含图片（{@link McpSchema.ImageContent}），抽出后追加进
+     * {@link ImageBuffer}，交由视觉观察 PostToolUseHook 转成文本 observation，
+     * 不把 base64 塞进文本上下文。</p>
      */
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
@@ -107,7 +119,25 @@ public class RealMcpTool implements Tool {
             }
             McpSchema.CallToolResult result =
                     manager.callTool(clientKey, originalName, arguments);
-            return CallToolResultFormatter.format(result);
+            List<CallToolResultFormatter.McpImage> images =
+                    CallToolResultFormatter.extractImages(result);
+            String observation = CallToolResultFormatter.format(result);
+
+            if (!images.isEmpty()) {
+                String sourceLabel = "mcp:" + clientKey.serverId() + "/" + originalName;
+                for (int i = 0; i < images.size(); i++) {
+                    CallToolResultFormatter.McpImage image = images.get(i);
+                    imageBuffer.append(sessionId,
+                            sourceLabel + " #" + (i + 1),
+                            image.bytes(), image.mimeType());
+                }
+                String placeholder = "[MCP 工具返回 " + images.size()
+                        + " 张图片，视觉观察将在下一条消息提供]";
+                observation = observation == null || observation.isBlank()
+                        ? placeholder
+                        : observation + "\n\n" + placeholder;
+            }
+            return observation;
         } catch (Exception e) {
             return "ERROR: MCP 工具执行出错：" + e.getMessage();
         }

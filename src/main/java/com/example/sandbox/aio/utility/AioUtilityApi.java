@@ -1,6 +1,7 @@
 package com.example.sandbox.aio.utility;
 
 import com.example.sandbox.aio.core.AioHttpClient;
+import com.example.sandbox.aio.utility.model.ConvertToMarkdownRequest;
 
 import java.util.Map;
 
@@ -29,7 +30,7 @@ public class AioUtilityApi {
      */
     public String convertToMarkdown(String uri) {
         Map<String, Object> response = http.postMap(
-                "/v1/util/convert_to_markdown", Map.of("uri", uri));
+                "/v1/util/convert_to_markdown", new ConvertToMarkdownRequest(uri));
         if (response != null && Boolean.TRUE.equals(response.get("success"))) {
             Object data = response.get("data");
             return data != null ? data.toString() : "";
