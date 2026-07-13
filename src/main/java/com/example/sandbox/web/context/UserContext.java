@@ -7,6 +7,8 @@ public class UserContext {
     private static final ThreadLocal<Long> currentUserId = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> webSearchEnabled = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> planningEnabled = new ThreadLocal<>();
+    /** 当前请求是否启用知识库检索；使用请求线程隔离。 */
+    private static final ThreadLocal<Boolean> knowledgeEnabled = new ThreadLocal<>();
 
     public static void setCurrentUserId(Long userId) {
         currentUserId.set(userId);
@@ -40,9 +42,28 @@ public class UserContext {
         return !Boolean.FALSE.equals(planningEnabled.get());
     }
 
+    /**
+     * 设置当前请求是否启用知识库检索。
+     *
+     * @param enabled true 表示本轮必须检索 Agent 关联的全部知识库
+     */
+    public static void setKnowledgeEnabled(boolean enabled) {
+        knowledgeEnabled.set(enabled);
+    }
+
+    /**
+     * 获取当前请求的知识库开关状态，未设置时默认开启以兼容旧客户端。
+     *
+     * @return 是否启用知识库检索
+     */
+    public static boolean isKnowledgeEnabled() {
+        return !Boolean.FALSE.equals(knowledgeEnabled.get());
+    }
+
     public static void clear() {
         currentUserId.remove();
         webSearchEnabled.remove();
         planningEnabled.remove();
+        knowledgeEnabled.remove();
     }
 }

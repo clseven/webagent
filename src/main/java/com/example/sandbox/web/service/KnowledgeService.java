@@ -1,6 +1,7 @@
 package com.example.sandbox.web.service;
 
 import com.example.sandbox.web.model.entity.KnowledgeBaseEntity;
+import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.KnowledgeChunkEntity;
 import com.example.sandbox.web.model.entity.KnowledgeDocumentEntity;
 import com.example.sandbox.web.model.response.FilePreviewContent;
@@ -155,10 +156,39 @@ public interface KnowledgeService {
      * 向量检索（在指定知识库中检索）
      *
      * @param userId 用户 ID
-     * @param kbId   知识库 ID（可选，为 null 时检索该用户所有知识库）
+     * @param kbId   知识库 ID
      * @param query  查询文本
      * @param topK   返回数量
      * @return 检索结果列表
      */
     List<Map<String, Object>> search(Long userId, Long kbId, String query, int topK);
+
+    /**
+     * 使用本次请求指定的最低相关度执行知识库检索。
+     *
+     * @param userId 用户 ID
+     * @param kbId 知识库 ID
+     * @param query 查询文本
+     * @param topK 最大返回数量
+     * @param minScore 最低相关度；为 null 时使用系统默认值
+     * @return 过滤后的检索结果列表
+     */
+    List<Map<String, Object>> search(Long userId, Long kbId, String query, int topK, Float minScore);
+
+    /**
+     * 在指定的多个知识库中执行一次统一检索。
+     *
+     * <p>所有知识库共享一次查询改写、一次候选融合和一次全局重排，避免调用方
+     * 分库检索后产生重复模型调用和不可比较的局部 topK。</p>
+     *
+     * @param userId 当前用户 ID
+     * @param kbIds 允许检索的知识库 ID 集合；不会扩展到用户的其他知识库
+     * @param query 原始查询文本
+     * @param history 查询改写可使用的对话历史；可为空列表
+     * @param topK 最大返回数量
+     * @param minScore 最低重排相关度；为 null 时使用系统默认值，仅对成功重排分数生效
+     * @return 跨知识库统一排序后的结果
+     */
+    List<Map<String, Object>> search(Long userId, List<Long> kbIds, String query,
+                                     List<ChatMessage> history, int topK, Float minScore);
 }

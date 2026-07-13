@@ -52,8 +52,8 @@ public class KnowledgeSearchTool implements Tool {
     @Autowired
     private KnowledgeService knowledgeService;
 
-    /** 当前会话关联的知识库 ID（由 AgentServiceImpl 在处理前设置） */
-    private final ThreadLocal<Long> currentKbId = new ThreadLocal<>();
+    /** 当前会话允许检索的完整知识库 ID 集合，由 Agent 工具上下文在处理前设置。 */
+    private final ThreadLocal<List<Long>> currentKbIds = new ThreadLocal<>();
 
     /** 动态工具描述（由 AgentServiceImpl 根据知识库描述注入） */
     private final ThreadLocal<String> dynamicDescription = new ThreadLocal<>();
@@ -99,17 +99,22 @@ public class KnowledgeSearchTool implements Tool {
     }
 
     /**
-     * 设置当前会话关联的知识库 ID
+     * 设置当前会话允许检索的知识库 ID 集合。
+     *
+     * @param kbIds 当前 Agent 应用关联的完整知识库 ID 集合
      */
-    public void setCurrentKbId(Long kbId) {
-        currentKbId.set(kbId);
+    public void setCurrentKbIds(Collection<Long> kbIds) {
+        List<Long> scopedKbIds = kbIds == null
+                ? List.of()
+                : kbIds.stream().filter(Objects::nonNull).distinct().toList();
+        currentKbIds.set(scopedKbIds);
     }
 
     /**
-     * 清除当前会话的知识库 ID
+     * 清除当前会话的知识库 ID 集合。
      */
-    public void clearCurrentKbId() {
-        currentKbId.remove();
+    public void clearCurrentKbIds() {
+        currentKbIds.remove();
     }
 
     /**
@@ -122,16 +127,29 @@ public class KnowledgeSearchTool implements Tool {
     @Override
     public String execute(String sessionId, Map<String, Object> arguments) {
         try {
-            String query = (String) arguments.get("query");
-            int topK = arguments.containsKey("top_k")
-                    ? ((Number) arguments.get("top_k")).intValue()
-                    : 5;
+            Object queryValue = arguments.get("query");
+            if (!(queryValue instanceof String query) || query.isBlank()) {
+                return "错误：query 不能为空";
+            }
+            Object topKValue = arguments.get("top_k");
+            if (topKValue != null && !(topKValue instanceof Number)) {
+                return "错误：top_k 必须是整数";
+            }
+            int topK = topKValue instanceof Number number ? number.intValue() : 5;
+            if (topK <= 0) {
+                return "错误：top_k 必须大于 0";
+            }
 
             Long userId = UserContext.getCurrentUserId();
-            Long kbId = currentKbId.get();
-            log.info("知识库检索: userId={}, kbId={}, query={}, topK={}", userId, kbId, query, topK);
+            List<Long> kbIds = currentKbIds.get();
+            if (kbIds == null || kbIds.isEmpty()) {
+                return "错误：当前 Agent 未关联可用知识库";
+            }
+            log.info("知识库工具检索: userId={}, 知识库={} 个, queryLength={}, topK={}",
+                    userId, kbIds.size(), query.length(), topK);
 
-            List<Map<String, Object>> results = knowledgeService.search(userId, kbId, query, topK);
+            List<Map<String, Object>> results = knowledgeService.search(
+                    userId, kbIds, query, List.of(), topK, null);
 
             if (results.isEmpty()) {
                 return "未找到相关知识库内容。请确认已上传相关文档。";
@@ -154,7 +172,7 @@ public class KnowledgeSearchTool implements Tool {
             return sb.toString();
         } catch (Exception e) {
             log.error("知识库检索失败", e);
-            return "知识库检索失败: " + e.getMessage();
+            return "错误：知识库检索失败 - " + e.getMessage();
         }
     }
 }

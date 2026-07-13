@@ -219,7 +219,7 @@ public class RagController {
         Long userId = UserContext.getCurrentUserId();
         log.info("知识库检索: userId={}, kbId={}, query={}", userId, kbId, request.getQuery());
         List<Map<String, Object>> results = knowledgeService.search(
-                userId, kbId, request.getQuery(), request.getTopK());
+                userId, kbId, request.getQuery(), request.getTopK(), request.getMinScore());
         return ApiResponse.success(results);
     }
 }

@@ -3,6 +3,7 @@ package com.example.sandbox.web.service.enhance.impl;
 import com.example.sandbox.web.config.RagConfigProperties;
 import com.example.sandbox.web.service.enhance.RankedChunk;
 import com.example.sandbox.web.service.enhance.RawChunk;
+import com.example.sandbox.web.service.enhance.RerankResult;
 import com.example.sandbox.web.service.enhance.RerankService;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -10,6 +11,7 @@ import lombok.NoArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -25,6 +27,10 @@ import java.util.List;
  * @date 2026/06/05
  */
 @Service
+@ConditionalOnProperty(
+        prefix = "rag.enhancement.rerank",
+        name = "provider",
+        havingValue = "bge")
 public class BgeRerankServiceImpl implements RerankService {
 
     private static final Logger log = LoggerFactory.getLogger(BgeRerankServiceImpl.class);
@@ -44,19 +50,29 @@ public class BgeRerankServiceImpl implements RerankService {
         return webClient;
     }
 
+    /**
+     * 调用 BGE 服务执行重排。
+     *
+     * <p>空响应、协议异常和 HTTP 异常均不重试，直接按向量分数降级并显式标记分数来源。</p>
+     *
+     * @param query 原始查询
+     * @param candidates 向量召回候选
+     * @return 结构化重排结果
+     */
     @Override
-    public List<RankedChunk> rerank(String query, List<RawChunk> candidates) {
+    public RerankResult rerank(String query, List<RawChunk> candidates) {
         if (candidates == null || candidates.isEmpty()) {
-            return List.of();
+            return RerankResult.vectorFallback(List.of());
         }
 
         RagConfigProperties.Enhancement.Rerank rerankConfig = config.getEnhancement().getRerank();
         if (!rerankConfig.isEnabled()) {
-            return candidates.stream()
+            List<RankedChunk> fallback = candidates.stream()
                     .sorted((a, b) -> Float.compare(b.score(), a.score()))
                     .limit(rerankConfig.getTopK())
                     .map(c -> new RankedChunk(c.docId(), c.chunkIndex(), c.content(), c.score(), null))
                     .toList();
+            return RerankResult.vectorFallback(fallback);
         }
 
         try {
@@ -77,7 +93,7 @@ public class BgeRerankServiceImpl implements RerankService {
 
             if (response == null || response.getResults() == null || response.getResults().isEmpty()) {
                 log.warn("Rerank 返回空结果，降级为向量分数排序");
-                return fallbackSort(candidates, rerankConfig.getTopK());
+                return RerankResult.vectorFallback(fallbackSort(candidates, rerankConfig.getTopK()));
             }
 
             // 映射结果
@@ -90,11 +106,15 @@ public class BgeRerankServiceImpl implements RerankService {
                 }
             }
 
-            return ranked;
+            if (ranked.isEmpty()) {
+                log.warn("Rerank 返回结果没有合法候选索引，降级为向量分数排序");
+                return RerankResult.vectorFallback(fallbackSort(candidates, rerankConfig.getTopK()));
+            }
+            return RerankResult.reranked(ranked);
 
         } catch (Exception e) {
-            log.warn("Rerank 调用失败，降级为向量分数排序: {}", e.getMessage());
-            return fallbackSort(candidates, rerankConfig.getTopK());
+            log.warn("Rerank 调用失败，降级为向量分数排序", e);
+            return RerankResult.vectorFallback(fallbackSort(candidates, rerankConfig.getTopK()));
         }
     }
 

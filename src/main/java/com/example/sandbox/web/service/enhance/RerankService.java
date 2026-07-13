@@ -17,7 +17,7 @@ public interface RerankService {
      *
      * @param query 原始查询
      * @param candidates 候选片段列表（每个片段含 content）
-     * @return 重排后的片段列表（按相关性降序），每个片段含相关性分数
+     * @return 结构化重排结果；外部服务失败时必须标记为向量降级
      */
-    List<RankedChunk> rerank(String query, List<RawChunk> candidates);
+    RerankResult rerank(String query, List<RawChunk> candidates);
 }

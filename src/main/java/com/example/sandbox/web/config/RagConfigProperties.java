@@ -103,17 +103,34 @@ public class RagConfigProperties {
         @Getter
         public static class Retrieve {
             private int topN;
-            private float minScore;
 
         }
 
         @Setter
         @Getter
         public static class Rerank {
-            private boolean enabled;
-            private String apiUrl;
-            private String model;
-            private int topK;
+            /** 是否启用外部重排；关闭后按向量分数排序。 */
+            private boolean enabled = true;
+            /** 重排提供方，可选 deepseek 或 bge。 */
+            private String provider = "deepseek";
+            /** 重排服务基础地址。 */
+            private String apiUrl = "https://api.deepseek.com";
+            /** 重排服务 API Key；不得写入日志。 */
+            private String apiKey = "";
+            /** 仅供重排使用的模型名，不继承主流程模型名。 */
+            private String model = "deepseek-v4-flash";
+            /** 默认最终重排条数。 */
+            private int topK = 5;
+            /** 默认最低相关度；仅成功重排后的低分结果不会进入最终结果。 */
+            private float minScore = 0.8f;
+            /** 发送给模型的最大候选数。 */
+            private int maxCandidates = 12;
+            /** 单个候选发送给模型的最大字符数。 */
+            private int maxContentChars = 1200;
+            /** 外部重排总超时秒数。 */
+            private int timeoutSeconds = 10;
+            /** 外部模型最大输出 Token 数。 */
+            private int maxTokens = 512;
 
         }
     }

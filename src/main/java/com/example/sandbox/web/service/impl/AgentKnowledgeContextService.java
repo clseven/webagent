@@ -117,7 +117,7 @@ public class AgentKnowledgeContextService {
         List<Long> kbIds = new ArrayList<>(app.getKnowledgeBaseIds());
         String enhancedContext = knowledgeEnhancer.enhance(userId, kbIds, userMessage, history);
         if (!enhancedContext.isEmpty()) {
-            log.info("{}注入上下文: {} 字符", logPrefix, enhancedContext.length());
+            log.info("{}检索上下文已生成: {} 字符", logPrefix, enhancedContext.length());
         }
         return enhancedContext;
     }

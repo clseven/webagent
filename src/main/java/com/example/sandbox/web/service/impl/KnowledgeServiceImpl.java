@@ -3,6 +3,8 @@ package com.example.sandbox.web.service.impl;
 import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.exception.DuplicateFileException;
 import com.example.sandbox.web.exception.UnauthorizedException;
+import com.example.sandbox.web.config.RagConfigProperties;
+import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.KnowledgeBaseEntity;
 import com.example.sandbox.web.model.entity.KnowledgeChunkEntity;
 import com.example.sandbox.web.model.entity.KnowledgeDocumentEntity;
@@ -14,7 +16,9 @@ import com.example.sandbox.web.service.*;
 import com.example.sandbox.web.service.enhance.QueryRewriteService;
 import com.example.sandbox.web.service.enhance.RankedChunk;
 import com.example.sandbox.web.service.enhance.RawChunk;
+import com.example.sandbox.web.service.enhance.RerankResult;
 import com.example.sandbox.web.service.enhance.RerankService;
+import com.example.sandbox.web.service.enhance.RerankResultFilter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 知识库服务实现
@@ -68,6 +73,10 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
     @Autowired
     private RerankService rerankService;
+
+    /** RAG 配置，用于读取页面和工具检索共享的默认最低相关度。 */
+    @Autowired
+    private RagConfigProperties ragConfigProperties;
 
     @Autowired
     private OfficePreviewService officePreviewService;
@@ -470,39 +479,100 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
     @Override
     public List<Map<String, Object>> search(Long userId, Long kbId, String query, int topK) {
-        // 1. Query Rewrite（传空历史，只做语义扩展）
-        List<String> queries = queryRewriteService.rewrite(query, List.of());
-        log.info("Query Rewrite: {} -> {}", query, queries);
+        return search(userId, kbId, query, topK, null);
+    }
 
-        // 2. 向量检索（多召回一些用于 rerank）
-        int retrieveTopK = Math.max(topK * 3, 20);
-        Map<Long, String> docNameMap = new HashMap<>();
-        List<Map<String, Object>> allVectorResults = new ArrayList<>();
+    /**
+     * 执行知识库检索，并在重排后按本次请求或系统默认阈值过滤。
+     *
+     * @param userId 用户 ID
+     * @param kbId 知识库 ID
+     * @param query 查询文本
+     * @param topK 最大返回数量
+     * @param minScore 本次最低相关度；为 null 时使用 RAG 默认配置
+     * @return 先过滤最低相关度、再限制 topK 的结果
+     */
+    @Override
+    public List<Map<String, Object>> search(Long userId, Long kbId, String query, int topK, Float minScore) {
+        List<Long> kbIds = kbId == null ? List.of() : List.of(kbId);
+        return search(userId, kbIds, query, List.of(), topK, minScore);
+    }
 
-        for (String q : queries) {
-            EmbeddingService.EmbeddingResult queryResult = embeddingService.embedBatch(List.of(q));
-            float[] queryEmbedding = queryResult.embeddings().get(0);
-            List<Map<String, Object>> results = vectorStoreService.search(userId, kbId, queryEmbedding, retrieveTopK);
-            for (Map<String, Object> r : results) {
-                Long docId = ((Number) r.get("docId")).longValue();
-                docNameMap.putIfAbsent(docId, (String) r.get("docName"));
-            }
-            allVectorResults.addAll(results);
+    /**
+     * 在指定知识库集合中执行统一的查询改写、向量召回、去重、重排和阈值过滤。
+     *
+     * <p>该方法是 REST 搜索、Agent 自动预检索和 knowledge_search 工具共享的唯一检索流水线。
+     * 向量召回阶段不设置业务相关度阈值；最低相关度仅在重排服务成功时生效。</p>
+     *
+     * @param userId 当前用户 ID
+     * @param kbIds 允许检索的知识库 ID 集合
+     * @param query 原始查询文本
+     * @param history 查询改写使用的对话历史
+     * @param topK 最大返回数量
+     * @param minScore 最低重排相关度；为 null 时使用系统默认值
+     * @return 跨知识库统一排序后的结果
+     */
+    @Override
+    public List<Map<String, Object>> search(Long userId, List<Long> kbIds, String query,
+                                            List<ChatMessage> history, int topK, Float minScore) {
+        if (kbIds == null || kbIds.isEmpty() || query == null || query.isBlank() || topK <= 0) {
+            return List.of();
+        }
+        List<Long> scopedKbIds = kbIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (scopedKbIds.isEmpty()) {
+            return List.of();
         }
 
-        // 去重（按 docId + chunkIndex）
+        // 1. Query Rewrite：自动预检索可传历史，页面和工具传空历史。
+        List<ChatMessage> safeHistory = history == null ? List.of() : history;
+        List<String> queries = queryRewriteService.rewrite(query, safeHistory);
+        log.info("Query Rewrite: {} -> {}", query, queries);
+        if (queries == null || queries.isEmpty()) {
+            return List.of();
+        }
+
+        // 2. 所有改写查询一次性向量化，再对限定知识库做跨库召回。
+        int retrieveTopK = Math.max(Math.max(topK * 3, 20),
+                ragConfigProperties.getEnhancement().getRetrieve().getTopN());
+        List<Map<String, Object>> allVectorResults = new ArrayList<>();
+        EmbeddingService.EmbeddingResult queryResult = embeddingService.embedBatch(queries);
+        List<float[]> embeddings = queryResult.embeddings();
+        for (float[] queryEmbedding : embeddings) {
+            for (Long scopedKbId : scopedKbIds) {
+                allVectorResults.addAll(
+                        vectorStoreService.search(userId, scopedKbId, queryEmbedding, retrieveTopK));
+            }
+        }
+
+        // 3. 跨查询、跨知识库去重，相同片段保留最高向量分数，不做 0.5 等预过滤。
         Map<String, Map<String, Object>> dedupMap = new LinkedHashMap<>();
         for (Map<String, Object> r : allVectorResults) {
             String key = r.get("docId") + ":" + r.get("chunkIndex");
-            dedupMap.putIfAbsent(key, r);
+            Map<String, Object> existing = dedupMap.get(key);
+            if (existing == null
+                    || ((Number) r.get("score")).floatValue()
+                    > ((Number) existing.get("score")).floatValue()) {
+                dedupMap.put(key, r);
+            }
         }
         List<Map<String, Object>> vectorResults = new ArrayList<>(dedupMap.values());
+        if (vectorResults.isEmpty()) {
+            return List.of();
+        }
 
-        // 3. 批量补充切片文本（按 docId IN 一次查回，避免 N+1 查询）
+        // 4. 批量补充切片文本（按 docId IN 一次查回，避免 N+1 查询）。
         List<Long> docIds = vectorResults.stream()
                 .map(r -> ((Number) r.get("docId")).longValue())
                 .distinct()
                 .toList();
+        Map<Long, String> docNameMap = documentRepository.findAllById(docIds).stream()
+                .collect(Collectors.toMap(
+                        KnowledgeDocumentEntity::getId,
+                        document -> Optional.ofNullable(document.getFileName()).orElse("未知文档"),
+                        (first, ignored) -> first));
         Map<Long, List<KnowledgeChunkEntity>> chunksByDoc = new HashMap<>();
         if (!docIds.isEmpty()) {
             for (KnowledgeChunkEntity c : chunkRepository.findByDocumentIdIn(docIds)) {
@@ -520,7 +590,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             vr.put("content", content);
         }
 
-        // 4. Rerank
+        // 5. 全部知识库候选只执行一次全局 Rerank。
         List<RawChunk> candidates = vectorResults.stream()
                 .map(r -> new RawChunk(
                         ((Number) r.get("docId")).longValue(),
@@ -530,9 +600,13 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                 ))
                 .toList();
 
-        List<RankedChunk> ranked = rerankService.rerank(query, candidates);
+        float effectiveMinScore = minScore != null
+                ? minScore
+                : ragConfigProperties.getEnhancement().getRerank().getMinScore();
+        RerankResult rerankResult = rerankService.rerank(query, candidates);
+        List<RankedChunk> ranked = RerankResultFilter.filter(rerankResult, effectiveMinScore, topK);
 
-        // 5. 构建最终结果
+        // 6. 构建最终结果。
         List<Map<String, Object>> results = new ArrayList<>();
         for (RankedChunk rc : ranked) {
             Map<String, Object> m = new HashMap<>();
@@ -544,7 +618,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             results.add(m);
         }
 
-        log.info("检索完成: Query {} 个, 向量召回 {} 个, Rerank 后 {} 个", queries.size(), vectorResults.size(), results.size());
+        log.info("检索完成: 知识库 {} 个, Query {} 个, 向量召回 {} 个, 重排成功={}, 最终 {} 个",
+                scopedKbIds.size(), queries.size(), vectorResults.size(), rerankResult.reranked(), results.size());
         return results;
     }
 

@@ -87,6 +87,7 @@ public class AgentToolContextService {
         filteredTools = mergeMcpTools(filteredTools, sessionId);
         filteredTools = filterWebSearchTool(filteredTools);
         filteredTools = filterSubAgentTool(filteredTools);
+        filteredTools = filterKnowledgeSearchTool(filteredTools, app);
 
         KnowledgeSearchTool knowledgeSearchTool = configureKnowledgeSearchTool(filteredTools, app);
         List<ToolDefinition> toolDefinitions = buildToolDefinitions(filteredTools, app, kbDescription);
@@ -106,7 +107,7 @@ public class AgentToolContextService {
         if (context == null || context.knowledgeSearchTool() == null) {
             return;
         }
-        context.knowledgeSearchTool().clearCurrentKbId();
+        context.knowledgeSearchTool().clearCurrentKbIds();
         context.knowledgeSearchTool().clearDynamicDescription();
     }
 
@@ -189,7 +190,33 @@ public class AgentToolContextService {
     }
 
     /**
-     * 为知识库检索工具设置当前应用默认知识库。
+     * 根据本轮知识库开关和 Agent 关联关系过滤 knowledge_search 工具。
+     *
+     * <p>关闭知识库或当前 Agent 未关联知识库时，从工具实例与工具定义中同时移除，
+     * 避免模型绕过前端开关主动发起检索。</p>
+     *
+     * @param tools 待过滤工具
+     * @param app 当前 Agent 应用；可为 null
+     * @return 符合本轮知识库开关状态的工具列表
+     */
+    private List<Tool> filterKnowledgeSearchTool(List<Tool> tools, AgentAppEntity app) {
+        boolean available = UserContext.isKnowledgeEnabled()
+                && app != null
+                && !app.getKnowledgeBaseIds().isEmpty();
+        if (available) {
+            return tools;
+        }
+        List<Tool> filtered = tools.stream()
+                .filter(tool -> !(tool instanceof KnowledgeSearchTool))
+                .toList();
+        if (filtered.size() < tools.size()) {
+            log.debug("知识库未启用或未关联，knowledge_search 工具已移除");
+        }
+        return filtered;
+    }
+
+    /**
+     * 为知识库检索工具设置当前应用允许访问的完整知识库集合。
      *
      * @param tools 当前可用工具
      * @param app   当前应用；可为 null
@@ -201,8 +228,7 @@ public class AgentToolContextService {
         }
         for (Tool tool : tools) {
             if (tool instanceof KnowledgeSearchTool knowledgeSearchTool) {
-                Long defaultKbId = app.getKnowledgeBaseIds().iterator().next();
-                knowledgeSearchTool.setCurrentKbId(defaultKbId);
+                knowledgeSearchTool.setCurrentKbIds(app.getKnowledgeBaseIds());
                 return knowledgeSearchTool;
             }
         }
