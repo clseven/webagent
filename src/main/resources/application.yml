@@ -31,6 +31,8 @@ spring:
         format_sql: true
 
 agent:
+  # 智能体解释“今天、明天”等相对时间时使用的默认 IANA 时区
+  time-zone: ${AGENT_TIME_ZONE:Asia/Shanghai}
   mcp:
     # 是否启用真 MCP 协议客户端（基于官方 mcp-core SDK），当前项目默认开启
     enabled: ${MCP_ENABLED:true}
@@ -112,11 +114,11 @@ agent:
     planner:
       api-url: ${DEEPSEEK_LLM_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:}
-      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}
+      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-pro}
     executor:
       api-url: ${DEEPSEEK_LLM_URL:https://api.deepseek.com}
       api-key: ${DEEPSEEK_API_KEY:}
-      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}
+      model: ${DEEPSEEK_LLM_MODEL:deepseek-v4-pro}
       thinking-enabled: ${DEEPSEEK_THINKING_ENABLED:true}
     vision:
       api-url: ${AGNES_LLM_URL:https://apihub.agnes-ai.com/v1}
@@ -151,17 +153,24 @@ rag:
       max-queries: 5
       api-url: ${RAG_REWRITE_URL:${DEEPSEEK_LLM_URL:https://api.deepseek.com}}
       api-key: ${RAG_REWRITE_KEY:${DEEPSEEK_API_KEY:}}
-      model: ${RAG_REWRITE_MODEL:${DEEPSEEK_LLM_MODEL:deepseek-v4-flash}}
+      model: ${RAG_REWRITE_MODEL:${DEEPSEEK_LLM_MODEL:deepseek-v4-pro}}
       temperature: 0.3
       top-p: 0.8
       max-tokens: 512
     retrieve:
       top-n: 20
-      min-score: 0.5
     rerank:
-      enabled: true
-      api-url: ${RAG_RERANK_URL:http://127.0.0.1:8002/rerank}
-      top-k: 8
+      enabled: ${RAG_RERANK_ENABLED:true}
+      provider: ${RAG_RERANK_PROVIDER:deepseek}
+      api-url: ${RAG_RERANK_API_URL:${DEEPSEEK_LLM_URL:https://api.deepseek.com}}
+      api-key: ${RAG_RERANK_API_KEY:${DEEPSEEK_API_KEY:}}
+      model: ${RAG_RERANK_MODEL:deepseek-v4-flash}
+      top-k: ${RAG_RERANK_TOP_K:5}
+      min-score: ${RAG_RERANK_MIN_SCORE:0.8}
+      max-candidates: ${RAG_RERANK_MAX_CANDIDATES:12}
+      max-content-chars: ${RAG_RERANK_MAX_CONTENT_CHARS:1200}
+      timeout-seconds: ${RAG_RERANK_TIMEOUT_SECONDS:10}
+      max-tokens: ${RAG_RERANK_MAX_TOKENS:512}
 
 baidu:
   ocr:

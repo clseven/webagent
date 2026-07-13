@@ -4,8 +4,8 @@ agent:
   llm:
     planner:
       api-url: https://api.deepseek.com
-      model: deepseek-v4-flash
+      model: deepseek-v4-pro
     executor:
       api-url: https://api.deepseek.com
-      model: deepseek-v4-flash
+      model: deepseek-v4-pro
       thinking-enabled: true
