@@ -247,7 +247,8 @@ public class AgentServiceImpl implements AgentService {
         String plan = agentPlannerService.plan(context, userMessage, "plan", "【规划结果】", 300);
         try {
             ReactAgent reactAgent = reactAgentFactory.createForChat(context, plan);
-            AgentResponse agentResponse = reactAgent.run(sessionId, userMessage, context.history());
+            AgentResponse agentResponse = reactAgent.run(
+                    sessionId, context.executionUserMessage(), context.history());
             String response = agentResponse.getFinalAnswer();
             String reasoning = agentResponse.getFinalReasoning();
             List<Map<String, Object>> events = AgentEventMapper.fromPlanAndSteps(plan, agentResponse.getSteps());
@@ -257,7 +258,13 @@ public class AgentServiceImpl implements AgentService {
                     execUsage.completionTokens(), execUsage.cacheHitTokens(),
                     execUsage.totalTokens(), "executor", "chat");
 
-            conversationService.addAssistantMessage(sessionId, response, reasoning, events);
+            conversationService.addAssistantMessage(
+                    sessionId,
+                    response,
+                    reasoning,
+                    events,
+                    agentResponse.getRunStatus(),
+                    agentResponse.getCheckpointMessages());
             scheduleGeneratedTitle(sessionId, context.userId(), context.firstTurn(), userMessage, response);
             log.info("【助手输出】会话: {} 内容长度: {}, 思考链长度: {}",
                     sessionId, response != null ? response.length() : 0, reasoning != null ? reasoning.length() : 0);
@@ -439,7 +446,7 @@ public class AgentServiceImpl implements AgentService {
                 }
 
                 ReactAgent reactAgent = reactAgentFactory.createForStream(context, plan);
-                reactAgent.runStream(sessionId, userMessage, context.history())
+                reactAgent.runStream(sessionId, context.executionUserMessage(), context.history())
                     .doOnNext(event -> {
                         if (!sink.isCancelled()) {
                             sink.next(event);

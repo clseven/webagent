@@ -90,7 +90,7 @@ public final class AgentHookExamples {
                     .filter(m -> "assistant".equals(m.getRole()) && !m.getToolCalls().isEmpty())
                     .count();
             log.info("[Hook] Stop: 本轮共 {} 次工具调用，第 {} 次收尾", toolCount, finalizeAttempt);
-            return null; // 允许退出
+            return ReactAgent.StopDecision.allow();
         };
     }
 }

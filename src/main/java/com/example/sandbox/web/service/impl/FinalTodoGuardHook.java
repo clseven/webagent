@@ -15,24 +15,12 @@ import java.util.Optional;
  * <ol>
  *   <li><b>TodoState 前置硬信号（便宜）</b>：若仍有未完成 todo，或 completed todo 缺少 evidence，
  *       直接拦下要求继续或标 blocked。这只是必要条件，闭环不代表证据够。</li>
- *   <li><b>证据自检（TodoState 干净后）</b>：注入自检提示，让模型基于证据自判“该不该收尾”。
- *       harness 不解析模型输出，只靠模型行为——继续调工具则循环继续，给最终答案则放行。</li>
+ *   <li><b>证据自检（TodoState 干净后）</b>：保存首版候选答案并注入自检提示，让模型基于证据
+ *       自判“该不该收尾”。harness 不解析模型文本，只靠行为判断——继续调工具表示候选失效，
+ *       再次给出最终答案表示通过并原样放行首版候选。</li>
  * </ol>
- *
- * <h3>收敛防线</h3>
- * <p>自检靠 {@code finalizeAttempt}（由 {@link ReactAgent} 持有、模型调工具时清零）收敛：
- * 前 {@link #MAX_SELF_CHECK_ROUNDS} 次收尾注入自检，之后强制放行，防“过度自信刷自检”。
- * 另一端由 {@code MAX_ITERATIONS} 防“过度谨慎无限查”。两道防线齐了本方案才稳。</p>
  */
 public class FinalTodoGuardHook implements ReactAgent.StopHook {
-
-    /**
-     * 最多注入自检的收尾次数；超过则强制放行（收敛）。
-     *
-     * <p>取 2 表示：第 1、2 次收尾注入自检，第 3 次起直接放行。计数在模型调工具时由
-     * {@link ReactAgent} 清零，所以只有“连续多次想收尾却不补查”才会触到上限。</p>
-     */
-    private static final int MAX_SELF_CHECK_ROUNDS = 2;
 
     /**
      * 回答前证据自检提示（Stop Hook 注入的 user 消息）。
@@ -55,7 +43,8 @@ public class FinalTodoGuardHook implements ReactAgent.StopHook {
             - 若存在”纯推断”的关键结论、或子问题缺依据、或存在未解决冲突：
               调用工具补查，并说明你要补什么。不要输出最终答案。
             - 若每个子问题都已落实（工具依据 / 用户已提供 / 公共常识，三类任一）且无未解决冲突：
-              直接输出最终答案。只输出答案本身，不要包含上述检查过程，不要标注来源类型。
+              直接确认收尾。系统会原样放行自检前保存的候选答案，本轮不得重新措辞、扩写或改写答案。
+              不要包含上述检查过程，不要标注来源类型。
             """;
 
     /** TodoState 服务。 */
@@ -80,28 +69,25 @@ public class FinalTodoGuardHook implements ReactAgent.StopHook {
      *
      * @param messages        当前对话消息
      * @param finalizeAttempt 本会话内模型连续准备收尾的次数（从 1 开始）
-     * @return null 表示允许最终回答；非 null 表示注入提醒并继续循环
+     * @return Todo 未闭环时普通继续；Todo 干净时保存候选并进入一次自检
      */
     @Override
-    public String run(List<ChatMessage> messages, int finalizeAttempt) {
-        // 第一层：TodoState 前置硬信号（便宜，未闭环一定拦，不消耗自检计数）
+    public ReactAgent.StopDecision run(List<ChatMessage> messages, int finalizeAttempt) {
+        // 第一层：TodoState 前置硬信号（便宜，未闭环一定拦）
         Optional<AgentTodoState> state = todoService.get(sessionId);
         if (state.isPresent()) {
             List<AgentTodoItem> missingEvidence = state.get().completedWithoutEvidence();
             if (!missingEvidence.isEmpty()) {
-                return buildMissingEvidenceReminder(missingEvidence);
+                return ReactAgent.StopDecision.continueWith(buildMissingEvidenceReminder(missingEvidence));
             }
             List<AgentTodoItem> openItems = state.get().openItems();
             if (!openItems.isEmpty()) {
-                return buildOpenTodoReminder(openItems);
+                return ReactAgent.StopDecision.continueWith(buildOpenTodoReminder(openItems));
             }
         }
 
-        // 第二层：TodoState 干净 → 证据自检。达到上限则强制放行（收敛）
-        if (finalizeAttempt > MAX_SELF_CHECK_ROUNDS) {
-            return null;
-        }
-        return SELF_CHECK_PROMPT;
+        // 第二层：TodoState 干净 → 保存当前候选并执行一次证据自检
+        return ReactAgent.StopDecision.verifyCandidate(SELF_CHECK_PROMPT);
     }
 
     /**

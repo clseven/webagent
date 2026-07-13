@@ -63,6 +63,24 @@ public class ChatMessageEntity {
     private String eventsJson;
 
     /**
+     * Agent 运行状态；普通历史消息允许为空。
+     *
+     * <p>当值为 {@code PAUSED_MAX_ITERATIONS} 时，下一轮应优先恢复检查点，
+     * 不把超限展示文案当作最终任务结论。</p>
+     */
+    @Column(name = "run_status", length = 32)
+    private String runStatus;
+
+    /**
+     * Agent 暂停时的协议级模型消息检查点 JSON。
+     *
+     * <p>该字段与仅供前端展示的 {@link #eventsJson} 分离，保存 tool_call ID、
+     * 并发调用分组及 tool 结果消息顺序。</p>
+     */
+    @Column(name = "checkpoint_json", columnDefinition = "LONGTEXT")
+    private String checkpointJson;
+
+    /**
      * 消息创建时间戳，单位毫秒。
      */
     @Column(name = "timestamp")

@@ -55,7 +55,7 @@ public class ReactAgentFactory {
     public ReactAgent createForChat(AgentTurnContext context, String plan) {
         if (context.policy().mode() == TurnMode.SOCIAL) {
             ReactAgent socialAgent = new ReactAgent(
-                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(),
+                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(context.runtimeTimeContext()),
                     null, null, null, backgroundTaskManager);
             socialAgent.setUseRawSystemPrompt(true);
             hookService.configureForChat(socialAgent, List.of(),
@@ -69,7 +69,8 @@ public class ReactAgentFactory {
                 plan,
                 null,
                 null,
-                backgroundTaskManager
+                backgroundTaskManager,
+                context.runtimeTimeContext()
         );
         hookService.configureForChat(reactAgent, context.toolContext().filteredTools(),
                 context.sessionId(), context.userMessage(), plan, context.policy());
@@ -86,7 +87,7 @@ public class ReactAgentFactory {
     public ReactAgent createForStream(AgentTurnContext context, String plan) {
         if (context.policy().mode() == TurnMode.SOCIAL) {
             ReactAgent socialAgent = new ReactAgent(
-                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(),
+                    executorLlm, List.of(), ReactPromptAssembler.assembleSocial(context.runtimeTimeContext()),
                     null, conversationService, context.sessionId(), backgroundTaskManager);
             socialAgent.setUseRawSystemPrompt(true);
             hookService.configureForStream(socialAgent, List.of(),
@@ -100,7 +101,8 @@ public class ReactAgentFactory {
                 plan,
                 conversationService,
                 context.sessionId(),
-                backgroundTaskManager
+                backgroundTaskManager,
+                context.runtimeTimeContext()
         );
         hookService.configureForStream(reactAgent, context.toolContext().filteredTools(),
                 context.sessionId(), context.userMessage(), plan, context.policy());

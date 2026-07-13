@@ -4,6 +4,7 @@ import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.model.llm.AgentEventMapper;
 import com.example.sandbox.web.model.llm.AgentResponse;
+import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.llm.AgentStep;
 import com.example.sandbox.web.model.llm.LlmResponse;
 import com.example.sandbox.web.model.llm.LlmStreamChunk;
@@ -38,7 +39,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h3>工作流程</h3>
  * <pre>
- * while (未完成 && 迭代次数 < 25) {
+ * while (未完成 && 迭代次数 < 200) {
  *     1. LLM 思考：分析当前情况，决定下一步
  *     2. LLM 决策：调用工具 OR 直接回答
  *     3. 如果调工具 → 收集本轮全部 tool_call → 交 ToolScheduler 调度
@@ -64,10 +65,10 @@ public class ReactAgent {
     private static final Logger log = LoggerFactory.getLogger(ReactAgent.class);
 
     /** 最大迭代次数，防止无限循环 */
-    private static final int MAX_ITERATIONS = 25;
+    private static final int MAX_ITERATIONS = 200;
 
     /** 触发历史消息压缩的 token 阈值（字符数估算） */
-    private static final int SUMMARIZE_THRESHOLD = 24_000;
+    private static final int SUMMARIZE_THRESHOLD = 200_000;
 
     /** 字符到 token 的估算比例（中文约 1.5-2 字符/token，取保守值 3） */
     private static final int TOKEN_CHARS_RATIO = 3;
@@ -123,8 +124,14 @@ public class ReactAgent {
     /** 工具定义列表（传给 LLM，让它知道有哪些工具可用） */
     private final List<ToolDefinition> toolDefinitions;
 
-    /** 系统提示词（包含工具说明、技能指导、执行计划等） */
-    private final String systemPrompt;
+    /** 构造时传入的原始动态提示内容，切换原始提示模式时用于重新组装。 */
+    private final String promptContext;
+
+    /** 系统提示词（包含工具说明、技能指导、运行时上下文和执行计划等） */
+    private String systemPrompt;
+
+    /** 本轮不可变运行时上下文；父子智能体共享同一时间快照。 */
+    private final String runtimeContext;
 
     /** 规划阶段产出的执行计划（注入到 system prompt 中指导执行） */
     private final String plan;
@@ -132,15 +139,16 @@ public class ReactAgent {
     /** 对话摘要（当历史消息超出 token 预算时生成），实际作为 user 消息保留在 messages 中 */
     private String conversationSummary;
 
-    /**
-     * 收尾尝试计数（选项 C：状态归执行器，Stop Hook 只读）。
-     *
-     * <p>模型每次准备收尾、触发 Stop Hook 前 +1；模型实际调用工具后归零。
-     * Stop Hook 据此判断“注入自检”还是“已到阈值强制放行”。实例级字段即可——
-     * 一个 {@link ReactAgent} 实例只跑一条路径（run 或 runStream），由工厂按会话新建，
-     * 天然按会话隔离，无需跨路径共享。</p>
-     */
+    /** 收尾尝试计数，用于 Hook 日志和诊断；实际执行工具后清零。 */
     private int finalizeAttemptCount = 0;
+
+    /**
+     * 正在等待自检确认的候选答案。
+     *
+     * <p>Stop Hook 发起候选验证后保存首版答案；下一轮模型不调用工具而直接收尾时，
+     * 视为自检通过并原样返回此候选，避免自检轮重新措辞覆盖原答案。</p>
+     */
+    private volatile FinalAnswerCandidate pendingFinalAnswerCandidate;
 
     /**
      * 工具调用并发调度器。READ 类并发、WRITE/EXCLUSIVE 串行，结果按原序对齐。
@@ -173,6 +181,7 @@ public class ReactAgent {
      */
     public void setUseRawSystemPrompt(boolean useRawSystemPrompt) {
         this.useRawSystemPrompt = useRawSystemPrompt;
+        this.systemPrompt = buildSystemPrompt(promptContext);
     }
 
     // ==================== Hook 系统 ====================
@@ -196,22 +205,74 @@ public class ReactAgent {
         ChatMessage run(LlmToolCall toolCall, String result, String sessionId);
     }
 
+    /** Stop Hook 对候选答案的处理动作。 */
+    public enum StopAction {
+        /** 当前候选答案可直接返回。 */
+        ALLOW,
+        /** 注入提示并继续执行，但不保留当前候选答案。 */
+        CONTINUE,
+        /** 保存当前候选答案，注入提示并等待下一轮自检确认。 */
+        VERIFY_CANDIDATE
+    }
+
     /**
-     * 停止前 Hook：接收当前消息列表和本会话已连续收尾的次数，返回 null 表示允许退出，
-     * 返回非 null 字符串表示强制继续（作为新 user 消息注入）。
+     * Stop Hook 决策。
      *
-     * <p>{@code finalizeAttempt} 由 {@link ReactAgent} 持有并传入（选项 C：状态归执行器、
-     * hook 只读不持有）：模型每次准备收尾时递增，模型实际调用工具后清零。hook 据此实现
-     * “连续多次想收尾却不补查则强制放行”的收敛防线，无需自己维护计数状态。</p>
+     * @param action 处理动作
+     * @param message 继续执行时注入的 user 消息；放行时可为空
+     */
+    public record StopDecision(StopAction action, String message) {
+
+        /**
+         * 创建直接放行决策。
+         *
+         * @return 放行决策
+         */
+        public static StopDecision allow() {
+            return new StopDecision(StopAction.ALLOW, null);
+        }
+
+        /**
+         * 创建普通强制继续决策。
+         *
+         * @param message 注入给模型的提醒
+         * @return 强制继续决策
+         */
+        public static StopDecision continueWith(String message) {
+            return new StopDecision(StopAction.CONTINUE, message);
+        }
+
+        /**
+         * 创建候选答案验证决策。
+         *
+         * @param message 注入给模型的自检提示
+         * @return 保存候选并继续自检的决策
+         */
+        public static StopDecision verifyCandidate(String message) {
+            return new StopDecision(StopAction.VERIFY_CANDIDATE, message);
+        }
+
+        /**
+         * 判断是否需要继续下一轮。
+         *
+         * @return true 表示应注入消息并继续
+         */
+        public boolean shouldContinue() {
+            return action != StopAction.ALLOW;
+        }
+    }
+
+    /**
+     * 停止前 Hook：接收当前消息列表和本会话已连续收尾的次数，返回结构化收尾决策。
      */
     @FunctionalInterface
     public interface StopHook {
         /**
          * @param messages        当前对话消息
          * @param finalizeAttempt 本会话内模型连续准备收尾的次数（从 1 开始，第一次收尾时为 1）
-         * @return null = 允许退出；非 null = 强制继续，返回值作为新 user 消息注入
+         * @return 收尾决策，不应返回 null
          */
-        String run(List<ChatMessage> messages, int finalizeAttempt);
+        StopDecision run(List<ChatMessage> messages, int finalizeAttempt);
     }
 
     /** 后台任务管理器（为 null 时后台功能不启用，如流式路径） */
@@ -284,24 +345,26 @@ public class ReactAgent {
     }
 
     /**
-     * 触发 Stop 事件：遍历所有注册的回调，任一返回非 null 即阻止退出（返回值作为新的 user 消息注入）。
+     * 触发 Stop 事件：遍历所有注册的回调，首个要求继续的决策会阻止退出。
      *
      * <p>调用前先递增收尾尝试计数并传给 hook；返回 null（放行）时计数无需清零——真正的清零发生在
      * 模型实际调用工具时（见 {@link #onToolExecuted()}）。这样“连续多次想收尾却不补查”才会累积计数，
      * 触发 hook 的强制放行防线。</p>
      *
-     * @return null = 允许退出，非 null = 强制继续
+     * @return Stop Hook 汇总决策
      */
     @SuppressWarnings("unchecked")
-    private String triggerStopHooks(List<ChatMessage> messages) {
+    private StopDecision triggerStopHooks(List<ChatMessage> messages) {
         List<Object> callbacks = hooks.get("Stop");
-        if (callbacks == null) return null;
+        if (callbacks == null) return StopDecision.allow();
         finalizeAttemptCount++;
         for (Object cb : callbacks) {
-            String result = ((StopHook) cb).run(messages, finalizeAttemptCount);
-            if (result != null) return result;
+            StopDecision decision = ((StopHook) cb).run(messages, finalizeAttemptCount);
+            if (decision != null && decision.shouldContinue()) {
+                return decision;
+            }
         }
-        return null;
+        return StopDecision.allow();
     }
 
     /**
@@ -312,6 +375,38 @@ public class ReactAgent {
      */
     private void onToolExecuted() {
         finalizeAttemptCount = 0;
+    }
+
+    /**
+     * 模型在候选答案自检期间选择调用工具，说明候选未通过，应立即失效。
+     */
+    private void invalidatePendingFinalAnswerCandidate() {
+        pendingFinalAnswerCandidate = null;
+    }
+
+    /**
+     * 保存等待自检确认的候选答案。
+     *
+     * @param content 候选正文
+     * @param reasoning 候选正文对应的推理内容
+     */
+    private void rememberFinalAnswerCandidate(String content, String reasoning) {
+        pendingFinalAnswerCandidate = new FinalAnswerCandidate(content, reasoning);
+    }
+
+    /**
+     * 取出并清除已经通过自检的候选答案。
+     *
+     * @return 待放行候选；不存在时返回 null
+     */
+    private FinalAnswerCandidate consumeFinalAnswerCandidate() {
+        FinalAnswerCandidate candidate = pendingFinalAnswerCandidate;
+        pendingFinalAnswerCandidate = null;
+        return candidate;
+    }
+
+    /** 自检前保存的候选答案快照。 */
+    private record FinalAnswerCandidate(String content, String reasoning) {
     }
 
     // ==================== 子代理支持 ====================
@@ -342,7 +437,8 @@ public class ReactAgent {
                 null,   // 无执行计划 — 子 Agent 直接执行任务
                 null,   // conversationService=null — 不写主会话
                 this.sessionId,  // 保留 sessionId — 需要访问同一个沙箱
-                null    // 子代理不启用后台任务
+                null,   // 子代理不启用后台任务
+                this.runtimeContext // 继承父智能体本轮时间快照
         );
 
         // 继承 PreToolUse Hook（安全检查不跳过）
@@ -432,6 +528,25 @@ public class ReactAgent {
     public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt, String plan,
                       ConversationService conversationService, String sessionId,
                       BackgroundTaskManager backgroundTaskManager) {
+        this(llmService, toolList, skillPrompt, plan, conversationService, sessionId,
+                backgroundTaskManager, null);
+    }
+
+    /**
+     * 创建带单轮运行时上下文的 ReactAgent。
+     *
+     * @param llmService LLM 服务实例
+     * @param toolList 可用工具列表
+     * @param skillPrompt 技能、知识库和工作区等动态提示内容
+     * @param plan 规划器产出的任务策略
+     * @param conversationService 对话服务；为 null 时不保存消息
+     * @param sessionId 会话 ID
+     * @param backgroundTaskManager 后台任务管理器；为 null 时不处理后台通知
+     * @param runtimeContext 本轮不可变运行时上下文；可为 null
+     */
+    public ReactAgent(LlmService llmService, List<Tool> toolList, String skillPrompt, String plan,
+                      ConversationService conversationService, String sessionId,
+                      BackgroundTaskManager backgroundTaskManager, String runtimeContext) {
         this.llmService = llmService;
         this.conversationService = conversationService;
         this.sessionId = sessionId;
@@ -439,6 +554,8 @@ public class ReactAgent {
         this.tools = new ConcurrentHashMap<>();
         this.toolDefinitions = new ArrayList<>();
         this.plan = plan;
+        this.promptContext = skillPrompt;
+        this.runtimeContext = runtimeContext;
 
         for (Tool tool : toolList) {
             tools.put(tool.getDefinition().getName(), tool);
@@ -471,6 +588,7 @@ public class ReactAgent {
     public AgentResponse run(String sessionId, String userMessage, List<ChatMessage> history) {
         List<ChatMessage> messages = new ArrayList<>();
         messages.addAll(trimHistory(history));
+        restoreConversationSummary(messages);
         messages.add(ChatMessage.userMessage(userMessage));
 
         log.info("ReAct 消息构建完成，历史 {} 条（截取后 {} 条），当前消息 1 条",
@@ -491,6 +609,8 @@ public class ReactAgent {
             if (backgroundTaskManager != null) {
                 String notification = backgroundTaskManager.collect(sessionId);
                 if (notification != null) {
+                    // 新的后台证据到达后，旧候选尚未基于该证据生成，必须重新回答并验证。
+                    invalidatePendingFinalAnswerCandidate();
                     messages.add(ChatMessage.userMessage(notification));
                     log.debug("注入后台通知: {} 字符", notification.length());
                 }
@@ -512,12 +632,26 @@ public class ReactAgent {
             }
 
             if (response.isFinished()) {
-                // 🪝 Stop Hook：任一回调返回非 null 即注入消息并强制继续
-                String forceContinue = triggerStopHooks(messages);
-                if (forceContinue != null) {
-                    log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
-                    messages.add(ChatMessage.userMessage(forceContinue));
-                    continue;
+                FinalAnswerCandidate verifiedCandidate = consumeFinalAnswerCandidate();
+                if (verifiedCandidate != null) {
+                    // 自检轮没有调用工具而是再次收尾，说明候选通过；忽略自检轮重写内容。
+                    response = LlmResponse.text(
+                            verifiedCandidate.content(),
+                            verifiedCandidate.reasoning(),
+                            response.getTokenUsage());
+                    log.info("回答前自检通过，原样放行候选答案");
+                } else {
+                    // 🪝 Stop Hook：首个要求继续的决策会注入消息并进入下一轮
+                    StopDecision stopDecision = triggerStopHooks(messages);
+                    if (stopDecision.shouldContinue()) {
+                        if (stopDecision.action() == StopAction.VERIFY_CANDIDATE) {
+                            rememberFinalAnswerCandidate(response.getContent(), response.getReasoningContent());
+                        }
+                        String forceContinue = stopDecision.message();
+                        log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
+                        messages.add(ChatMessage.userMessage(forceContinue));
+                        continue;
+                    }
                 }
 
                 // 最终返回前等待遗留后台任务
@@ -565,6 +699,8 @@ public class ReactAgent {
             }
 
             if (response.hasToolCall()) {
+                // 自检选择补查即表示当前候选不通过；即使工具稍后被 Pre Hook 拦截也不能复用旧答案。
+                invalidatePendingFinalAnswerCandidate();
                 List<LlmToolCall> toolCalls = response.getToolCalls();
                 String llmContent = response.getContent();
                 if (llmContent != null && !llmContent.isEmpty()) {
@@ -617,8 +753,10 @@ public class ReactAgent {
         log.warn("ReAct 达到最大迭代次数 ({})，会话 {}", MAX_ITERATIONS, sessionId);
         LlmUsage totalUsage = new LlmUsage(totalPromptTokens, totalCompletionTokens, totalTokens, totalCacheHitTokens);
         return new AgentResponse(
-                "抱歉，我尝试了多次但仍未能完成任务。请尝试简化您的要求或提供更多信息。",
-                null, steps, totalUsage, iteration);
+                ConversationServiceImpl.SYNC_ITERATION_LIMIT_MESSAGE,
+                null, steps, totalUsage, iteration,
+                AgentRunStatus.PAUSED_MAX_ITERATIONS,
+                List.copyOf(messages));
     }
 
     private LlmToolCall ensureToolCallId(LlmToolCall toolCall) {
@@ -887,20 +1025,37 @@ public class ReactAgent {
     }
 
     /**
-     * 限制历史消息条数（目标为最近 20 条）
+     * 复制调用方准备好的历史消息。
      *
-     * <p>Token 预算由循环内的 compressIfNeeded 动态管理，这里只做条数限制。
-     * 如果第 20 条落在工具调用消息组内部，则向前扩展以保留完整协议组。</p>
+     * <p>普通数据库历史已由会话服务限制条数；协议检查点可能超过 20 条，
+     * 必须完整保留 tool_call 与 tool 结果，不能在 Agent 内再次按条数裁剪。
+     * Token 预算统一由 {@link #compressIfNeeded(List)} 管理。</p>
      *
-     * @param history 原始历史消息
-     * @return 裁剪后的历史消息，不会从孤立的 tool 消息开始
+     * @param history 调用方准备好的历史消息或协议检查点
+     * @return 可由当前运行安全修改的历史副本
      */
     private List<ChatMessage> trimHistory(List<ChatMessage> history) {
-        if (history.size() <= 20) {
-            return new ArrayList<>(history);
+        return new ArrayList<>(history);
+    }
+
+    /**
+     * 从恢复的压缩摘要消息中重建摘要状态。
+     *
+     * <p>检查点恢复后如果再次触发压缩，需要把旧摘要与新摘要合并；否则旧摘要会被
+     * 当作普通消息重复概括并丢失增量语义。</p>
+     *
+     * @param messages 当前运行的历史消息
+     */
+    private void restoreConversationSummary(List<ChatMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return;
         }
-        int splitAt = alignSplitAtToToolCallBoundary(history, history.size() - 20);
-        return new ArrayList<>(history.subList(splitAt, history.size()));
+        ChatMessage first = messages.get(0);
+        if (!"user".equals(first.getRole()) || first.getContent() == null
+                || !first.getContent().startsWith(COMPACTED_SUMMARY_PREFIX)) {
+            return;
+        }
+        conversationSummary = first.getContent().substring(COMPACTED_SUMMARY_PREFIX.length());
     }
 
     /**
@@ -1183,7 +1338,7 @@ public class ReactAgent {
         if (useRawSystemPrompt) {
             return skillPrompt != null ? skillPrompt : "";
         }
-        String prompt = ReactPromptAssembler.assemble(toolDefinitions, skillPrompt, plan);
+        String prompt = ReactPromptAssembler.assemble(toolDefinitions, runtimeContext, skillPrompt, plan);
         if (log.isDebugEnabled()) {
             log.debug("执行器提示词组装完成: sections={}, chars={}",
                     ReactPromptAssembler.sectionNames(toolDefinitions, skillPrompt, plan),
@@ -1227,6 +1382,7 @@ public class ReactAgent {
             try {
                 List<ChatMessage> messages = new ArrayList<>();
                 messages.addAll(trimHistory(history));
+                restoreConversationSummary(messages);
                 messages.add(ChatMessage.userMessage(userMessage));
 
                 log.info("ReAct Stream 消息构建完成，历史 {} 条，当前消息 1 条", history.size());
@@ -1256,6 +1412,8 @@ public class ReactAgent {
                         String notification = backgroundTaskManager.collect(sessionId);
                         if (notification != null) {
                             log.info("[后台子代理] 收集到通知并注入消息循环: {} 字符", notification.length());
+                            // 新的后台证据到达后，旧候选尚未基于该证据生成，必须重新回答并验证。
+                            invalidatePendingFinalAnswerCandidate();
                             messages.add(ChatMessage.userMessage(notification));
                             sink.next(SseEvent.status("后台子代理已完成，结果已注入对话"));
                             log.debug("[后台子代理] 通知内容预览: {}",
@@ -1271,6 +1429,8 @@ public class ReactAgent {
                     // 累积本轮的思考内容和思考链
                     StringBuilder currentThinking = new StringBuilder();
                     StringBuilder currentReasoning = new StringBuilder();
+                    // 自检确认轮的普通正文只表达“再次收尾”，不得在前端覆盖或闪现为新答案。
+                    final boolean verifyingFinalCandidate = pendingFinalAnswerCandidate != null;
                     // 收集本轮全部 tool_call（流式可能跨多个 chunk、并发出多个）
                     java.util.List<LlmToolCall> toolCallsCollected = new java.util.concurrent.CopyOnWriteArrayList<>();
                     AtomicReference<LlmUsage> usageRef = new AtomicReference<>();
@@ -1286,7 +1446,9 @@ public class ReactAgent {
                                 switch (chunk.type()) {
                                     case "token":
                                         currentThinking.append(chunk.content());
-                                        sink.next(SseEvent.token(chunk.content()));
+                                        if (!verifyingFinalCandidate) {
+                                            sink.next(SseEvent.token(chunk.content()));
+                                        }
                                         break;
                                     case "reasoning":
                                         currentReasoning.append(chunk.reasoning());
@@ -1337,6 +1499,8 @@ public class ReactAgent {
 
                     // 判断 LLM 返回的是工具调用还是最终答案
                     if (!toolCallsCollected.isEmpty()) {
+                        // 自检选择补查即表示当前候选不通过；即使工具稍后被 Pre Hook 拦截也不能复用旧答案。
+                        invalidatePendingFinalAnswerCandidate();
                         List<LlmToolCall> toolCalls = new ArrayList<>(toolCallsCollected);
 
                         if (toolCalls.size() == 1) {
@@ -1382,12 +1546,24 @@ public class ReactAgent {
                         String finalContent = currentThinking.toString();
                         String finalReasoning = currentReasoning.toString();
 
-                        // 🪝 Stop Hook：任一回调返回非 null 即注入消息并强制继续
-                        String forceContinue = triggerStopHooks(messages);
-                        if (forceContinue != null) {
-                            log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
-                            messages.add(ChatMessage.userMessage(forceContinue));
-                            continue;
+                        FinalAnswerCandidate verifiedCandidate = consumeFinalAnswerCandidate();
+                        if (verifiedCandidate != null) {
+                            // 自检轮没有调用工具而是再次收尾，说明候选通过；最终事件仍使用自检前正文。
+                            finalContent = verifiedCandidate.content();
+                            finalReasoning = verifiedCandidate.reasoning();
+                            log.info("回答前自检通过，原样放行流式候选答案");
+                        } else {
+                            // 🪝 Stop Hook：首个要求继续的决策会注入消息并进入下一轮
+                            StopDecision stopDecision = triggerStopHooks(messages);
+                            if (stopDecision.shouldContinue()) {
+                                if (stopDecision.action() == StopAction.VERIFY_CANDIDATE) {
+                                    rememberFinalAnswerCandidate(finalContent, finalReasoning);
+                                }
+                                String forceContinue = stopDecision.message();
+                                log.info("Stop Hook 强制继续: {}", forceContinue.length() > 100 ? forceContinue.substring(0, 100) + "..." : forceContinue);
+                                messages.add(ChatMessage.userMessage(forceContinue));
+                                continue;
+                            }
                         }
 
                         // 最终返回前等待遗留后台任务
@@ -1477,12 +1653,12 @@ public class ReactAgent {
                 // 达到最大迭代次数
                 if (!sink.isCancelled()) {
                     log.warn("ReAct Stream 达到最大迭代次数 ({})", MAX_ITERATIONS);
-                    String limitMessage = "已达到最大执行次数，任务未完成。上方已保留本次执行过程。";
+                    String limitMessage = ConversationServiceImpl.STREAM_ITERATION_LIMIT_MESSAGE;
                     persistedEvents.add(Map.of(
                             "type", "status",
                             "content", limitMessage));
 
-                    saveAssistantMessage(limitMessage, null, persistedEvents);
+                    savePausedAssistantMessage(limitMessage, persistedEvents, messages);
                     sink.next(SseEvent.status(limitMessage));
                     sink.next(SseEvent.answer(limitMessage, null));
                     LlmUsage totalUsage = new LlmUsage(
@@ -1532,6 +1708,29 @@ public class ReactAgent {
                     content.length(),
                     reasoning != null ? reasoning.length() : 0);
         }
+    }
+
+    /**
+     * 保存达到最大执行轮数时的暂停状态和精确协议检查点。
+     *
+     * @param content 面向用户展示的暂停提示
+     * @param events 前端恢复执行过程所需的事件
+     * @param checkpointMessages 下一轮继续执行所需的完整协议消息
+     */
+    private void savePausedAssistantMessage(String content, List<Map<String, Object>> events,
+                                            List<ChatMessage> checkpointMessages) {
+        if (conversationService == null || sessionId == null || content == null || content.isEmpty()) {
+            return;
+        }
+        conversationService.addAssistantMessage(
+                sessionId,
+                content,
+                null,
+                events != null ? events : List.of(),
+                AgentRunStatus.PAUSED_MAX_ITERATIONS,
+                checkpointMessages != null ? List.copyOf(checkpointMessages) : List.of());
+        log.info("【Stream 保存】达到最大执行轮数，保存 {} 条协议检查点消息",
+                checkpointMessages != null ? checkpointMessages.size() : 0);
     }
 
     /**

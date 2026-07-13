@@ -4,6 +4,7 @@ import com.example.sandbox.web.model.entity.ChatMessageEntity;
 import com.example.sandbox.web.model.entity.ConversationSessionEntity;
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ConversationSession;
+import com.example.sandbox.web.model.llm.AgentRunCheckpoint;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -80,6 +81,46 @@ public class EntityConverter {
         return entities.stream()
                 .map(EntityConverter::toChatMessage)
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 将 Agent 运行检查点序列化为数据库 JSON。
+     *
+     * @param checkpoint 协议级运行检查点
+     * @return JSON 字符串；空检查点仍保存版本信息
+     * @throws IllegalArgumentException 检查点无法序列化时抛出
+     */
+    public static String serializeCheckpoint(AgentRunCheckpoint checkpoint) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(
+                    checkpoint != null ? checkpoint : AgentRunCheckpoint.empty());
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("Failed to serialize agent run checkpoint", e);
+        }
+    }
+
+    /**
+     * 从数据库 JSON 恢复 Agent 运行检查点。
+     *
+     * <p>检查点损坏、版本不兼容或内容为空时返回空检查点，避免单条历史数据阻断会话。</p>
+     *
+     * @param checkpointJson 数据库中的检查点 JSON
+     * @return 可安全读取的检查点
+     */
+    public static AgentRunCheckpoint parseCheckpoint(String checkpointJson) {
+        if (checkpointJson == null || checkpointJson.isBlank()) {
+            return AgentRunCheckpoint.empty();
+        }
+        try {
+            AgentRunCheckpoint checkpoint = OBJECT_MAPPER.readValue(
+                    checkpointJson, AgentRunCheckpoint.class);
+            if (checkpoint.version() != AgentRunCheckpoint.CURRENT_VERSION) {
+                return AgentRunCheckpoint.empty();
+            }
+            return checkpoint;
+        } catch (JsonProcessingException e) {
+            return AgentRunCheckpoint.empty();
+        }
     }
 
     // ========== ConversationSession ==========

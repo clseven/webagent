@@ -2,6 +2,8 @@ package com.example.sandbox.web.service;
 
 import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.Skill;
+import com.example.sandbox.web.model.llm.AgentContinuation;
+import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.response.SkillView;
 
 import java.util.List;
@@ -50,6 +52,30 @@ public interface ConversationService {
      * @param events    assistant 消息对应的 plan、thinking、toolResult 等展示事件，可为空
      */
     void addAssistantMessage(String sessionId, String content, String reasoning, List<Map<String, Object>> events);
+
+    /**
+     * 添加带运行状态和协议检查点的助手消息。
+     *
+     * @param sessionId         会话 ID
+     * @param content           面向用户展示的助手正文
+     * @param reasoning         最终思考链，可为 null
+     * @param events            前端过程展示事件
+     * @param runStatus         Agent 运行状态
+     * @param checkpointMessages 暂停时的完整模型协议消息；正常完成时为空
+     */
+    void addAssistantMessage(String sessionId, String content, String reasoning,
+                             List<Map<String, Object>> events, AgentRunStatus runStatus,
+                             List<ChatMessage> checkpointMessages);
+
+    /**
+     * 获取会话最后一次可继续的暂停运行。
+     *
+     * <p>新数据优先恢复协议检查点；旧超限消息从展示事件生成文本续接资料。</p>
+     *
+     * @param sessionId 会话 ID
+     * @return 可用的续接资料；没有暂停运行时返回空对象
+     */
+    AgentContinuation getLatestContinuation(String sessionId);
 
     /**
      * 更新自动生成的会话标题。

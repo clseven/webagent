@@ -4,6 +4,8 @@ import com.example.sandbox.web.model.entity.ToolDefinition;
 import com.example.sandbox.web.model.llm.LlmStreamChunk;
 import com.example.sandbox.web.model.llm.LlmToolCall;
 import com.example.sandbox.web.model.llm.LlmUsage;
+import com.example.sandbox.web.model.llm.AgentResponse;
+import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.LlmService;
@@ -21,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -73,7 +76,7 @@ class ReactAgentMaxIterationsTest {
                 .filteredOn(event -> "tool_call".equals(event.type()))
                 .first()
                 .satisfies(event -> assertThat(event.data())
-                        .containsEntry("displayReason", "准备调用 noop 工具继续处理当前任务。"));
+                        .containsEntry("displayReason", "正在处理当前任务"));
         assertThat(events.get(events.size() - 2).type()).isEqualTo("answer");
         assertThat(events.get(events.size() - 1).type()).isEqualTo("done");
 
@@ -87,14 +90,17 @@ class ReactAgentMaxIterationsTest {
                 eq("session-1"),
                 contentCaptor.capture(),
                 reasoningCaptor.capture(),
-                eventsCaptor.capture());
+                eventsCaptor.capture(),
+                eq(AgentRunStatus.PAUSED_MAX_ITERATIONS),
+                org.mockito.ArgumentMatchers.argThat(messages -> messages != null
+                        && messages.stream().anyMatch(message -> "tool".equals(message.getRole()))));
 
         assertThat(contentCaptor.getValue()).contains("最大执行次数");
         assertThat(reasoningCaptor.getValue()).isNull();
         assertThat(eventsCaptor.getValue()).anySatisfy(event ->
                 assertThat(event)
                         .containsEntry("type", "reasoning")
-                        .containsEntry("content", "第 25 轮推理"));
+                        .containsEntry("content", "第 200 轮推理"));
         assertThat(eventsCaptor.getValue()).anySatisfy(event ->
                 assertThat(event)
                         .containsEntry("type", "toolResult")
@@ -103,6 +109,35 @@ class ReactAgentMaxIterationsTest {
                 assertThat(event)
                         .containsEntry("type", "status")
                         .containsKey("content"));
+
+    }
+
+    /**
+     * 同步执行达到上限时也必须返回可持久化的协议检查点。
+     */
+    @Test
+    @DisplayName("同步超限时返回暂停状态和完整检查点")
+    void returnsCheckpointWhenSynchronousRunReachesIterationLimit() {
+        LlmService llmService = mock(LlmService.class);
+        AtomicInteger round = new AtomicInteger(0);
+        when(llmService.chatWithTools(anyString(), anyList(), anyList()))
+                .thenAnswer(invocation -> {
+                    int currentRound = round.incrementAndGet();
+                    return com.example.sandbox.web.model.llm.LlmResponse.toolCall(
+                            new LlmToolCall("sync_" + currentRound, "noop", Map.of("round", currentRound)),
+                            "第 " + currentRound + " 轮思考",
+                            new LlmUsage(1, 2, 3, 0));
+                });
+        ReactAgent agent = new ReactAgent(llmService, List.of(namedTool("noop")));
+
+        AgentResponse response = agent.run("session-sync", "持续执行", List.of());
+
+        assertThat(response.getIterations()).isEqualTo(200);
+        assertThat(response.getRunStatus()).isEqualTo(AgentRunStatus.PAUSED_MAX_ITERATIONS);
+        assertThat(response.getCheckpointMessages())
+                .isNotEmpty()
+                .anyMatch(message -> "tool".equals(message.getRole()));
+        verify(llmService, atLeastOnce()).chatWithTools(anyString(), anyList(), anyList());
     }
 
     /**

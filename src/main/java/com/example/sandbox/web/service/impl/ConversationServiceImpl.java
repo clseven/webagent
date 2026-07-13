@@ -7,6 +7,9 @@ import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ChatMessageEntity;
 import com.example.sandbox.web.model.entity.ConversationSession;
 import com.example.sandbox.web.model.entity.ConversationSessionEntity;
+import com.example.sandbox.web.model.llm.AgentContinuation;
+import com.example.sandbox.web.model.llm.AgentRunCheckpoint;
+import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.response.SkillView;
 import com.example.sandbox.web.repository.ChatMessageRepository;
@@ -31,6 +34,14 @@ import java.util.UUID;
  */
 @Service
 public class ConversationServiceImpl implements ConversationService {
+
+    /** 流式执行达到迭代上限时向用户展示的状态文案。 */
+    public static final String STREAM_ITERATION_LIMIT_MESSAGE =
+            "已达到最大执行次数，任务未完成。上方已保留本次执行过程。";
+
+    /** 同步执行达到迭代上限时使用的历史兼容文案。 */
+    public static final String SYNC_ITERATION_LIMIT_MESSAGE =
+            "抱歉，我尝试了多次但仍未能完成任务。请尝试简化您的要求或提供更多信息。";
 
     private static final Logger log = LoggerFactory.getLogger(ConversationServiceImpl.class);
 
@@ -113,12 +124,86 @@ public class ConversationServiceImpl implements ConversationService {
     @Override
     @Transactional
     public void addAssistantMessage(String sessionId, String content, String reasoning, List<Map<String, Object>> events) {
+        addAssistantMessage(sessionId, content, reasoning, events, AgentRunStatus.COMPLETED, List.of());
+    }
+
+    /**
+     * 保存助手消息、展示事件和可恢复运行检查点。
+     *
+     * @param sessionId          会话 ID
+     * @param content            面向用户的消息正文
+     * @param reasoning          最终思考链，可为 null
+     * @param events             前端展示事件
+     * @param runStatus          Agent 运行状态
+     * @param checkpointMessages 暂停时的模型协议消息
+     */
+    @Override
+    @Transactional
+    public void addAssistantMessage(String sessionId, String content, String reasoning,
+                                    List<Map<String, Object>> events, AgentRunStatus runStatus,
+                                    List<ChatMessage> checkpointMessages) {
         ConversationSessionEntity session = sessionRepository.findById(sessionId)
                 .orElseThrow(() -> new SessionNotFoundException(sessionId));
 
         ChatMessageEntity message = EntityConverter.toChatMessageEntity(
                 session, "assistant", content, reasoning, events);
+        message.setRunStatus(runStatus != null ? runStatus.name() : null);
+        if (runStatus == AgentRunStatus.PAUSED_MAX_ITERATIONS
+                && checkpointMessages != null && !checkpointMessages.isEmpty()) {
+            message.setCheckpointJson(EntityConverter.serializeCheckpoint(
+                    AgentRunCheckpoint.fromMessages(checkpointMessages)));
+        }
         messageRepository.save(message);
+    }
+
+    /**
+     * 加载最后一次暂停运行的续接资料。
+     *
+     * @param sessionId 会话 ID
+     * @return 精确检查点或旧展示事件生成的兼容续接资料
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public AgentContinuation getLatestContinuation(String sessionId) {
+        var latestOptional = messageRepository.findFirstBySessionIdOrderByTimestampDesc(sessionId);
+        if (latestOptional.isEmpty()) {
+            return AgentContinuation.none();
+        }
+        ChatMessageEntity latest = latestOptional.get();
+        if (!"assistant".equals(latest.getRole())) {
+            return AgentContinuation.none();
+        }
+
+        ChatMessage restored = EntityConverter.toChatMessage(latest);
+        String continuationContext = AgentContinuationContextFormatter.format(restored.getEvents());
+        if (AgentRunStatus.PAUSED_MAX_ITERATIONS.name().equals(latest.getRunStatus())) {
+            List<ChatMessage> checkpointMessages = EntityConverter
+                    .parseCheckpoint(latest.getCheckpointJson())
+                    .toMessages();
+            if (!checkpointMessages.isEmpty()) {
+                return new AgentContinuation(
+                        checkpointMessages, continuationContext, true, true);
+            }
+            return new AgentContinuation(
+                    List.of(), continuationContext, false, true);
+        }
+
+        if (isLegacyIterationLimitMessage(latest.getContent()) && restored.hasEvents()) {
+            return new AgentContinuation(
+                    List.of(), continuationContext, false, true);
+        }
+        return AgentContinuation.none();
+    }
+
+    /**
+     * 判断消息是否为旧版本写入的明确迭代上限提示。
+     *
+     * @param content 助手消息正文
+     * @return true 表示可结合非空 events_json 走旧数据续接路径
+     */
+    private boolean isLegacyIterationLimitMessage(String content) {
+        return STREAM_ITERATION_LIMIT_MESSAGE.equals(content)
+                || SYNC_ITERATION_LIMIT_MESSAGE.equals(content);
     }
 
     @Override

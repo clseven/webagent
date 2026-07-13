@@ -15,14 +15,17 @@ import java.util.List;
  *
  * @param session 当前会话
  * @param userMessage 本轮用户原始请求
+ * @param executionUserMessage 仅供本轮模型执行使用的用户消息；可能在原始请求前包含知识库参考资料
  * @param history 本轮用户消息入库前的历史消息
+ * @param continuationContext 上轮暂停运行的模型可读续接资料；没有时为空字符串
  * @param firstTurn 当前轮是否为会话首轮
  * @param shouldRunPlanAgent 是否需要调用规划器
  * @param skipPlanningByLightweightRoute 是否因为轻量路由跳过规划
- * @param policy 本轮策略开关，控制工具/工作区/知识库/StopHook 的注入
+ * @param policy 本轮策略开关，控制工具、技能、工作区和 StopHook；知识库由独立请求开关控制
  * @param userId 当前用户 ID
  * @param app 当前会话关联的 Agent 应用；没有或加载失败时为 null
  * @param systemPrompt 执行器系统提示词
+ * @param runtimeTimeContext 本轮不可变时间上下文，供规划器、执行器和子智能体共享
  * @param workspaceMemoryContext 工作区目录记忆上下文
  * @param enhancedContext 知识库增强上下文
  * @param plannerSessionContext 发送给规划器的会话上下文
@@ -31,7 +34,9 @@ import java.util.List;
  */
 public record AgentTurnContext(ConversationSession session,
                                String userMessage,
+                               String executionUserMessage,
                                List<ChatMessage> history,
+                               String continuationContext,
                                boolean firstTurn,
                                @Deprecated boolean shouldRunPlanAgent,
                                @Deprecated boolean skipPlanningByLightweightRoute,
@@ -39,6 +44,7 @@ public record AgentTurnContext(ConversationSession session,
                                Long userId,
                                AgentAppEntity app,
                                String systemPrompt,
+                               String runtimeTimeContext,
                                String workspaceMemoryContext,
                                String enhancedContext,
                                String plannerSessionContext,

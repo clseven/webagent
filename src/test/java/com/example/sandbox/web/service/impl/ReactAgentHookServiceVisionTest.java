@@ -27,7 +27,7 @@ class ReactAgentHookServiceVisionTest {
                 imageBuffer, visionLlm, new AgentTodoService(),
                 null, new FileCognitionState(), new AgentConfigProperties());
 
-        imageBuffer.put("session-1", "/home/gem/login.png", new byte[]{1, 2, 3}, "image/png");
+        imageBuffer.append("session-1", "/home/gem/login.png", new byte[]{1, 2, 3}, "image/png");
 
         ChatMessage injected = hookService.viewImageHook().run(
                 new LlmToolCall("call-1", "view_image", Map.of("path", "/home/gem/login.png")),

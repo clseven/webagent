@@ -138,7 +138,7 @@ final class ReactPromptAssembler {
     }
 
     /**
-     * 组装执行器 system prompt。
+     * 组装不含运行时快照的执行器 system prompt。
      *
      * @param toolDefinitions 当前执行器真实可用的工具定义
      * @param dynamicContext  会话级动态上下文，例如技能元数据、工作区目录记忆和知识库增强内容
@@ -146,6 +146,25 @@ final class ReactPromptAssembler {
      * @return 拼接后的 system prompt
      */
     static String assemble(List<ToolDefinition> toolDefinitions, String dynamicContext, String plan) {
+        return assemble(toolDefinitions, null, dynamicContext, plan);
+    }
+
+    /**
+     * 组装包含单轮运行时快照的执行器 system prompt。
+     *
+     * <p>运行时快照位于动态边界之后、其他动态上下文之前，既不污染稳定提示词缓存，
+     * 又能让后续技能、工作区记忆和任务策略统一按本轮时间解释。</p>
+     *
+     * @param toolDefinitions 当前执行器真实可用的工具定义
+     * @param runtimeContext  本轮不可变运行时上下文，例如当前日期、时间和时区
+     * @param dynamicContext  会话级动态上下文，例如技能元数据、工作区目录记忆和知识库增强内容
+     * @param plan            规划器产出的任务策略
+     * @return 拼接后的 system prompt
+     */
+    static String assemble(List<ToolDefinition> toolDefinitions,
+                           String runtimeContext,
+                           String dynamicContext,
+                           String plan) {
         List<String> sections = new ArrayList<>();
         sections.add(IDENTITY_SECTION);
         sections.add(WORKSPACE_SECTION);
@@ -169,6 +188,9 @@ final class ReactPromptAssembler {
 
         StringBuilder prompt = new StringBuilder(String.join("\n", sections));
         prompt.append("\n").append(DYNAMIC_BOUNDARY).append("\n\n");
+        if (runtimeContext != null && !runtimeContext.isBlank()) {
+            prompt.append(runtimeContext.trim()).append("\n\n");
+        }
         if (dynamicContext != null && !dynamicContext.isBlank()) {
             prompt.append(dynamicContext.trim()).append("\n\n");
         }
@@ -191,7 +213,20 @@ final class ReactPromptAssembler {
      * @return 社交轮系统提示词
      */
     static String assembleSocial() {
-        return CHAT_PERSONA_SECTION.trim();
+        return assembleSocial(null);
+    }
+
+    /**
+     * 组装包含单轮运行时快照的社交轮 system prompt。
+     *
+     * @param runtimeContext 本轮不可变运行时上下文；为空时只返回社交人格
+     * @return 社交人格与运行时上下文组成的系统提示词
+     */
+    static String assembleSocial(String runtimeContext) {
+        if (runtimeContext == null || runtimeContext.isBlank()) {
+            return CHAT_PERSONA_SECTION.trim();
+        }
+        return CHAT_PERSONA_SECTION.trim() + "\n\n" + DYNAMIC_BOUNDARY + "\n\n" + runtimeContext.trim();
     }
 
     /**

@@ -106,6 +106,25 @@ public class ChatMessage {
     }
 
     /**
+     * 从 Agent 运行检查点恢复原生模型协议消息。
+     *
+     * <p>该入口只用于可信的服务端检查点；展示事件、附件和多模态图片不会进入恢复消息。</p>
+     *
+     * @param role       消息角色
+     * @param content    消息正文
+     * @param reasoning  模型 reasoning_content，可为空
+     * @param timestamp  原始消息时间戳，可为空
+     * @param toolCallId tool 结果关联的调用 ID，可为空
+     * @param toolCalls  assistant 发起的工具调用，可为空
+     * @return 可重新交给模型的协议消息
+     */
+    public static ChatMessage restoreProtocol(String role, String content, String reasoning, Long timestamp,
+                                              String toolCallId, List<LlmToolCall> toolCalls) {
+        return new ChatMessage(role, content, reasoning, timestamp,
+                null, toolCallId, toolCalls, null, null);
+    }
+
+    /**
      * 创建用户消息
      */
     public static ChatMessage userMessage(String content) {

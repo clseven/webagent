@@ -12,9 +12,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * 验证最终回答门禁的两层把关：TodoState 前置硬信号 + 基于证据的模型自检。
  *
- * <p>前置层：未闭环 / 缺证据直接拦，且优先于自检、不受收尾计数影响。
- * 自检层：TodoState 干净时注入自检提示，连续收尾达阈值（第 3 次）强制放行。
- * 收尾计数（finalizeAttempt）由 {@link ReactAgent} 持有传入，本单测直接构造以覆盖各分支。</p>
+ * <p>前置层：未闭环 / 缺证据直接拦，且优先于候选答案自检。
+ * 自检层：TodoState 干净时返回“保存候选并验证”决策，候选是否通过由 {@link ReactAgent}
+ * 根据下一轮行为判断。</p>
  */
 class FinalTodoGuardHookTest {
 
@@ -24,7 +24,7 @@ class FinalTodoGuardHookTest {
     // ==================== 第一层：TodoState 前置硬信号 ====================
 
     /**
-     * 存在未完成 todo 时前置拦截，且不受收尾计数影响——哪怕已到放行阈值也必须先闭环。
+     * 存在未完成 todo 时始终前置拦截，不能因为重复收尾而绕过 TodoState。
      */
     @Test
     void 未完成Todo前置拦截且优先于放行阈值() {
@@ -37,16 +37,17 @@ class FinalTodoGuardHookTest {
         ));
         FinalTodoGuardHook hook = new FinalTodoGuardHook(service, SESSION);
 
-        String first = hook.run(List.of(ChatMessage.userMessage("请实现")), 1);
-        // 即使收尾次数远超自检阈值，前置未闭环仍必须拦
-        String overThreshold = hook.run(List.of(ChatMessage.userMessage("请实现")), 99);
+        ReactAgent.StopDecision first = hook.run(List.of(ChatMessage.userMessage("请实现")), 1);
+        ReactAgent.StopDecision later = hook.run(List.of(ChatMessage.userMessage("请实现")), 99);
 
-        assertThat(first)
+        assertThat(first.action()).isEqualTo(ReactAgent.StopAction.CONTINUE);
+        assertThat(first.message())
                 .contains("TodoState 最终门禁")
                 .contains("guard：实现最终门禁")
                 .contains("调用 todo_write")
                 .contains("blocked");
-        assertThat(overThreshold).contains("TodoState 最终门禁");
+        assertThat(later.action()).isEqualTo(ReactAgent.StopAction.CONTINUE);
+        assertThat(later.message()).contains("TodoState 最终门禁");
     }
 
     /**
@@ -60,10 +61,11 @@ class FinalTodoGuardHookTest {
                         List.of("测试通过"), List.of(), null)
         ));
 
-        String reminder = new FinalTodoGuardHook(service, SESSION)
+        ReactAgent.StopDecision decision = new FinalTodoGuardHook(service, SESSION)
                 .run(List.of(ChatMessage.userMessage("请实现")), 1);
 
-        assertThat(reminder)
+        assertThat(decision.action()).isEqualTo(ReactAgent.StopAction.CONTINUE);
+        assertThat(decision.message())
                 .contains("completed todo 缺少 evidence")
                 .contains("verify：运行验证");
     }
@@ -77,18 +79,20 @@ class FinalTodoGuardHookTest {
     void 无TodoState第1次收尾注入自检() {
         FinalTodoGuardHook hook = new FinalTodoGuardHook(new AgentTodoService(), SESSION);
 
-        String reminder = hook.run(List.of(ChatMessage.userMessage("你好")), 1);
+        ReactAgent.StopDecision decision = hook.run(List.of(ChatMessage.userMessage("你好")), 1);
 
-        assertThat(reminder)
+        assertThat(decision.action()).isEqualTo(ReactAgent.StopAction.VERIFY_CANDIDATE);
+        assertThat(decision.message())
                 .contains("回答前自检")
-                .contains("[推断]");
+                .contains("原样放行")
+                .contains("不得重新措辞");
     }
 
     /**
-     * TodoState 已闭环（completed 有证据 / blocked 有 blocker）时仍要走自检，前两次收尾注入提示。
+     * TodoState 已闭环（completed 有证据 / blocked 有 blocker）时进入候选答案验证。
      */
     @Test
-    void todoState闭环第1第2次收尾均注入自检() {
+    void todoState闭环后保存候选并进入自检() {
         AgentTodoService service = new AgentTodoService();
         service.update(SESSION, "plan", List.of(
                 item("done", "实现工具", AgentTodoStatus.COMPLETED,
@@ -98,18 +102,9 @@ class FinalTodoGuardHookTest {
         ));
         FinalTodoGuardHook hook = new FinalTodoGuardHook(service, SESSION);
 
-        assertThat(hook.run(List.of(ChatMessage.userMessage("请实现")), 1)).contains("回答前自检");
-        assertThat(hook.run(List.of(ChatMessage.userMessage("请实现")), 2)).contains("回答前自检");
-    }
-
-    /**
-     * 连续收尾达阈值（第 3 次）强制放行，防止模型反复判“够”刷自检。
-     */
-    @Test
-    void 第3次收尾强制放行() {
-        FinalTodoGuardHook hook = new FinalTodoGuardHook(new AgentTodoService(), SESSION);
-
-        assertThat(hook.run(List.of(ChatMessage.userMessage("你好")), 3)).isNull();
+        ReactAgent.StopDecision decision = hook.run(List.of(ChatMessage.userMessage("请实现")), 1);
+        assertThat(decision.action()).isEqualTo(ReactAgent.StopAction.VERIFY_CANDIDATE);
+        assertThat(decision.message()).contains("回答前自检");
     }
 
     /**
