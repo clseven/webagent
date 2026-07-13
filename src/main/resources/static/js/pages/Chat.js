@@ -155,11 +155,16 @@ const toolPreview = (e) => {
     if (tool === 'todo_write' && Array.isArray(args.todos)) return `${args.todos.length} 项`;
     return '';
 };
+const searchQueryText = (e) => argText(e?.args || {}, ['query', 'q', 'keyword', 'keywords'], 120);
 const processTitle = (e) => {
     if (e.type === 'toolCall' || e.type === 'toolResult') {
+        if (String(e.tool || '').toLowerCase().includes('search')) {
+            const query = searchQueryText(e);
+            return query ? `已搜索网页（${query}）` : '已搜索网页';
+        }
         const reason = e.displayReason || '';
-        if (reason) return e.type === 'toolResult' ? completedActionText(reason) : reason;
-        return e.type === 'toolResult' ? '已处理当前任务' : '正在处理当前任务';
+        if (reason) return completedActionText(reason);
+        return '已运行';
     }
     switch (e.type) {
         case 'plan': return '规划任务';
@@ -171,11 +176,12 @@ const processTitle = (e) => {
 };
 const processPreview = (e) => {
     if (e.type === 'toolCall' || e.type === 'toolResult') {
+        if (String(e.tool || '').toLowerCase().includes('search')) return '';
         const meta = toolPreview(e);
         if (meta) return meta;
     }
-    if (e.type === 'toolCall') return e.elapsed ? `执行中 ${e.elapsed}ms` : '执行中';
-    if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '已完成';
+    if (e.type === 'toolCall') return e.elapsed ? `${e.elapsed}ms` : '';
+    if (e.type === 'toolResult') return e.duration != null ? `${e.duration}ms` : '';
     return previewText(e.content, 90);
 };
 
@@ -207,24 +213,16 @@ const ChatStepGrouper = {
     },
     allDone(group) {
         return Array.isArray(group?.tools) && group.tools.length > 0
-            && group.tools.every(t => t.status === 'completed');
+            && group.tools.every(t => t.type === 'toolResult' || t.status === 'completed');
     },
-    // 返回 {title, badge}：title 进 nowrap 标题列（短），badge 进可收缩的 preview 列，避免长串撑爆布局。
+    // 运行中与完成后使用同一动作记录文案；展开状态和活动圆点负责表达是否仍在执行。
     overview(group) {
         if (!group || group.kind !== 'step') {
             if (group?.kind === 'plan') return { title: '规划任务', badge: '' };
             if (group?.kind === 'status') return { title: '状态更新', badge: '' };
-            return { title: '处理中', badge: '' };
+            return { title: '已运行', badge: '' };
         }
-        const tools = group.tools || [];
-        if (!tools.length) return { title: group.thinking ? '思考中…' : '处理中', badge: '' };
-        const names = tools.map(t => String(t.tool || ''));
-        const allSearch = names.every(n => n.toLowerCase().includes('search'));
-        const allCommand = names.every(n => n === 'execute_command' || n === 'execute_bash');
-        const action = allSearch ? '搜索' : (allCommand ? '命令运行' : '执行');
-        if (this.allDone(group)) return { title: `已完成 ${tools.length} 个工具`, badge: '' };
-        const running = tools.filter(t => t.status === 'running').length;
-        return { title: `${action}中…`, badge: `${tools.length} 个工具 · ${running} 进行中` };
+        return { title: '已运行', badge: '' };
     },
 };
 if (typeof window !== 'undefined') window.ChatStepGrouper = ChatStepGrouper;
@@ -245,7 +243,7 @@ const ChatToolStep = {
                 <div v-if="event.displayReason" class="process-tool-reason">{{ event.displayReason }}</div>
                 <div class="process-tool-args">参数<pre>{{ JSON.stringify(event.args, null, 2) }}</pre></div>
                 <div v-if="event.type === 'toolResult'">结果<pre>{{ event.result }}</pre></div>
-                <div v-else>执行中...</div>
+                <div v-else>已运行</div>
             </div>
         </details>
     `,
@@ -354,8 +352,7 @@ const ChatPage = {
                                         <details v-if="msg.events && msg.events.length > 0" class="process-disclosure">
                                             <summary class="process-summary">
                                                 <span class="process-check">✓</span>
-                                                <span>已处理</span>
-                                                <span class="process-count">{{ historySteps(msg).length }} 轮</span>
+                                                <span>已运行</span>
                                             </summary>
                                             <div class="process-timeline">
                                                 <details v-for="(group, gi) in historySteps(msg)" :key="msg.timestamp + '-step-' + gi" class="process-item live-step">
@@ -414,7 +411,6 @@ const ChatPage = {
                                     <summary class="process-summary">
                                         <span class="thinking-spinner small"></span>
                                         <span>{{ streamingStatus }}</span>
-                                        <span v-if="groupedSteps.length" class="process-count">{{ groupedSteps.length }} 轮</span>
                                     </summary>
                                     <div class="process-timeline">
                                         <details v-for="(group, gi) in groupedSteps" :key="'live-step-' + gi"
@@ -444,7 +440,7 @@ const ChatPage = {
                                         <details v-if="currentReasoning" class="process-item active" open>
                                             <summary>
                                                 <span class="process-dot active"></span>
-                                                <span class="process-item-title">实时推理中…</span>
+                                                <span class="process-item-title">已运行</span>
                                                 <span class="process-preview">{{ previewText(currentReasoning, 80) }}</span>
                                             </summary>
                                             <div class="process-detail" v-html="renderMarkdown(currentReasoning)"></div>
@@ -548,6 +544,23 @@ const ChatPage = {
                                         <path d="M12 2a15.3 15.3 0 0 0 0 20"/>
                                     </svg>
                                     <span>{{ searchEnabled ? '联网已开' : '联网搜索' }}</span>
+                                </button>
+
+                                <button
+                                    type="button"
+                                    class="composer-tool-btn"
+                                    :class="{ active: knowledgeEnabled && knowledgeAvailable }"
+                                    :disabled="!knowledgeAvailable"
+                                    @click="toggleKnowledge"
+                                    :title="knowledgeAvailable
+                                        ? (knowledgeEnabled ? '已启用知识库，每条消息都会先检索' : '启用知识库检索')
+                                        : '当前 Agent 未关联知识库'"
+                                >
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                                        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>
+                                    </svg>
+                                    <span>{{ knowledgeEnabled && knowledgeAvailable ? '知识库已开' : '知识库' }}</span>
                                 </button>
 
                                 <button
@@ -924,6 +937,8 @@ const ChatPage = {
         const sentUploadPreviews = Vue.reactive({});
         const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
         const planningEnabled = Vue.ref(localStorage.getItem('planning_enabled') !== 'false');
+        // 知识库默认开启；没有关联知识库时按钮置灰且后端不会产生检索结果。
+        const knowledgeEnabled = Vue.ref(localStorage.getItem('knowledge_enabled') !== 'false');
 
         const toggleSearch = () => {
             searchEnabled.value = !searchEnabled.value;
@@ -932,6 +947,11 @@ const ChatPage = {
         const togglePlanning = () => {
             planningEnabled.value = !planningEnabled.value;
             localStorage.setItem('planning_enabled', planningEnabled.value ? 'true' : 'false');
+        };
+        const toggleKnowledge = () => {
+            if (!knowledgeAvailable.value) return;
+            knowledgeEnabled.value = !knowledgeEnabled.value;
+            localStorage.setItem('knowledge_enabled', knowledgeEnabled.value ? 'true' : 'false');
         };
         const copied = Vue.ref(false);
         const loadingHistory = Vue.ref(false);
@@ -969,21 +989,7 @@ const ChatPage = {
         const streamingStatus = Vue.computed(() => {
             const phase = streamPhase.value;
             if (phase === 'disconnected') return '连接中断，正在同步结果…';
-            switch (phase) {
-                case 'planning': return '正在规划';
-                case 'plan_ready': return '规划完成';
-                case 'answer': return '整理回答';
-            }
-            const groups = groupedSteps.value;
-            const last = groups.length ? groups[groups.length - 1] : null;
-            if (last && last.kind === 'step' && last.tools && last.tools.length) return stepOverview(last);
-            switch (phase) {
-                case 'thinking': return '正在思考';
-                case 'generating': return '正在生成';
-                case 'processing': return '正在处理';
-                case 'tool': case 'tool_done': return last ? stepOverview(last) : '执行工具';
-                default: return '处理中';
-            }
+            return '已运行';
         });
 
         const activeToolDock = Vue.ref('');
@@ -1015,6 +1021,10 @@ const ChatPage = {
             if (!currentAppId.value) return null;
             return apps.value.find(a => a.id == currentAppId.value) || null;
         });
+        /** 当前 Agent 是否至少关联一个可检索知识库。 */
+        const knowledgeAvailable = Vue.computed(() =>
+            Boolean(currentApp.value?.knowledgeBaseIds?.length)
+        );
 
         const filteredSessions = Vue.computed(() => {
             if (!currentAppId.value) return sessions.value.filter(s => !s.appId);
@@ -1327,7 +1337,14 @@ const ChatPage = {
                 messages.value.push(userMessage);
                 scrollToBottom();
             }
-            const stop = api.createChatStream(sessionId, fullMessage, searchEnabled.value, planningEnabled.value, event => handleStreamEvent(event, sessionId, stream.streamId));
+            const stop = api.createChatStream(
+                sessionId,
+                fullMessage,
+                searchEnabled.value,
+                planningEnabled.value,
+                knowledgeEnabled.value && knowledgeAvailable.value,
+                event => handleStreamEvent(event, sessionId, stream.streamId)
+            );
             stream.stopStreamFn = stop;
             startStreamHistorySync(sessionId, stream.streamId);
         };
@@ -2163,7 +2180,8 @@ const ChatPage = {
             store, logout, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
             draftSessionActive, sessionTitle,
             messages, displayMessages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
-            searchEnabled, toggleSearch, planningEnabled, togglePlanning, composerInput, autoResize,
+            searchEnabled, toggleSearch, planningEnabled, togglePlanning,
+            knowledgeEnabled, knowledgeAvailable, toggleKnowledge, composerInput, autoResize,
             composerFilePresentation, composerFileMeta, isImageFile, pendingImagePreviewUrl, previewPendingImage,
             sessionManageMode, selectedSessionCount, allFilteredSessionsSelected,
             batchDeletePending, batchDeleteError, batchDeleting,

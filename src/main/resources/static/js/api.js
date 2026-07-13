@@ -74,17 +74,20 @@ function createApiClient() {
         deleteSessions: (sessionIds) => request('DELETE', '/api/sessions/batch', { sessionIds }),
 
         // 聊天
-        sendMessage: (sessionId, message, searchEnabled = false, planningEnabled = true) => request('POST', `/api/sessions/${sessionId}/chat`, { message, searchEnabled, planningEnabled }),
+        sendMessage: (sessionId, message, searchEnabled = false, planningEnabled = true, knowledgeEnabled = true) => request(
+            'POST', `/api/sessions/${sessionId}/chat`, { message, searchEnabled, planningEnabled, knowledgeEnabled }
+        ),
         getHistory: (sessionId) => request('GET', `/api/sessions/${sessionId}/history`),
 
         // 流式聊天（SSE）
         // 返回 EventSource 和停止函数
-        createChatStream: (sessionId, message, searchEnabled, planningEnabled, onEvent) => {
+        createChatStream: (sessionId, message, searchEnabled, planningEnabled, knowledgeEnabled, onEvent) => {
             const token = localStorage.getItem('auth_token');
             const url = new URL(API_BASE + `/api/sessions/${sessionId}/chat/stream`, window.location.origin);
             url.searchParams.set('message', message);
             url.searchParams.set('searchEnabled', searchEnabled ? 'true' : 'false');
             url.searchParams.set('planningEnabled', planningEnabled ? 'true' : 'false');
+            url.searchParams.set('knowledgeEnabled', knowledgeEnabled ? 'true' : 'false');
 
             // 使用 fetch + ReadableStream 实现 SSE（支持 Authorization header）
             let stopped = false;
@@ -370,7 +373,9 @@ function createApiClient() {
         listKnowledgeDocs: (kbId) => request('GET', `/api/rag/bases/${kbId}/documents`),
         getKnowledgeDoc: (docId) => request('GET', `/api/rag/document/${docId}`),
         deleteKnowledgeDoc: (docId) => request('DELETE', `/api/rag/document/${docId}`),
-        searchKnowledge: (kbId, query, topK = 5) => request('POST', `/api/rag/bases/${kbId}/search`, { query, topK }),
+        searchKnowledge: (kbId, query, topK = 5, minScore = 0.8) => request(
+            'POST', `/api/rag/bases/${kbId}/search`, { query, topK, minScore }
+        ),
 
         // 知识库预览（返回 ArrayBuffer / JSON，不走 ApiResponse 包装）
         getKnowledgeChunks: async (docId) => {

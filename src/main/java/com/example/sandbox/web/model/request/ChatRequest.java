@@ -23,6 +23,11 @@ public class ChatRequest {
      */
     private boolean planningEnabled = true;
 
+    /**
+     * 是否启用知识库检索（前端开关），默认开启以兼容既有自动增强行为。
+     */
+    private boolean knowledgeEnabled = true;
+
     public String getMessage() {
         return message;
     }
@@ -45,5 +50,23 @@ public class ChatRequest {
 
     public void setPlanningEnabled(boolean planningEnabled) {
         this.planningEnabled = planningEnabled;
+    }
+
+    /**
+     * 获取本轮知识库开关状态。
+     *
+     * @return true 表示检索当前 Agent 关联的全部知识库
+     */
+    public boolean isKnowledgeEnabled() {
+        return knowledgeEnabled;
+    }
+
+    /**
+     * 设置本轮知识库开关状态。
+     *
+     * @param knowledgeEnabled 是否启用知识库
+     */
+    public void setKnowledgeEnabled(boolean knowledgeEnabled) {
+        this.knowledgeEnabled = knowledgeEnabled;
     }
 }

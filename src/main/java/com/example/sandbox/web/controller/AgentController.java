@@ -112,6 +112,7 @@ public class AgentController {
     public ApiResponse<ChatMessage> chat(@PathVariable String id, @RequestBody ChatRequest request) {
         UserContext.setWebSearchEnabled(request.isSearchEnabled());
         UserContext.setPlanningEnabled(request.isPlanningEnabled());
+        UserContext.setKnowledgeEnabled(request.isKnowledgeEnabled());
         try {
             ChatMessage response = agentService.chat(id, request.getMessage());
             return ApiResponse.success(response);
@@ -136,6 +137,7 @@ public class AgentController {
             @RequestParam String message,
             @RequestParam(defaultValue = "false") boolean searchEnabled,
             @RequestParam(defaultValue = "true") boolean planningEnabled,
+            @RequestParam(defaultValue = "true") boolean knowledgeEnabled,
             HttpServletResponse response) {
 
         Long userId = UserContext.getCurrentUserId();
@@ -157,6 +159,7 @@ public class AgentController {
                 UserContext.setCurrentUserId(userId);
                 UserContext.setWebSearchEnabled(searchEnabled);
                 UserContext.setPlanningEnabled(planningEnabled);
+                UserContext.setKnowledgeEnabled(knowledgeEnabled);
                 agentService.chatStream(id, message)
                         .doFinally(signalType -> UserContext.clear())
                         .subscribe(

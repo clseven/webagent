@@ -188,6 +188,15 @@ const KnowledgePage = {
                             {{ searching ? '检索中...' : '检索' }}
                         </button>
                     </div>
+                    <div class="param-row" style="margin-top:10px;">
+                        <label>
+                            最低相关度
+                            <span class="param-hint">低于 {{ searchMinScore }}% 的结果不显示</span>
+                        </label>
+                        <input class="input" type="range" v-model.number="searchMinScore"
+                               min="0" max="100" step="5" />
+                        <span class="param-preview">{{ searchMinScore }}%</span>
+                    </div>
                     <div class="search-results" v-if="searchResults.length > 0">
                         <div class="search-result-item" v-for="(r, i) in searchResults" :key="i">
                             <div class="result-header">
@@ -272,6 +281,8 @@ const KnowledgePage = {
         const searchResults = Vue.ref([]);
         const searching = Vue.ref(false);
         const searchDone = Vue.ref(false);
+        // 页面检索阈值使用百分比展示，发送请求时转换为 0 到 1 的相关度。
+        const searchMinScore = Vue.ref(80);
 
         // 切片参数
         const splitMode = Vue.ref('smart');
@@ -518,7 +529,9 @@ const KnowledgePage = {
             searchDone.value = false;
             searchResults.value = [];
             try {
-                searchResults.value = await api.searchKnowledge(currentKb.value.id, searchQuery.value, 5);
+                searchResults.value = await api.searchKnowledge(
+                    currentKb.value.id, searchQuery.value, 5, searchMinScore.value / 100
+                );
                 searchDone.value = true;
             } catch (e) {
                 alert('检索失败: ' + e.message);
@@ -566,7 +579,7 @@ const KnowledgePage = {
         return {
             knowledgeBases, loadingKb, showCreateKb, newKb, currentKb, editingKb, editKbForm,
             documents, loading, uploadQueue, uploading, isDragging,
-            searchQuery, searchResults, searching, searchDone,
+            searchQuery, searchResults, searching, searchDone, searchMinScore,
             totalChunks, readyCount,
             splitMode, showAdvanced, chunkSize, overlap,
             loadKnowledgeBases, selectKb, createKb, editKb, saveKb, deleteKb,
