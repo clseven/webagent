@@ -73,12 +73,12 @@
 
 | 配置项 | 默认值 | 环境变量 | 说明 |
 |--------|--------|----------|------|
-| `agent.llm.planner.api-url` | `https://open.bigmodel.cn/api/paas/v4` | `PLANNER_LLM_URL` | 规划器 API 地址（智谱 AI） |
-| `agent.llm.planner.api-key` | *(空，必须注入)* | `PLANNER_LLM_KEY` | 规划器 API Key |
-| `agent.llm.planner.model` | `glm-4.7` | `PLANNER_LLM_MODEL` | 规划器模型 |
-| `agent.llm.executor.api-url` | `https://api.deepseek.com` | `EXECUTOR_LLM_URL` | 执行器 API 地址（DeepSeek） |
-| `agent.llm.executor.api-key` | *(空，必须注入)* | `EXECUTOR_LLM_KEY` | 执行器 API Key |
-| `agent.llm.executor.model` | `deepseek-v4-flash` | `EXECUTOR_LLM_MODEL` | 执行器模型 |
+| `agent.llm.planner.api-url` | `https://api.deepseek.com` | `DEEPSEEK_LLM_URL` | 规划器 API 地址（DeepSeek） |
+| `agent.llm.planner.api-key` | *(空，必须注入)* | `DEEPSEEK_API_KEY` | 规划器 API Key |
+| `agent.llm.planner.model` | `deepseek-v4-pro` | `DEEPSEEK_LLM_MODEL` | 规划器模型 |
+| `agent.llm.executor.api-url` | `https://api.deepseek.com` | `DEEPSEEK_LLM_URL` | 执行器 API 地址（DeepSeek） |
+| `agent.llm.executor.api-key` | *(空，必须注入)* | `DEEPSEEK_API_KEY` | 执行器 API Key |
+| `agent.llm.executor.model` | `deepseek-v4-pro` | `DEEPSEEK_LLM_MODEL` | 执行器模型 |
 
 ### 1.6 其他配置
 
@@ -127,11 +127,11 @@
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `MAX_ITERATIONS` | `20` | ReAct 循环最大迭代次数，防止无限循环 |
-| `SUMMARIZE_THRESHOLD` | `24_000` | 消息总字符数超过此值触发摘要压缩（约 8K token） |
+| `MAX_ITERATIONS` | `200` | ReAct 单次运行最大迭代次数；达到后暂停并保存协议检查点 |
+| `SUMMARIZE_THRESHOLD` | `200_000` | 估算消息总量超过 200K token 时触发摘要压缩 |
 | `TOKEN_CHARS_RATIO` | `3` | Token 估算比例：每 3 个字符 ≈ 1 token |
 | `TOOL_TIMEOUT` | `120 秒` | 单个工具执行超时 |
-| 历史消息截取 | `20` 条 | `trimHistory()` 保留最近 20 条消息 |
+| Agent 内历史处理 | 不再按条数截断 | 普通历史由服务层加载最近 20 条；暂停检查点在 Agent 内完整保留 |
 | 摘要保留比例 | `0.6` | 压缩时保留前 60% 的旧消息 |
 | 最少消息保护 | `2` 条 | 少于 2 条消息时不触发压缩 |
 | 单条消息截断 | `500` 字符 | 摘要生成时每条消息截取前 500 字符 |
@@ -397,6 +397,10 @@ uploads/users/{userId}/uploads/{fileName}
 | `session_id` | 索引 `idx_session_id` | 会话 ID |
 | `role` | `VARCHAR(32)` | 角色 |
 | `content` | `TEXT` | 消息内容（无长度限制） |
+| `reasoning` | `TEXT` | 模型思考内容 |
+| `events_json` | `LONGTEXT` | 前端展示与审计使用的执行过程事件，不直接作为协议上下文 |
+| `run_status` | `VARCHAR(32)` | Agent 运行状态；`PAUSED_MAX_ITERATIONS` 表示可继续的暂停运行 |
+| `checkpoint_json` | `LONGTEXT` | 暂停时保存的角色、tool_call ID、tool 结果顺序等协议检查点 |
 | `timestamp` | 索引 `idx_timestamp` | 时间戳 |
 
 ### 9.4 token_usage 表
