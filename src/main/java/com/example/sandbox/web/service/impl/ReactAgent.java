@@ -1633,6 +1633,14 @@ public class ReactAgent {
                             log.info("[后台子代理] 所有后台任务处理完毕");
                         }
 
+                        // 最终答案步骤的 thinking/reasoning 也需持久化到展示事件，避免历史刷新后思考链丢失
+                        if (!currentThinking.isEmpty() || !currentReasoning.isEmpty()) {
+                            AgentStep finalStep = new AgentStep(currentStep,
+                                    currentThinking.toString(),
+                                    currentReasoning.toString(),
+                                    null, null, usageRef.get());
+                            persistedEvents.addAll(AgentEventMapper.fromStep(finalStep));
+                        }
                         // 保存完成的助手消息
                         saveAssistantMessage(finalContent, finalReasoning, persistedEvents);
 
