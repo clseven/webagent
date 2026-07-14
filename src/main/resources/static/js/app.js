@@ -28,12 +28,132 @@
         }
     };
 
+    // 全局确认弹窗组件：替代浏览器默认 confirm，保证所有高风险操作使用同一套应用内样式。
+    const ConfirmDialog = {
+        props: ['dialog'],
+        emits: ['resolve'],
+        template: `
+            <div v-if="dialog" class="modal-overlay app-confirm-overlay" @click.self="$emit('resolve', false)">
+                <section class="modal-content modal-sm app-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="app-confirm-title">
+                    <div :class="['app-confirm-icon', dialog.type || 'warning']" aria-hidden="true">
+                        <svg v-if="dialog.type === 'danger'" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+                        <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    </div>
+                    <div class="app-confirm-copy">
+                        <h3 id="app-confirm-title">{{ dialog.title || '请确认操作' }}</h3>
+                        <p>{{ dialog.message || '该操作需要确认后继续。' }}</p>
+                    </div>
+                    <div class="app-confirm-actions">
+                        <button type="button" class="btn btn-secondary" @click="$emit('resolve', false)">
+                            {{ dialog.cancelText || '取消' }}
+                        </button>
+                        <button
+                            type="button"
+                            :class="['btn', dialog.type === 'danger' ? 'btn-danger' : 'btn-primary']"
+                            @click="$emit('resolve', true)"
+                        >
+                            {{ dialog.confirmText || '确定' }}
+                        </button>
+                    </div>
+                </section>
+            </div>
+        `
+    };
+
+    // 账号菜单组件：聊天侧栏和普通顶栏共用，集中展示用户信息与退出登录入口。
+    const AccountMenu = {
+        props: {
+            compact: { type: Boolean, default: false }
+        },
+        template: `
+            <div class="account-menu-root" :class="{ 'account-menu-compact': compact }" ref="rootEl">
+                <button type="button" class="account-menu-trigger" @click="toggleMenu" :aria-expanded="menuOpen ? 'true' : 'false'">
+                    <span class="account-avatar">{{ userInitial }}</span>
+                    <span class="account-trigger-copy">
+                        <strong>{{ store.username || '用户' }}</strong>
+                        <small>ID {{ store.userId || '-' }}</small>
+                    </span>
+                    <svg class="account-trigger-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+
+                <div v-if="menuOpen" class="account-menu-popover" role="menu">
+                    <div class="account-menu-profile">
+                        <span class="account-avatar large">{{ userInitial }}</span>
+                        <div>
+                            <strong>{{ store.username || '用户' }}</strong>
+                            <small>用户 ID：{{ store.userId || '-' }}</small>
+                        </div>
+                    </div>
+                    <div class="account-menu-meta">
+                        <span>登录状态</span>
+                        <strong>{{ store.isAuthenticated ? '已登录' : '未登录' }}</strong>
+                    </div>
+                    <button type="button" class="account-menu-item" @click="refreshUser" :disabled="refreshing">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.8"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.8"/><path d="M21 3v6h-6"/><path d="M3 21v-6h6"/></svg>
+                        <span>{{ refreshing ? '刷新中...' : '刷新用户信息' }}</span>
+                    </button>
+                    <button type="button" class="account-menu-item danger" @click="logout">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                        <span>退出登录</span>
+                    </button>
+                </div>
+            </div>
+        `,
+        setup() {
+            const store = Vue.inject('store');
+            const router = VueRouter.useRouter();
+            const rootEl = Vue.ref(null);
+            const menuOpen = Vue.ref(false);
+            const refreshing = Vue.ref(false);
+            const userInitial = Vue.computed(() => (store.username || 'U').charAt(0).toUpperCase());
+
+            const closeMenu = () => { menuOpen.value = false; };
+            const toggleMenu = () => { menuOpen.value = !menuOpen.value; };
+            const handleOutsideClick = (event) => {
+                if (!menuOpen.value || !rootEl.value || rootEl.value.contains(event.target)) return;
+                closeMenu();
+            };
+            const refreshUser = async () => {
+                refreshing.value = true;
+                try {
+                    const data = await api.me();
+                    store.setUserInfo(data.user || data);
+                    store.showToast({ type: 'success', message: '用户信息已刷新', duration: 1800 });
+                } catch (e) {
+                    store.showToast({ type: 'error', message: '刷新用户信息失败：' + (e.message || '请稍后重试') });
+                } finally {
+                    refreshing.value = false;
+                }
+            };
+            const logout = async () => {
+                const confirmed = await store.confirm({
+                    title: '退出登录？',
+                    message: '退出后需要重新登录才能继续使用 WebAgent。',
+                    confirmText: '退出',
+                    type: 'danger'
+                });
+                if (!confirmed) return;
+                closeMenu();
+                store.logout();
+                router.push('/login');
+            };
+
+            Vue.onMounted(() => document.addEventListener('click', handleOutsideClick));
+            Vue.onBeforeUnmount(() => document.removeEventListener('click', handleOutsideClick));
+
+            return { store, rootEl, menuOpen, refreshing, userInitial, toggleMenu, refreshUser, logout };
+        }
+    };
+
     // 全局状态
     const store = Vue.reactive({
         token: localStorage.getItem('auth_token') || null,
+        userId: localStorage.getItem('user_id') || '',
         username: localStorage.getItem('username') || '',
         currentSessionId: localStorage.getItem('agent_session_id') || null,
         toasts: [],
+        confirmDialog: null,
+        confirmResolver: null,
         // 按会话保存正在进行的流式回复，避免 Chat 页面卸载或切会话后丢失思考链。
         liveStreams: {},
         // 记录流式状态变化版本，供页面在跨路由恢复时感知完成事件。
@@ -45,21 +165,34 @@
             return !!this.token;
         },
 
-        setAuth(token, username) {
+        setAuth(token, username, userId = '') {
             this.token = token;
+            this.userId = userId || '';
             this.username = username;
             localStorage.setItem('auth_token', token);
+            if (this.userId) localStorage.setItem('user_id', this.userId);
+            else localStorage.removeItem('user_id');
             localStorage.setItem('username', username);
+        },
+
+        setUserInfo(user = {}) {
+            this.userId = user.id != null ? String(user.id) : '';
+            this.username = user.username || this.username || '';
+            if (this.userId) localStorage.setItem('user_id', this.userId);
+            else localStorage.removeItem('user_id');
+            if (this.username) localStorage.setItem('username', this.username);
         },
 
         logout() {
             Object.keys(this.liveStreams).forEach(sessionId => this.clearLiveStream(sessionId, { stop: true }));
             this.token = null;
+            this.userId = '';
             this.username = '';
             this.currentSessionId = null;
             this.toasts = [];
             this.completedLiveStreams = {};
             localStorage.removeItem('auth_token');
+            localStorage.removeItem('user_id');
             localStorage.removeItem('username');
             localStorage.removeItem('agent_session_id');
         },
@@ -158,6 +291,27 @@
         removeToast(id) {
             const idx = this.toasts.findIndex(t => t.id === id);
             if (idx >= 0) this.toasts.splice(idx, 1);
+        },
+
+        confirm(options = {}) {
+            if (this.confirmResolver) this.confirmResolver(false);
+            this.confirmDialog = {
+                title: options.title || '请确认操作',
+                message: options.message || '',
+                confirmText: options.confirmText || '确定',
+                cancelText: options.cancelText || '取消',
+                type: options.type || 'warning'
+            };
+            return new Promise(resolve => {
+                this.confirmResolver = resolve;
+            });
+        },
+
+        resolveConfirm(confirmed) {
+            const resolver = this.confirmResolver;
+            this.confirmDialog = null;
+            this.confirmResolver = null;
+            if (resolver) resolver(Boolean(confirmed));
         }
     });
 
@@ -197,7 +351,7 @@
 
             try {
                 const user = await api.me();
-                store.username = user.username;
+                store.setUserInfo(user.user || user);
             } catch (e) {
                 store.logout();
                 next('/login');
@@ -213,6 +367,7 @@
         template: `
             <MainLayout v-if="store.isAuthenticated" />
             <LoginPage v-else />
+            <ConfirmDialog :dialog="store.confirmDialog" @resolve="confirmed => store.resolveConfirm(confirmed)" />
         `,
         setup() {
             return { store };
@@ -232,6 +387,8 @@
     app.component('McpPage', McpPage);
     app.component('WorkspaceBrowser', WorkspaceBrowser);
     app.component('TokenStatsPage', TokenStatsPage);
+    app.component('ConfirmDialog', ConfirmDialog);
+    app.component('AccountMenu', AccountMenu);
 
     // 使用路由
     app.use(router);
@@ -241,7 +398,7 @@
 
     // 挂载全局 Toast 容器
     const toastApp = Vue.createApp({
-        template: `<ToastContainer :toasts="store.toasts" @remove="store.removeToast" />`,
+        template: `<ToastContainer :toasts="store.toasts" @remove="id => store.removeToast(id)" />`,
         setup() {
             return { store };
         }

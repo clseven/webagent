@@ -124,7 +124,10 @@ const SkillsPage = {
 
         // 加载本地仓库（设置根目录 + 拉本地列表；若有会话再拉融合视图覆盖）
         const loadLocal = async () => {
-            if (!rootPath.value) { alert('请输入技能根目录'); return; }
+            if (!rootPath.value) {
+                store.showToast({ type: 'warning', message: '请输入技能根目录' });
+                return;
+            }
             localStorage.setItem('skill_root', rootPath.value);
             loading.value = true;
             try {
@@ -138,7 +141,7 @@ const SkillsPage = {
                     await loadEnabledIds();
                 }
             } catch (e) {
-                alert('加载技能失败: ' + e.message);
+                store.showToast({ type: 'error', message: '加载技能失败：' + e.message });
             } finally {
                 loading.value = false;
             }
@@ -151,7 +154,7 @@ const SkillsPage = {
             try {
                 skills.value = await api.listSessionSkills(store.currentSessionId);
             } catch (e) {
-                alert('刷新沙箱失败: ' + e.message);
+                store.showToast({ type: 'error', message: '刷新沙箱失败：' + e.message });
             } finally {
                 loading.value = false;
             }
@@ -168,7 +171,10 @@ const SkillsPage = {
         };
 
         const toggleSkill = async (skillId, enabled) => {
-            if (!store.currentSessionId) { alert('请先选择或创建会话'); return; }
+            if (!store.currentSessionId) {
+                store.showToast({ type: 'warning', message: '请先选择或创建会话' });
+                return;
+            }
             try {
                 if (enabled) {
                     await api.enableSkill(store.currentSessionId, skillId);
@@ -185,7 +191,7 @@ const SkillsPage = {
                     enabledIds.value = new Set(enabledIds.value);
                 }
             } catch (e) {
-                alert('操作失败: ' + e.message);
+                store.showToast({ type: 'error', message: '操作失败：' + e.message });
             }
         };
 

@@ -262,6 +262,7 @@ const KnowledgePage = {
         </div>
     `,
     setup() {
+        const store = Vue.inject('store');
         // 知识库相关
         const knowledgeBases = Vue.ref([]);
         const loadingKb = Vue.ref(false);
@@ -328,7 +329,7 @@ const KnowledgePage = {
                 showCreateKb.value = false;
                 await loadKnowledgeBases();
             } catch (e) {
-                alert('创建失败: ' + e.message);
+                store.showToast({ type: 'error', message: '创建失败：' + e.message });
             }
         }
 
@@ -347,12 +348,18 @@ const KnowledgePage = {
                     currentKb.value = knowledgeBases.value.find(kb => kb.id === currentKb.value.id);
                 }
             } catch (e) {
-                alert('保存失败: ' + e.message);
+                store.showToast({ type: 'error', message: '保存失败：' + e.message });
             }
         }
 
         async function deleteKb(kb) {
-            if (!confirm(`确定删除知识库「${kb.name}」？该操作会删除知识库下的所有文档。`)) return;
+            const confirmed = await store.confirm({
+                title: '删除知识库？',
+                message: `确定删除知识库「${kb.name}」？该操作会删除知识库下的所有文档。`,
+                confirmText: '删除',
+                type: 'danger'
+            });
+            if (!confirmed) return;
             try {
                 await api.deleteKnowledgeBase(kb.id);
                 if (currentKb.value && currentKb.value.id === kb.id) {
@@ -361,7 +368,7 @@ const KnowledgePage = {
                 }
                 await loadKnowledgeBases();
             } catch (e) {
-                alert('删除失败: ' + e.message);
+                store.showToast({ type: 'error', message: '删除失败：' + e.message });
             }
         }
 
@@ -434,7 +441,7 @@ const KnowledgePage = {
 
         async function uploadAll() {
             if (!currentKb.value) {
-                alert('请先选择知识库');
+                store.showToast({ type: 'warning', message: '请先选择知识库' });
                 return;
             }
             uploading.value = true;
@@ -499,19 +506,25 @@ const KnowledgePage = {
         }
 
         async function deleteDoc(doc) {
-            if (!confirm(`确定删除文档「${doc.fileName}」？`)) return;
+            const confirmed = await store.confirm({
+                title: '删除文档？',
+                message: `确定删除文档「${doc.fileName}」？`,
+                confirmText: '删除',
+                type: 'danger'
+            });
+            if (!confirmed) return;
             try {
                 await api.deleteKnowledgeDoc(doc.id);
                 await loadDocuments();
             } catch (e) {
-                alert('删除失败: ' + e.message);
+                store.showToast({ type: 'error', message: '删除失败：' + e.message });
             }
         }
 
         function previewDoc(doc) {
             // 只有 READY 状态的文档可预览
             if (doc.status !== 'READY') {
-                alert('文档尚未处理完成：' + statusText(doc.status));
+                store.showToast({ type: 'warning', message: '文档尚未处理完成：' + statusText(doc.status) });
                 return;
             }
             FilePreviewer.preview({
@@ -534,7 +547,7 @@ const KnowledgePage = {
                 );
                 searchDone.value = true;
             } catch (e) {
-                alert('检索失败: ' + e.message);
+                store.showToast({ type: 'error', message: '检索失败：' + e.message });
             } finally {
                 searching.value = false;
             }

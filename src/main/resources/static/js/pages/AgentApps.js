@@ -112,6 +112,7 @@ const AgentAppsPage = {
         </div>
     `,
     setup() {
+        const store = Vue.inject('store');
         const apps = Vue.ref([]);
         const loading = Vue.ref(false);
         const showCreate = Vue.ref(false);
@@ -164,17 +165,23 @@ const AgentAppsPage = {
                 showCreate.value = false;
                 await loadApps();
             } catch (e) {
-                alert('创建失败: ' + e.message);
+                store.showToast({ type: 'error', message: '创建失败：' + e.message });
             }
         }
 
         async function deleteApp(app) {
-            if (!confirm(`确定删除应用「${app.name}」？`)) return;
+            const confirmed = await store.confirm({
+                title: '删除应用？',
+                message: `确定删除应用「${app.name}」？`,
+                confirmText: '删除',
+                type: 'danger'
+            });
+            if (!confirmed) return;
             try {
                 await api.deleteApp(app.id);
                 await loadApps();
             } catch (e) {
-                alert('删除失败: ' + e.message);
+                store.showToast({ type: 'error', message: '删除失败：' + e.message });
             }
         }
 
@@ -202,7 +209,7 @@ const AgentAppsPage = {
                 // 更新 editingApp 引用
                 editingApp.value = apps.value.find(a => a.id === editingApp.value.id);
             } catch (e) {
-                alert('保存失败: ' + e.message);
+                store.showToast({ type: 'error', message: '保存失败：' + e.message });
             }
         }
 
@@ -217,7 +224,7 @@ const AgentAppsPage = {
                 await loadApps();
                 editingApp.value = apps.value.find(a => a.id === editingApp.value.id);
             } catch (e) {
-                alert('保存失败: ' + e.message);
+                store.showToast({ type: 'error', message: '保存失败：' + e.message });
             }
         }
 
@@ -232,7 +239,7 @@ const AgentAppsPage = {
                 await loadApps();
                 editingApp.value = apps.value.find(a => a.id === editingApp.value.id);
             } catch (e) {
-                alert('保存失败: ' + e.message);
+                store.showToast({ type: 'error', message: '保存失败：' + e.message });
             }
         }
 

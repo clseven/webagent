@@ -262,7 +262,7 @@ const ChatPage = {
             <!-- 中间：聊天主区 -->
             <div class="chat-main">
                 <!-- 对话面板 -->
-                <div class="chat-panel chatgpt-panel" style="position:relative;">
+                <div class="chat-panel chatgpt-panel" :style="{ '--composer-height': composerHeight + 'px' }">
                     <!-- 聊天头部（精简） -->
                     <div class="chat-header">
                         <div class="chat-header-left">
@@ -464,15 +464,27 @@ const ChatPage = {
                                 ></chat-artifact-gallery>
                             </div>
                         </div>
-
-                        <!-- 回到底部 -->
-                        <button v-if="showScrollBtn" class="scroll-to-bottom" @click="scrollToBottom" title="回到底部">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-                        </button>
                     </div>
 
+                    <!-- 回到底部 -->
+                    <button v-if="showScrollBtn" class="scroll-to-bottom" @click="scrollToBottom" title="回到底部">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                    </button>
+
                     <!-- Chat Composer -->
-                    <div class="chat-composer">
+                    <div
+                        ref="composerEl"
+                        class="chat-composer"
+                        :class="{ 'composer-dragging': composerDragging }"
+                        @paste="handleComposerPaste"
+                        @dragenter.prevent="handleComposerDragEnter"
+                        @dragover.prevent="handleComposerDragOver"
+                        @dragleave.prevent="handleComposerDragLeave"
+                        @drop.prevent="handleComposerDrop"
+                    >
+                        <div v-if="composerDragging" class="composer-drop-hint">
+                            释放文件添加到当前消息
+                        </div>
                         <div class="composer-files" v-if="pendingFiles.length > 0">
                             <template v-for="(file, index) in pendingFiles" :key="file.name + '-' + index">
                                 <article v-if="isImageFile(file)" class="composer-image-card">
@@ -747,11 +759,7 @@ const ChatPage = {
                 </div>
 
                 <div class="chat-sidebar-account">
-                    <span class="chat-sidebar-avatar">{{ store.username ? store.username.charAt(0).toUpperCase() : 'U' }}</span>
-                    <span class="chat-sidebar-user">{{ store.username || '用户' }}</span>
-                    <button type="button" @click="logout" title="退出登录">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    </button>
+                    <account-menu compact></account-menu>
                 </div>
             </aside>
 
@@ -907,8 +915,6 @@ const ChatPage = {
         marked.use({ highlight: (c, l) => l && hljs.getLanguage(l) ? hljs.highlight(c, { language: l }).value : hljs.highlightAuto(c).value, breaks: true, gfm: true });
 
         const store = Vue.inject('store');
-        const router = VueRouter.useRouter();
-        const logout = () => { store.logout(); router.push('/login'); };
         const messagesEl = Vue.ref(null);
 
         const apps = Vue.ref([]);
@@ -933,6 +939,9 @@ const ChatPage = {
         const messages = Vue.ref([]);
         const inputText = Vue.ref('');
         const pendingFiles = Vue.ref([]);
+        const composerDragging = Vue.ref(false);
+        const composerEl = Vue.ref(null);
+        const composerHeight = Vue.ref(118);
         const pendingImagePreviewUrls = Vue.reactive({});
         const sentUploadPreviews = Vue.reactive({});
         const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
@@ -1287,7 +1296,7 @@ const ChatPage = {
                     store.setSession(sessionId);
                     upsertSession(session);
                 } catch (e) {
-                    alert('创建会话失败: ' + e.message);
+                    store.showToast({ type: 'error', message: '创建会话失败：' + e.message });
                     return;
                 }
             }
@@ -1964,13 +1973,88 @@ const ChatPage = {
         const checkScrollPosition = () => { if (!messagesEl.value) return; const { scrollTop, scrollHeight, clientHeight } = messagesEl.value; showScrollBtn.value = scrollHeight - scrollTop - clientHeight > 200; };
 
         const copyId = () => { if (currentSessionId.value) { navigator.clipboard.writeText(currentSessionId.value); copied.value = true; setTimeout(() => copied.value = false, 1500); } };
-        const handleFileSelect = (e) => {
-            Array.from(e.target.files).forEach(file => {
-                if (pendingFiles.value.some(p => p.name === file.name)) return;
-                pendingFiles.value.push(file);
-                if (isImageFile(file)) pendingImagePreviewUrl(file);
+        let composerDragDepth = 0;
+        const attachmentKey = (file) => `${file?.name || ''}::${file?.size || 0}::${file?.lastModified || 0}`;
+        const pastedImageExt = (file) => {
+            const type = String(file?.type || '').toLowerCase();
+            if (type === 'image/jpeg') return 'jpg';
+            if (type === 'image/svg+xml') return 'svg';
+            return type.startsWith('image/') ? type.substring('image/'.length) : 'png';
+        };
+        const ensureClipboardFileName = (file, index = 0) => {
+            if (!file || file.name) return file;
+            const suffix = index > 0 ? `-${index + 1}` : '';
+            const name = `粘贴图片-${Date.now()}${suffix}.${pastedImageExt(file)}`;
+            return new File([file], name, { type: file.type, lastModified: file.lastModified || Date.now() });
+        };
+        const appendPendingFiles = (files, { notify = false } = {}) => {
+            const list = Array.from(files || []).filter(Boolean);
+            let added = 0;
+            let skipped = 0;
+            list.forEach((file, index) => {
+                const normalizedFile = ensureClipboardFileName(file, index);
+                if (!normalizedFile) return;
+                const key = attachmentKey(normalizedFile);
+                if (pendingFiles.value.some(p => attachmentKey(p) === key)) {
+                    skipped++;
+                    return;
+                }
+                pendingFiles.value.push(normalizedFile);
+                if (isImageFile(normalizedFile)) pendingImagePreviewUrl(normalizedFile);
+                added++;
             });
+            if (notify && added > 0) {
+                store.showToast({ type: 'success', message: `已添加 ${added} 个附件`, duration: 1800 });
+            } else if (notify && skipped > 0) {
+                store.showToast({ type: 'info', message: '附件已在输入框中', duration: 1800 });
+            }
+            return added;
+        };
+        const filesFromClipboard = (clipboardData) => {
+            const fileMap = new Map();
+            Array.from(clipboardData?.files || []).forEach((file, index) => {
+                const normalizedFile = ensureClipboardFileName(file, index);
+                fileMap.set(attachmentKey(normalizedFile), normalizedFile);
+            });
+            Array.from(clipboardData?.items || [])
+                .filter(item => item.kind === 'file')
+                .map(item => item.getAsFile())
+                .filter(Boolean)
+                .forEach((file, index) => {
+                    const normalizedFile = ensureClipboardFileName(file, index);
+                    fileMap.set(attachmentKey(normalizedFile), normalizedFile);
+                });
+            return Array.from(fileMap.values());
+        };
+        const dragEventHasFiles = (event) => Array.from(event?.dataTransfer?.types || []).includes('Files');
+        const handleFileSelect = (e) => {
+            appendPendingFiles(e.target.files);
             e.target.value = '';
+        };
+        const handleComposerPaste = (e) => {
+            const files = filesFromClipboard(e.clipboardData);
+            if (files.length === 0) return;
+            e.preventDefault();
+            appendPendingFiles(files, { notify: true });
+        };
+        const handleComposerDragEnter = (e) => {
+            if (!dragEventHasFiles(e)) return;
+            composerDragDepth++;
+            composerDragging.value = true;
+        };
+        const handleComposerDragOver = (e) => {
+            if (!dragEventHasFiles(e)) return;
+            e.dataTransfer.dropEffect = 'copy';
+        };
+        const handleComposerDragLeave = (e) => {
+            if (!dragEventHasFiles(e)) return;
+            composerDragDepth = Math.max(0, composerDragDepth - 1);
+            if (composerDragDepth === 0) composerDragging.value = false;
+        };
+        const handleComposerDrop = (e) => {
+            composerDragDepth = 0;
+            composerDragging.value = false;
+            appendPendingFiles(e.dataTransfer.files, { notify: true });
         };
         const removeFile = (i) => {
             const [file] = pendingFiles.value.splice(i, 1);
@@ -1983,8 +2067,18 @@ const ChatPage = {
             if (!el) return;
             el.style.height = 'auto';
             el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+            updateComposerHeight();
         };
         const escapeHtml = (s) => s ? s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') : '';
+
+        let composerResizeObserver = null;
+        const updateComposerHeight = () => {
+            Vue.nextTick(() => {
+                const el = composerEl.value;
+                if (!el) return;
+                composerHeight.value = Math.ceil(el.getBoundingClientRect().height);
+            });
+        };
 
         const closeToolDock = () => {
             activeToolDock.value = '';
@@ -2041,7 +2135,12 @@ const ChatPage = {
         const resetSandbox = async () => {
             const sessionId = currentSessionId.value;
             if (!sessionId || isSandboxResetting.value) return;
-            const confirmed = window.confirm('重置沙箱会中断当前浏览器、终端和 VSCode 连接，沙箱内未保存状态可能丢失。确定继续吗？');
+            const confirmed = await store.confirm({
+                title: '重置沙箱？',
+                message: '重置沙箱会中断当前浏览器、终端和 VSCode 连接，沙箱内未保存状态可能丢失。',
+                confirmText: '重置',
+                type: 'danger'
+            });
             if (!confirmed) return;
 
             isSandboxResetting.value = true;
@@ -2153,6 +2252,10 @@ const ChatPage = {
             ],
             () => { if (streaming.value) scrollToBottom(); }
         );
+        Vue.watch(
+            () => [pendingFiles.value.length, inputText.value],
+            () => updateComposerHeight()
+        );
 
         Vue.onMounted(() => {
             const p = new URLSearchParams(window.location.hash.split('?')[1] || ''); const aid = p.get('appId'); if (aid) currentAppId.value = aid;
@@ -2160,10 +2263,21 @@ const ChatPage = {
                 if (currentSessionId.value) await loadHistory();
                 await consumeCompletedStream();
             });
-            Vue.nextTick(() => { if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition); });
+            Vue.nextTick(() => {
+                if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition);
+                updateComposerHeight();
+                if (composerEl.value && typeof ResizeObserver !== 'undefined') {
+                    composerResizeObserver = new ResizeObserver(updateComposerHeight);
+                    composerResizeObserver.observe(composerEl.value);
+                }
+                window.addEventListener('resize', updateComposerHeight);
+            });
         });
 
         Vue.onBeforeUnmount(() => {
+            if (messagesEl.value) messagesEl.value.removeEventListener('scroll', checkScrollPosition);
+            if (composerResizeObserver) composerResizeObserver.disconnect();
+            window.removeEventListener('resize', updateComposerHeight);
             clearPendingImagePreviews();
             Object.values(sentUploadPreviews).forEach(item => {
                 if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
@@ -2177,9 +2291,9 @@ const ChatPage = {
         });
 
         return {
-            store, logout, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
+            store, messagesEl, apps, sessions, currentAppId, currentApp, filteredSessions, currentSessionId,
             draftSessionActive, sessionTitle,
-            messages, displayMessages, inputText, sending, pendingFiles, copied, loadingHistory, showScrollBtn,
+            messages, displayMessages, inputText, sending, pendingFiles, composerDragging, composerEl, composerHeight, copied, loadingHistory, showScrollBtn,
             searchEnabled, toggleSearch, planningEnabled, togglePlanning,
             knowledgeEnabled, knowledgeAvailable, toggleKnowledge, composerInput, autoResize,
             composerFilePresentation, composerFileMeta, isImageFile, pendingImagePreviewUrl, previewPendingImage,
@@ -2196,7 +2310,9 @@ const ChatPage = {
             requestDeleteSession, cancelDeleteSession, confirmDeleteSession,
             switchSession, send, stopStream, retryMessage,
             renderContent, renderMarkdown, previewText, processTitle, processPreview,
-            handleMessageContentClick, formatTime, copyId, handleFileSelect, removeFile,
+            handleMessageContentClick, formatTime, copyId, handleFileSelect,
+            handleComposerPaste, handleComposerDragEnter, handleComposerDragOver, handleComposerDragLeave, handleComposerDrop,
+            removeFile,
             activeToolDock, toolDockOpen, toolDockWidth, toolDockTitle, toolDockSubtitle, isToolDockResizing,
             toggleToolDock, closeToolDock, startToolDockResize,
             sandboxViews, activeSandboxView, switchSandboxView,

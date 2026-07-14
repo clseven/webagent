@@ -39,13 +39,7 @@ const MainLayout = {
                 </nav>
 
                 <div class="topbar-right">
-                    <div class="user-chip">
-                        <div class="user-avatar">{{ store.username ? store.username.charAt(0).toUpperCase() : 'U' }}</div>
-                        <span class="user-name">{{ store.username }}</span>
-                    </div>
-                    <button class="btn-icon" @click="logout" title="退出登录">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    </button>
+                    <account-menu></account-menu>
                 </div>
             </header>
 
@@ -59,10 +53,8 @@ const MainLayout = {
     `,
     setup() {
         const store = Vue.inject('store');
-        const router = VueRouter.useRouter();
         const route = VueRouter.useRoute();
         const isChatRoute = Vue.computed(() => route.path === '/chat');
-        const logout = () => { store.logout(); router.push('/login'); };
-        return { store, logout, isChatRoute };
+        return { store, isChatRoute };
     }
 };
