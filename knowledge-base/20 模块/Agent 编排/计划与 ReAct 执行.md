@@ -48,7 +48,7 @@ updated: 2026-07-14
 - `ReactAgent` 的 ReAct 循环、Hook 机制和工具调用解析。
 - `ReactPromptAssembler` 的按需 section 加载。
 - `AgentTodoService` 和 `FinalTodoGuardHook` 的 TodoState 闭环。
-- 子代理 fork 和后台任务收集。
+- 子代理 fork 和后台任务收集，详见 [[子代理与后台任务]]。
 
 ### 2.2 本文不覆盖
 
