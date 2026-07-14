@@ -10,11 +10,15 @@ source:
   - src/main/java/com/example/sandbox/web/service/impl/AgentServiceImpl.java
   - src/main/java/com/example/sandbox/web/service/impl/AgentTurnContextService.java
   - src/main/java/com/example/sandbox/web/service/impl/AgentPlannerService.java
+  - src/main/java/com/example/sandbox/web/service/impl/ConversationServiceImpl.java
   - src/main/java/com/example/sandbox/web/service/impl/ReactAgentFactory.java
   - src/main/java/com/example/sandbox/web/service/impl/ReactAgentHookService.java
+  - src/main/java/com/example/sandbox/web/service/impl/AgentTimeContextService.java
+  - src/main/java/com/example/sandbox/web/service/tool/CurrentTimeTool.java
+  - src/main/java/com/example/sandbox/web/model/llm/AgentRunCheckpoint.java
   - src/main/java/com/example/sandbox/web/config/AgentConfigProperties.java
   - src/main/resources/application.yml
-updated: 2026-07-09
+updated: 2026-07-14
 ---
 
 # Agent 编排模块
@@ -23,10 +27,12 @@ updated: 2026-07-09
 
 本文说明一次用户消息从进入系统到返回回答的完整编排链路：归属校验 → 历史加载 → 上下文准备 → 意图分类 → 规划 → ReAct 执行 → 保存结果 → 记录用量。
 
-当前实现里需要特别注意六点：
+当前实现里需要特别注意八点：
 
-- 规划和执行分属两个阶段，但当前共用同一个执行器模型 `deepseek-v4-flash`；图片观察由 Agnes 作为 [[#visionLlm]] 处理。
-- 每轮对话先由 [[#TurnMode]] 分类（SOCIAL/TASK/AMBIGUOUS），SOCIAL 轮次跳过工具、工作区、知识库和 StopHook，走轻量路径。
+- 规划和执行分属两个阶段，当前共用执行器模型 `deepseek-v4-pro`；图片观察由 Agnes 作为 [[#visionLlm]] 处理。
+- 每轮对话先由 [[#TurnMode]] 分类（SOCIAL/TASK/AMBIGUOUS），SOCIAL 轮次跳过规划、工具、Skill、工作区和 StopHook；知识库自动检索不再由 TurnPolicy 决定，而由请求级 `knowledgeEnabled` 控制。
+- 每轮准备阶段创建一次 [[#AgentTimeContext]] 时间快照，注入规划器、执行器、社交轮和子代理；需要新鲜时刻或跨时区时可调用只读工具 [[#CurrentTimeTool]]。
+- ReAct 最多迭代 200 次，达到上限时保存 [[#AgentRunCheckpoint]] 协议级检查点并把助手消息标记为 `PAUSED_MAX_ITERATIONS`，下一轮优先从检查点续接。
 - 同步入口 `chat` 和流式入口 `chatStream` 共享同一套上下文准备和执行器创建逻辑，区别只在事件回传方式。
 - 新增 Hook 时必须同时覆盖同步和流式两条路径，`ReactAgentFactory` 的两个 create 方法各自装配一次。
 - token 用量按阶段分别记录：planner 记 `plan`/`plan_stream`，executor 记 `chat`，标题生成记 `planner`/`title`。
@@ -60,10 +66,10 @@ updated: 2026-07-09
 | --- | --- | --- | --- |
 | `agent.llm.planner.api-url` | `https://api.deepseek.com` | `DEEPSEEK_LLM_URL` | 规划器模型地址 |
 | `agent.llm.planner.api-key` | 空 | `DEEPSEEK_API_KEY` | 规划器 API Key |
-| `agent.llm.planner.model` | `deepseek-v4-flash` | `DEEPSEEK_LLM_MODEL` | 规划器模型名 |
+| `agent.llm.planner.model` | `deepseek-v4-pro` | `DEEPSEEK_LLM_MODEL` | 规划器模型名 |
 | `agent.llm.executor.api-url` | `https://api.deepseek.com` | `DEEPSEEK_LLM_URL` | 执行器模型地址 |
 | `agent.llm.executor.api-key` | 空 | `DEEPSEEK_API_KEY` | 执行器 API Key |
-| `agent.llm.executor.model` | `deepseek-v4-flash` | `DEEPSEEK_LLM_MODEL` | 执行器模型名 |
+| `agent.llm.executor.model` | `deepseek-v4-pro` | `DEEPSEEK_LLM_MODEL` | 执行器模型名 |
 | `agent.llm.executor.thinking-enabled` | `true`（yml） / `false`（代码默认） | `DEEPSEEK_THINKING_ENABLED` | 执行器是否启用思考模式 |
 | `agent.llm.executor.reasoning-effort` | `high` | 无 | 思考强度，仅 DeepSeek 有效 |
 | `agent.llm.vision.api-url` | `https://apihub.agnes-ai.com/v1` | `AGNES_LLM_URL` | 视觉模型地址 |
@@ -72,7 +78,13 @@ updated: 2026-07-09
 
 注意：规划器和执行器当前共用同一组 DeepSeek 配置，`AgentPlannerService` 注入的是 `@Qualifier("executorLlm")`。标题生成用的是 `@Qualifier("plannerLlm")`。
 
-### 3.2 Hook 与执行控制配置
+### 3.2 运行时上下文配置
+
+| 配置项 | 当前值 | 环境变量 | 说明 |
+| --- | --- | --- | --- |
+| `agent.time-zone` | `Asia/Shanghai` | `AGENT_TIME_ZONE` | 单轮时间快照默认时区，影响"今天/明天/本周"等相对时间解释 |
+
+### 3.3 Hook 与执行控制配置
 
 | 配置项 | 当前值 | 环境变量 | 说明 |
 | --- | --- | --- | --- |
@@ -81,7 +93,7 @@ updated: 2026-07-09
 
 这两个配置在 `AgentConfigProperties.Hook` 中定义，`ReactAgentHookService` 读取后决定是否注册 `FileStateCheckHook` 和是否打开 `setConcurrentToolExecutionEnabled`。当前 `application.yml` 没有显式写出 `agent.hook` 段，使用代码默认值。
 
-### 3.3 子代理与后台任务配置
+### 3.4 子代理与后台任务配置
 
 | 配置项 | 当前值 | 环境变量 | 说明 |
 | --- | --- | --- | --- |
@@ -107,6 +119,9 @@ POST /api/sessions/{sessionId}/chat
 | --- | --- | --- | --- |
 | `sessionId` | `String` | 是 | 目标会话 ID |
 | `message` | `String` | 是 | 用户消息 |
+| `searchEnabled` | `boolean` | 否 | 是否启用 Web 搜索工具，默认 `false` |
+| `planningEnabled` | `boolean` | 否 | 是否启用规划阶段，默认 `true` |
+| `knowledgeEnabled` | `boolean` | 否 | 是否启用知识库自动检索和知识检索工具，默认 `true` |
 
 返回完整 `ChatMessage`，含 `response`、`reasoning` 和 `events`。同步路径在执行完成后一次性返回，适合非流式调用和后台调用。
 
@@ -115,10 +130,12 @@ POST /api/sessions/{sessionId}/chat
 入口方法：`AgentServiceImpl.chatStream`
 
 ```text
-POST /api/sessions/{sessionId}/chat/stream
+GET /api/sessions/{sessionId}/chat/stream
 ```
 
 返回 `Flux<SseEvent>`，事件类型包括 `plan`、`thinking`、`tool`、`observation`、`answer`、`done`、`error`、`interrupted`。前端按事件实时渲染计划、思考、工具调用、视觉观察和最终答案。
+
+流式入口使用 query 参数传递用户消息和开关：`message` 必填，`searchEnabled=false`、`planningEnabled=true`、`knowledgeEnabled=true` 为默认值。
 
 ### 4.3 会话创建与删除
 
@@ -130,26 +147,30 @@ POST /api/sessions/{sessionId}/chat/stream
 
 同步和流式入口都调用同一个 `prepare` 方法，确保两条路径的上下文装配完全一致。处理步骤：
 
-1. 加载最近 20 条历史消息。
-2. 调用 `judgeIntent` 分类本轮意图，产出 [[#TurnMode]]（SOCIAL/TASK/AMBIGUOUS）。
-3. 由 [[#TurnPolicy]]`.forMode(mode)` 映射为本轮策略开关。
-4. 判断是否跳过规划：用户开关 `UserContext.isPlanningEnabled()` 且未被轻量路由命中。
-5. 确保沙箱就绪，首次访问时同步创建。
-6. 记录是否首轮 `firstTurn = history.isEmpty()`。
-7. 用户消息入库。
-8. 提取文件上下文：用户消息含 `【上传的文件】` 时拼出文件清单提示。
-9. 根据 policy 决定是否注入技能提示、工作区目录记忆、知识库增强。
-10. 加载 Agent 应用，构建知识库描述。
-11. 根据 policy 决定是否构建工具上下文（SOCIAL 轮次用 `AgentToolContext.empty()`）。
-12. 汇总 `systemPrompt`，拼接顺序：文件上下文 → 知识库增强 → 工作区记忆 → 技能提示。
-13. 构建规划器会话上下文和规划技能元数据。
-14. 返回 [[#AgentTurnContext]]。
+1. 创建本轮 [[#AgentTimeContext]] 时间快照。
+2. 检查上一条助手消息是否是 `PAUSED_MAX_ITERATIONS`，如果存在 [[#AgentRunCheckpoint]] 则恢复协议级历史；旧数据则从展示事件生成续接说明。
+3. 加载历史消息，续接场景优先使用检查点消息，否则加载最近 20 条历史。
+4. 调用 `judgeIntent` 分类本轮意图，产出 [[#TurnMode]]（SOCIAL/TASK/AMBIGUOUS）。
+5. 由 [[#TurnPolicy]]`.forMode(mode)` 映射为本轮策略开关。
+6. 判断是否跳过规划：用户开关 `UserContext.isPlanningEnabled()` 且未被轻量路由命中。
+7. 确保沙箱就绪，首次访问时同步创建。
+8. 记录是否首轮 `firstTurn = history.isEmpty()`。
+9. 用户消息入库。
+10. 提取文件上下文：用户消息含 `【上传的文件】` 时拼出文件清单提示。
+11. 根据 policy 决定是否注入技能提示和工作区目录记忆。
+12. 汇总基础 `systemPrompt`，拼接顺序：文件上下文 → 续接说明 → 工作区记忆 → 技能提示。
+13. 加载 Agent 应用；如果 `UserContext.isKnowledgeEnabled()` 为 true，则构建知识库描述并执行知识库增强。
+14. 知识库增强结果不写入会话历史，而是包装进本轮执行模型的 user 消息。
+15. 根据 policy 决定是否构建工具上下文（SOCIAL 轮次用 `AgentToolContext.empty()`）；知识库工具的描述和默认 kbId 由 Agent 应用关联和 `knowledgeEnabled` 决定。
+16. 构建规划器会话上下文，把时间快照、续接说明、工作区记忆和知识库增强传给规划器。
+17. 返回 [[#AgentTurnContext]]。
 
 关键约束：
 
-- `systemPrompt` 的拼接顺序固定，先注入文件上下文，再注入知识库增强，最后才是工作区记忆和技能提示。排查"模型没有看到某段上下文"时要按这个顺序核对。
-- 社交轮次（SOCIAL）下，工具、工作区、知识库和 StopHook 全部跳过，`toolContext` 为空，系统提示只剩技能和工作区的空串。
+- `systemPrompt` 的拼接顺序固定，先注入文件上下文，再注入续接说明，最后才是工作区记忆和技能提示。知识库增强单独进入本轮执行 user 消息。排查"模型没有看到某段上下文"时要按这个顺序核对。
+- 社交轮次（SOCIAL）下，规划、工具、Skill、工作区和 StopHook 跳过；知识库自动增强是否触发只看请求级 `knowledgeEnabled` 和应用是否关联知识库。
 - 工作区目录记忆注入失败只记日志不抛异常，降级为空串。
+- 同一轮内相对时间按同一个时间快照解释，子代理继承父 Agent 快照，不重新取时钟。
 
 ## 6. 规划阶段
 
@@ -209,6 +230,7 @@ POST /api/sessions/{sessionId}/chat/stream
 | 标题生成 | 同步路径在保存后调度 | 流式路径在 `done` 事件里调度 |
 | 上下文清理 | `finally` 块清理 | `doOnComplete` 和 `doOnError` 清理 |
 | 中断检测 | 无 | `sink.isCancelled()` 检查，规划后可能发 `interrupted` |
+| 迭代上限 | 返回 `PAUSED_MAX_ITERATIONS` 并保存检查点 | 返回暂停状态和检查点，前端后续消息可续接 |
 
 流式路径的异常处理更复杂：`runStream` 的 `doOnError` 发 `error` 事件并清理上下文，外层 try-catch 也兜底清理。如果 `contextRef` 还没设置就异常，则跳过清理。
 
@@ -220,8 +242,12 @@ POST /api/sessions/{sessionId}/chat/stream
 | --- | --- | --- |
 | 用户消息 | 本轮用户输入 | `prepare` 阶段，上下文准备时 |
 | 助手消息 | 最终回答 + 思考链 + 事件列表 | 同步路径执行完成后；流式路径由执行器内部保存 |
+| 运行状态 | `runStatus`，区分 `COMPLETED` 和 `PAUSED_MAX_ITERATIONS` | 保存助手消息时 |
+| 检查点 | `checkpointJson`，保存协议级模型消息 | 仅达到最大迭代上限且有检查点消息时 |
 
 助手消息的 `events` 字段由 `AgentEventMapper.fromPlanAndSteps` 从规划文本和执行步骤生成，前端用它渲染计划、工具调用和观察的完整时间线。
+
+`checkpointJson` 不保存前端展示事件、文件附件或图片 base64，只保存恢复 ReAct 协议所需的 role、content、reasoning、toolCallId 和 toolCalls。下一轮进入 `prepare` 时会优先恢复检查点历史；如果旧数据没有检查点，则退化为从事件列表生成续接说明。
 
 ### 9.2 Token 用量
 
@@ -256,11 +282,13 @@ POST /api/sessions/{sessionId}/chat/stream
 | 后续会话串了上下文 | `AgentToolContextService.clearRuntimeState` 是否在 finally/doOnComplete 里调用 | 同步看 finally，流式看 doOnComplete 和 doOnError |
 | 标题未生成 | 是否首轮、助手回复是否为空、plannerLlm 是否可用 | 标题生成失败只记日志，不影响会话 |
 | token 统计缺失 | `TokenUsageService`、usageType 区分、流式 `done` 事件解析 | 规划跳过时不会有 planner 记录 |
+| 达到迭代上限后无法续接 | `runStatus`、`checkpointJson`、`AgentContinuation` | 新数据应从协议级检查点恢复；旧数据只靠事件文本降级续接 |
+| 相对时间回答不一致 | `agent.time-zone`、`AgentTimeContextService`、`current_time` | 同轮应使用同一快照；跨时区或新鲜时刻用工具查询 |
 
 ## 11. 扩展建议
 
 1. 新增 Hook 时，在 `ReactAgentHookService` 的 `configureForChat` 和 `configureForStream` 同时注册，避免两条路径行为分裂。
-2. 新增需要 policy 控制的能力时，在 `TurnPolicy` 增加开关字段，在 `forMode` 里给 SOCIAL 和 TASK 分别赋值，在 `prepare` 里消费，不要在执行器里硬编码。
+2. 新增需要 policy 控制的能力时，在 `TurnPolicy` 增加开关字段，在 `forMode` 里给 SOCIAL 和 TASK 分别赋值，在 `prepare` 里消费，不要在执行器里硬编码。知识库启停已经拆到请求级 `knowledgeEnabled`，不要重新塞回 TurnPolicy。
 3. 规划器如果需要切换独立模型，把 `AgentPlannerService` 的 `@Qualifier("executorLlm")` 改成 `@Qualifier("plannerLlm")`，但要注意 `judgeIntent` 当前也用执行器模型。
 4. 流式路径如果需要在规划后做条件中断，参考现有 `sink.isCancelled()` 检查模式，不要在异步回调里直接抛异常。
 5. 子代理迭代数和超时调整走 `agent.sub-agent.types.*.max-iterations` 和 `agent.sub-agent.timeout-seconds`，不要硬编码。
@@ -271,11 +299,11 @@ POST /api/sessions/{sessionId}/chat/stream
 
 ### AgentTurnContext
 
-`AgentTurnContext` 是单轮 Agent 对话的上下文聚合对象，是一个 record。它把历史、用户消息、是否首轮、策略开关、用户 ID、应用、系统提示、工作区记忆、知识库增强、规划技能和工具上下文统一传给规划和执行阶段。同步和流式入口共用它，避免重复准备。
+`AgentTurnContext` 是单轮 Agent 对话的上下文聚合对象，是一个 record。它把历史、原始用户消息、执行用用户消息、续接说明、是否首轮、策略开关、用户 ID、应用、系统提示、运行时上下文、工作区记忆、知识库增强、规划技能和工具上下文统一传给规划和执行阶段。同步和流式入口共用它，避免重复准备。
 
 ### TurnPolicy
 
-`TurnPolicy` 是单轮对话的策略开关，控制本轮是否注入规划、工具、技能、工作区、知识库和 StopHook。它由 `TurnPolicyResolver` 根据 `TurnMode` 产出。SOCIAL 对应 LITE（全 false），TASK 和 AMBIGUOUS 对应 FULL（全 true）。
+`TurnPolicy` 是单轮对话的策略开关，控制本轮是否注入规划、工具、技能、工作区和 StopHook。它由 `TurnPolicyResolver` 根据 `TurnMode` 产出。SOCIAL 对应 LITE（这些开关全 false），TASK 和 AMBIGUOUS 对应 FULL（全 true）。知识库自动检索由请求级 `knowledgeEnabled` 控制，不属于 TurnPolicy。
 
 ### TurnMode
 
@@ -313,13 +341,25 @@ Hook 是执行循环中的扩展点，分 PreToolUseHook、PostToolUseHook 和 S
 
 `RunSubagentTool` 是子代理工具，通过 `wireSubAgentParent` 把父 `ReactAgent` 注入进去，让子代理能 fork 出受限工具集执行子任务。可同步或后台运行，受 `agent.sub-agent.enabled` 控制。
 
+### AgentTimeContext
+
+`AgentTimeContext` 是单轮不可变时间快照，包含业务时区下的当前日期时间、星期和 UTC 时间。它在 `AgentTurnContextService.prepare` 开始时创建，进入规划器、执行器、社交轮和同轮子代理，保证"今天/明天/本周"等相对时间在一轮任务里一致。
+
+### CurrentTimeTool
+
+`CurrentTimeTool` 是只读工具，工具名 `current_time`。普通相对时间优先使用本轮快照；当任务需要调用时刻的新时间或指定 IANA 时区时，模型可调用该工具获取最新时间。非法时区会返回中文错误，不修改共享状态。
+
+### AgentRunCheckpoint
+
+`AgentRunCheckpoint` 是达到最大 ReAct 迭代数时保存的协议级检查点，当前版本为 1。它保存可恢复的模型消息顺序和工具调用关联，不保存前端事件、文件附件或图片 base64。下一轮如果最新助手消息是 `PAUSED_MAX_ITERATIONS`，会优先从该检查点恢复。
+
 ### plannerLlm
 
 `plannerLlm` 是轻量规划 LLM，当前主要用于会话标题生成。`AgentPlannerService` 的规划阶段实际用的是 `executorLlm`，不是 `plannerLlm`。
 
 ### executorLlm
 
-`executorLlm` 是执行器 LLM，当前配置为 DeepSeek 的 `deepseek-v4-flash`，同时被规划阶段和执行阶段复用。支持思考模式（`thinking-enabled`）和思考强度（`reasoning-effort`）。
+`executorLlm` 是执行器 LLM，当前配置为 DeepSeek 的 `deepseek-v4-pro`，同时被规划阶段和执行阶段复用。支持思考模式（`thinking-enabled`）和思考强度（`reasoning-effort`）。
 
 ## 13. 相关页面
 

@@ -26,8 +26,8 @@ updated: 2026-07-06
 - `DELETE /api/sessions/{id}`
 - `DELETE /api/sessions/batch`
 - `GET /api/sessions/{id}`
-- `POST /api/sessions/{id}/chat`
-- `GET /api/sessions/{id}/chat/stream`，SSE 流式对话。
+- `POST /api/sessions/{id}/chat`，同步对话。请求体含 `message`（必填）、`searchEnabled`（默认 false）、`planningEnabled`（默认 true）、`knowledgeEnabled`（默认 true）。
+- `GET /api/sessions/{id}/chat/stream`，SSE 流式对话。query 参数：`message`（必填）、`searchEnabled=false`、`planningEnabled=true`、`knowledgeEnabled=true`。
 - `GET /api/sessions/{id}/history`
 - `GET /api/sessions/{id}/skills`
 - `GET /api/sessions/{id}/skills/available`
