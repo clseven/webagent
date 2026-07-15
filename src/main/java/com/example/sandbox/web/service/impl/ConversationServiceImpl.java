@@ -324,6 +324,7 @@ public class ConversationServiceImpl implements ConversationService {
     @Transactional
     public void deleteSession(String sessionId) {
         if (sessionRepository.existsById(sessionId)) {
+            conversationContextService.clear(sessionId);
             sessionRepository.deleteById(sessionId);
         }
     }
@@ -347,6 +348,7 @@ public class ConversationServiceImpl implements ConversationService {
         List<String> deletedSessionIds = sessions.stream()
                 .map(ConversationSessionEntity::getId)
                 .toList();
+        deletedSessionIds.forEach(conversationContextService::clear);
         sessionRepository.deleteAll(sessions);
         return deletedSessionIds;
     }

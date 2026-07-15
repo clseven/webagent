@@ -76,12 +76,6 @@ public class ConversationSessionEntity {
     private Set<AgentRunEntity> agentRuns = new HashSet<>();
 
     /**
-     * 会话级模型上下文快照。
-     */
-    @OneToOne(mappedBy = "session", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
-    private ConversationContextEntity conversationContext;
-
-    /**
      * 当前会话启用的 Skill ID 集合。
      */
     @ElementCollection(fetch = FetchType.EAGER)

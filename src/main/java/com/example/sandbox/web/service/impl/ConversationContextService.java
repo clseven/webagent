@@ -164,7 +164,6 @@ public class ConversationContextService {
                     .orElseThrow(() -> new SessionNotFoundException(sessionId));
             ConversationContextEntity context = new ConversationContextEntity();
             context.setSessionId(sessionId);
-            context.setSession(session);
             context.setSummaryJson(serializeSummary(null));
             context.setRecentProtocolJson(serializeProtocol(List.of()));
             return context;

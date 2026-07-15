@@ -2,11 +2,7 @@ package com.example.sandbox.web.model.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.MapsId;
-import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import lombok.Getter;
@@ -30,12 +26,6 @@ public class ConversationContextEntity {
     @Id
     @Column(name = "session_id", length = 36)
     private String sessionId;
-
-    /** 上下文所属会话。 */
-    @OneToOne(fetch = FetchType.LAZY)
-    @MapsId
-    @JoinColumn(name = "session_id")
-    private ConversationSessionEntity session;
 
     /** 带版本号的长期摘要 JSON。 */
     @Column(name = "summary_json", columnDefinition = "LONGTEXT")
