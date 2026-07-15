@@ -13,6 +13,7 @@ import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.response.SkillView;
 import com.example.sandbox.web.repository.ChatMessageRepository;
+import com.example.sandbox.web.repository.AgentRunRepository;
 import com.example.sandbox.web.repository.ConversationSessionRepository;
 import com.example.sandbox.web.service.ConversationService;
 
@@ -53,13 +54,30 @@ public class ConversationServiceImpl implements ConversationService {
     private final ConversationSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
     private final AgentSkillRuntimeService skillRuntimeService;
+    /** Agent 原始运行账本 Repository。 */
+    private final AgentRunRepository agentRunRepository;
+    /** 会话级持久上下文服务。 */
+    private final ConversationContextService conversationContextService;
 
+    /**
+     * 创建对话服务。
+     *
+     * @param sessionRepository 会话 Repository
+     * @param messageRepository 消息 Repository
+     * @param skillRuntimeService 技能运行时服务
+     * @param agentRunRepository Agent 运行账本 Repository
+     * @param conversationContextService 会话级持久上下文服务
+     */
     public ConversationServiceImpl(ConversationSessionRepository sessionRepository,
-                                  ChatMessageRepository messageRepository,
-                                  AgentSkillRuntimeService skillRuntimeService) {
+                                   ChatMessageRepository messageRepository,
+                                   AgentSkillRuntimeService skillRuntimeService,
+                                   AgentRunRepository agentRunRepository,
+                                   ConversationContextService conversationContextService) {
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.skillRuntimeService = skillRuntimeService;
+        this.agentRunRepository = agentRunRepository;
+        this.conversationContextService = conversationContextService;
     }
 
     @Override
@@ -221,6 +239,8 @@ public class ConversationServiceImpl implements ConversationService {
         if (!sessionRepository.existsById(sessionId)) {
             throw new SessionNotFoundException(sessionId);
         }
+        conversationContextService.clear(sessionId);
+        agentRunRepository.deleteBySession_Id(sessionId);
         messageRepository.deleteBySessionId(sessionId);
     }
 

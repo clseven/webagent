@@ -33,6 +33,16 @@ spring:
 agent:
   # 智能体解释“今天、明天”等相对时间时使用的默认 IANA 时区
   time-zone: ${AGENT_TIME_ZONE:Asia/Shanghai}
+  context:
+    # 持久化会话摘要和最近完整工具协议，不再按固定消息条数裁剪
+    enabled: ${AGENT_CONTEXT_ENABLED:true}
+    summarize-threshold-tokens: ${AGENT_CONTEXT_SUMMARIZE_THRESHOLD_TOKENS:512000}
+    compact-target-tokens: ${AGENT_CONTEXT_COMPACT_TARGET_TOKENS:320000}
+    recent-tool-result-tokens: ${AGENT_CONTEXT_RECENT_TOOL_RESULT_TOKENS:192000}
+    max-tool-result-chars: ${AGENT_CONTEXT_MAX_TOOL_RESULT_CHARS:200000}
+    tool-result-preview-chars: ${AGENT_CONTEXT_TOOL_RESULT_PREVIEW_CHARS:2000}
+    chars-per-token: ${AGENT_CONTEXT_CHARS_PER_TOKEN:1.5}
+    token-safety-ratio: ${AGENT_CONTEXT_TOKEN_SAFETY_RATIO:1.1}
   mcp:
     # 是否启用真 MCP 协议客户端（基于官方 mcp-core SDK），当前项目默认开启
     enabled: ${MCP_ENABLED:true}

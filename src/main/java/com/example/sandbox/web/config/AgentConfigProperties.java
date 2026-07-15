@@ -22,6 +22,38 @@ public class AgentConfigProperties {
     private Llm llm = new Llm();
     private Storage storage = new Storage();
     private Hook hook = new Hook();
+    private Context context = new Context();
+
+    /**
+     * Agent 上下文与分层压缩配置。
+     */
+    @Setter
+    @Getter
+    public static class Context {
+        /** 是否启用持久上下文快照。 */
+        private boolean enabled = true;
+
+        /** 触发 LLM 摘要压缩的估算 token 阈值。 */
+        private int summarizeThresholdTokens = 512_000;
+
+        /** LLM 摘要完成后最近协议的目标 token。 */
+        private int compactTargetTokens = 320_000;
+
+        /** 旧工具结果允许保留完整正文的最近 token 预算。 */
+        private int recentToolResultTokens = 192_000;
+
+        /** 单个工具结果进入模型上下文前允许保留的最大字符数。 */
+        private int maxToolResultChars = 200_000;
+
+        /** 超大工具结果在上下文中保留的头部和尾部预览字符数。 */
+        private int toolResultPreviewChars = 2_000;
+
+        /** token 保守估算使用的字符/token 比例。 */
+        private double charsPerToken = 1.5d;
+
+        /** token 估算安全系数。 */
+        private double tokenSafetyRatio = 1.1d;
+    }
 
     /**
      * Hook 层开关配置。

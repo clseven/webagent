@@ -6,6 +6,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.sandbox.web.config.AgentConfigProperties;
 import com.example.sandbox.web.model.entity.ChatMessage;
+import com.example.sandbox.web.model.llm.LlmToolCall;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -20,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,6 +82,37 @@ class DeepSeekLlmServiceErrorHandlingTest {
 
         assertThat(result).isEqualTo("ok");
         assertThat(requests).hasValue(3);
+    }
+
+    /**
+     * 验证工具调用消息在下一次请求中同时保留正文、推理内容和工具调用列表。
+     */
+    @Test
+    void toolCallMessageKeepsContentReasoningAndToolCallsInNextRequest() throws IOException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        AtomicReference<JsonNode> capturedRequest = new AtomicReference<>();
+        DeepSeekLlmServiceImpl service = createService(exchange -> {
+            capturedRequest.set(objectMapper.readTree(exchange.getRequestBody()));
+            respond(exchange, 200, """
+                    {"id":"test","model":"deepseek-chat","choices":[
+                      {"index":0,"message":{"role":"assistant","content":"完成"},"finish_reason":"stop"}
+                    ],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}
+                    """);
+        });
+        LlmToolCall toolCall = new LlmToolCall(
+                "call_123", "read_file", Map.of("path", "config.yml"));
+
+        service.chatWithTools("system", List.of(
+                ChatMessage.assistantToolCallMessage("准备读取配置", "需要先检查配置内容", toolCall),
+                ChatMessage.toolMessage("call_123", "配置内容"),
+                ChatMessage.userMessage("继续处理")), List.of());
+
+        JsonNode assistantMessage = capturedRequest.get().path("messages").get(1);
+        assertThat(assistantMessage.path("role").asText()).isEqualTo("assistant");
+        assertThat(assistantMessage.path("content").asText()).isEqualTo("准备读取配置");
+        assertThat(assistantMessage.path("reasoning_content").asText()).isEqualTo("需要先检查配置内容");
+        assertThat(assistantMessage.path("tool_calls")).hasSize(1);
+        assertThat(assistantMessage.path("tool_calls").get(0).path("id").asText()).isEqualTo("call_123");
     }
 
     /** 验证流式 429 同样不重试，并通过响应流传递明确错误。 */

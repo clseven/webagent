@@ -12,5 +12,8 @@ public enum AgentRunStatus {
     COMPLETED,
 
     /** Agent 达到最大迭代次数，保留检查点等待后续消息继续。 */
-    PAUSED_MAX_ITERATIONS
+    PAUSED_MAX_ITERATIONS,
+
+    /** 用户主动中断当前运行，已保存中断前产生的执行步骤。 */
+    INTERRUPTED
 }

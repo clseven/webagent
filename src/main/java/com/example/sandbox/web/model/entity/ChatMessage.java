@@ -218,10 +218,27 @@ public class ChatMessage {
 
     /**
      * 创建助手工具调用消息（原生 tool calling 协议）
+     *
+     * @param toolCall 助手发起的工具调用
+     * @return 不携带正文和推理内容的兼容工具调用消息
      */
     public static ChatMessage assistantToolCallMessage(LlmToolCall toolCall) {
-        return new ChatMessage("assistant", null, null, Instant.now().toEpochMilli(),
-                null, null, List.of(toolCall), null, null);
+        return assistantToolCallMessage(null, null, toolCall);
+    }
+
+    /**
+     * 创建保留完整模型响应的助手工具调用消息。
+     *
+     * <p>工具调用后的下一次模型请求需要重放同一条 assistant 消息的正文、
+     * reasoning_content 和 tool_calls，不能只保留工具调用列表。</p>
+     *
+     * @param content   模型在工具调用轮返回的正文，可为 null
+     * @param reasoning 模型在工具调用轮返回的 reasoning_content，可为 null
+     * @param toolCall  助手发起的工具调用
+     * @return 可完整重放给模型的助手工具调用消息
+     */
+    public static ChatMessage assistantToolCallMessage(String content, String reasoning, LlmToolCall toolCall) {
+        return assistantToolCallsMessage(content, reasoning, List.of(toolCall));
     }
 
     /**
@@ -231,10 +248,26 @@ public class ChatMessage {
      * 随后每个 tool_call 各跟一条 tool 结果消息。</p>
      *
      * @param toolCalls 本轮全部工具调用
-     * @return assistant 工具调用消息
+     * @return 不携带正文和推理内容的兼容工具调用消息
      */
     public static ChatMessage assistantToolCallsMessage(List<LlmToolCall> toolCalls) {
-        return new ChatMessage("assistant", null, null, Instant.now().toEpochMilli(),
+        return assistantToolCallsMessage(null, null, toolCalls);
+    }
+
+    /**
+     * 创建保留完整模型响应的并发助手工具调用消息。
+     *
+     * <p>正文、reasoning_content 和同轮全部 tool_calls 必须保存在同一条 assistant 消息中，
+     * 后续每个工具结果再通过 tool_call_id 与对应调用关联。</p>
+     *
+     * @param content   模型在工具调用轮返回的正文，可为 null
+     * @param reasoning 模型在工具调用轮返回的 reasoning_content，可为 null
+     * @param toolCalls 本轮全部工具调用
+     * @return 可完整重放给模型的并发助手工具调用消息
+     */
+    public static ChatMessage assistantToolCallsMessage(String content, String reasoning,
+                                                        List<LlmToolCall> toolCalls) {
+        return new ChatMessage("assistant", content, reasoning, Instant.now().toEpochMilli(),
                 null, null, List.copyOf(toolCalls), null, null);
     }
 

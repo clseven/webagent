@@ -8,6 +8,7 @@ import com.example.sandbox.web.model.llm.AgentContinuation;
 import com.example.sandbox.web.model.llm.AgentRunStatus;
 import com.example.sandbox.web.model.llm.LlmToolCall;
 import com.example.sandbox.web.repository.ChatMessageRepository;
+import com.example.sandbox.web.repository.AgentRunRepository;
 import com.example.sandbox.web.repository.ConversationSessionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,8 @@ class ConversationContinuationTest {
 
     private ConversationSessionRepository sessionRepository;
     private ChatMessageRepository messageRepository;
+    private AgentRunRepository agentRunRepository;
+    private ConversationContextService conversationContextService;
     private ConversationServiceImpl conversationService;
     private ConversationSessionEntity session;
 
@@ -41,11 +44,28 @@ class ConversationContinuationTest {
     void setUp() {
         sessionRepository = mock(ConversationSessionRepository.class);
         messageRepository = mock(ChatMessageRepository.class);
+        agentRunRepository = mock(AgentRunRepository.class);
+        conversationContextService = mock(ConversationContextService.class);
         conversationService = new ConversationServiceImpl(
-                sessionRepository, messageRepository, mock(AgentSkillRuntimeService.class));
+                sessionRepository, messageRepository, mock(AgentSkillRuntimeService.class),
+                agentRunRepository, conversationContextService);
         session = new ConversationSessionEntity();
         session.setId(SESSION_ID);
         when(sessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(session));
+    }
+
+    /**
+     * 清空历史时必须同时删除模型上下文快照和原始运行账本。
+     */
+    @Test
+    void 清空历史应删除消息运行账本和上下文快照() {
+        when(sessionRepository.existsById(SESSION_ID)).thenReturn(true);
+
+        conversationService.clearHistory(SESSION_ID);
+
+        verify(conversationContextService).clear(SESSION_ID);
+        verify(agentRunRepository).deleteBySession_Id(SESSION_ID);
+        verify(messageRepository).deleteBySessionId(SESSION_ID);
     }
 
     /**

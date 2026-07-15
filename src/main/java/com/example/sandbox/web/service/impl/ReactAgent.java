@@ -139,6 +139,15 @@ public class ReactAgent {
     /** 对话摘要（当历史消息超出 token 预算时生成），实际作为 user 消息保留在 messages 中 */
     private String conversationSummary;
 
+    /** 流式执行结束时使用的 Agent 运行轨迹持久化服务。 */
+    private AgentRunPersistenceService agentRunPersistenceService;
+
+    /** 写入运行协议时使用的用户原始消息，不包含本轮临时知识库增强内容。 */
+    private String persistedUserMessage;
+
+    /** 分层逻辑压缩和持久上下文服务。 */
+    private ConversationContextService conversationContextService;
+
     /** 收尾尝试计数，用于 Hook 日志和诊断；实际执行工具后清零。 */
     private int finalizeAttemptCount = 0;
 
@@ -182,6 +191,35 @@ public class ReactAgent {
     public void setUseRawSystemPrompt(boolean useRawSystemPrompt) {
         this.useRawSystemPrompt = useRawSystemPrompt;
         this.systemPrompt = buildSystemPrompt(promptContext);
+    }
+
+    /**
+     * 设置流式执行使用的运行轨迹持久化服务。
+     *
+     * <p>同步执行由编排服务在助手消息落库后保存运行轨迹，避免同一请求重复写入。</p>
+     *
+     * @param agentRunPersistenceService 运行轨迹持久化服务，可为空
+     */
+    public void setAgentRunPersistenceService(AgentRunPersistenceService agentRunPersistenceService) {
+        this.agentRunPersistenceService = agentRunPersistenceService;
+    }
+
+    /**
+     * 设置运行记录使用的用户原始消息。
+     *
+     * @param persistedUserMessage 未经知识库增强的用户消息
+     */
+    public void setPersistedUserMessage(String persistedUserMessage) {
+        this.persistedUserMessage = persistedUserMessage;
+    }
+
+    /**
+     * 设置分层压缩使用的会话上下文服务。
+     *
+     * @param conversationContextService 会话上下文服务，可为空
+     */
+    public void setConversationContextService(ConversationContextService conversationContextService) {
+        this.conversationContextService = conversationContextService;
     }
 
     // ==================== Hook 系统 ====================
@@ -682,7 +720,8 @@ public class ReactAgent {
                                 LlmToolCall tc = digestResponse.getToolCall();
                                 String obs = executeTool(sessionId, tc.name(), tc.arguments());
                                 LlmToolCall historyTc = ensureToolCallId(tc);
-                                messages.add(ChatMessage.assistantToolCallMessage(historyTc));
+                                messages.add(ChatMessage.assistantToolCallMessage(
+                                        digestResponse.getContent(), digestResponse.getReasoningContent(), historyTc));
                                 messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
                                 steps.add(new AgentStep(iteration, digestResponse.getContent(),
                                         digestResponse.getReasoningContent(), historyTc,
@@ -695,6 +734,8 @@ public class ReactAgent {
 
                 log.info("ReAct 完成，共 {} 次迭代，token: {}", iteration, totalTokens);
                 LlmUsage totalUsage = new LlmUsage(totalPromptTokens, totalCompletionTokens, totalTokens, totalCacheHitTokens);
+                saveAgentRun(sessionId, response.getContent(), AgentRunStatus.COMPLETED,
+                        steps, totalUsage, iteration);
                 return new AgentResponse(response.getContent(), response.getReasoningContent(), steps, totalUsage, iteration);
             }
 
@@ -712,7 +753,8 @@ public class ReactAgent {
                     ToolExecResult tr = executeOneToolWithHooks(sessionId, toolCalls.get(0));
                     LlmToolCall historyToolCall = ensureToolCallId(toolCalls.get(0));
                     addToolStep(steps, iteration, llmContent, response, historyToolCall, tr);
-                    messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                    messages.add(ChatMessage.assistantToolCallMessage(
+                            response.getContent(), response.getReasoningContent(), historyToolCall));
                     messages.add(ChatMessage.toolMessage(historyToolCall.id(), tr.observation()));
                     for (ChatMessage inj : tr.injections()) {
                         messages.add(inj);
@@ -732,7 +774,8 @@ public class ReactAgent {
                         addToolStep(steps, iteration, llmContent, response, historyCalls.get(i), results.get(i));
                     }
                     // 并发 tool calling 协议：一条 assistant 消息带全部 tool_calls，再各跟一条 tool 结果
-                    messages.add(ChatMessage.assistantToolCallsMessage(historyCalls));
+                    messages.add(ChatMessage.assistantToolCallsMessage(
+                            response.getContent(), response.getReasoningContent(), historyCalls));
                     for (int i = 0; i < toolCalls.size(); i++) {
                         messages.add(ChatMessage.toolMessage(historyCalls.get(i).id(), results.get(i).observation()));
                     }
@@ -752,6 +795,8 @@ public class ReactAgent {
 
         log.warn("ReAct 达到最大迭代次数 ({})，会话 {}", MAX_ITERATIONS, sessionId);
         LlmUsage totalUsage = new LlmUsage(totalPromptTokens, totalCompletionTokens, totalTokens, totalCacheHitTokens);
+        saveAgentRun(sessionId, ConversationServiceImpl.SYNC_ITERATION_LIMIT_MESSAGE,
+                AgentRunStatus.PAUSED_MAX_ITERATIONS, steps, totalUsage, iteration);
         return new AgentResponse(
                 ConversationServiceImpl.SYNC_ITERATION_LIMIT_MESSAGE,
                 null, steps, totalUsage, iteration,
@@ -784,19 +829,34 @@ public class ReactAgent {
      * <p>保留最近 ~40% 的消息作为原始上下文，被压缩的消息从数组中移除，
      * 生成的摘要作为一条 user 消息放回 messages，确保上游请求仍包含用户查询。</p>
      */
-    private void compressIfNeeded(List<ChatMessage> messages) {
+    private boolean compressIfNeeded(List<ChatMessage> messages) {
+        boolean logicallyCompacted = false;
+        if (conversationContextService != null) {
+            List<ChatMessage> compacted = conversationContextService.compactProtocolMessages(messages);
+            if (!compacted.equals(messages)) {
+                messages.clear();
+                messages.addAll(compacted);
+                logicallyCompacted = true;
+            }
+        }
         int totalTokens = estimateTokens(messages);
-        if (totalTokens <= SUMMARIZE_THRESHOLD) {
-            return;
+        int summarizeThreshold = conversationContextService != null
+                ? conversationContextServiceTokenThreshold()
+                : SUMMARIZE_THRESHOLD;
+        if (totalTokens <= summarizeThreshold) {
+            return logicallyCompacted;
         }
 
-        // 找到 60% token 位置，之前的消息将被压缩
+        int compactTarget = conversationContextService != null
+                ? conversationContextCompactTarget()
+                : (int) (totalTokens * 0.4);
+        int tokensToRemove = Math.max(1, totalTokens - compactTarget);
         int threshold = 0;
         int splitAt = 0;
         for (int i = 0; i < messages.size(); i++) {
-            threshold += messageContentForContext(messages.get(i)).length() / TOKEN_CHARS_RATIO;
-            if (threshold > totalTokens * 0.6) {
-                splitAt = i;
+            threshold += estimateTokens(List.of(messages.get(i)));
+            if (threshold >= tokensToRemove) {
+                splitAt = i + 1;
                 break;
             }
         }
@@ -809,7 +869,7 @@ public class ReactAgent {
         splitAt = alignedSplitAt;
 
         if (splitAt <= 2) {
-            return; // 太少消息不值得压缩
+            return logicallyCompacted; // 太少消息不值得压缩
         }
 
         List<ChatMessage> oldMessages = new ArrayList<>(messages.subList(0, splitAt));
@@ -821,6 +881,15 @@ public class ReactAgent {
 
         log.info("压缩 {} 条旧消息为摘要 ({} 字符)，剩余 {} 条",
                 oldMessages.size(), newSummary.length(), messages.size());
+        return true;
+    }
+
+    private int conversationContextServiceTokenThreshold() {
+        return conversationContextService.getSummarizeThresholdTokens();
+    }
+
+    private int conversationContextCompactTarget() {
+        return conversationContextService.getCompactTargetTokens();
     }
 
     /**
@@ -962,6 +1031,9 @@ public class ReactAgent {
      * 估算消息列表的 token 数量（字符数 / 比例）
      */
     private int estimateTokens(List<ChatMessage> messages) {
+        if (conversationContextService != null) {
+            return conversationContextService.estimateTokens(messages);
+        }
         int total = 0;
         for (ChatMessage msg : messages) {
             total += messageContentForContext(msg).length() / TOKEN_CHARS_RATIO;
@@ -1422,7 +1494,13 @@ public class ReactAgent {
                     }
 
                     // 压缩历史消息（如果需要）
-                    compressIfNeeded(messages);
+                    if (compressIfNeeded(messages)) {
+                        String compactionMessage = "上下文压缩完成，已保留最近完整工具链";
+                        persistedEvents.add(Map.of(
+                                "type", "status",
+                                "content", compactionMessage));
+                        sink.next(SseEvent.status(compactionMessage));
+                    }
 
                     String prompt = effectiveSystemPrompt();
 
@@ -1492,6 +1570,13 @@ public class ReactAgent {
                         }
                         // 保存中断时的 partial 内容
                         saveInterruptedMessages(currentThinking.toString(), currentReasoning.toString());
+                        LlmUsage interruptedUsage = new LlmUsage(
+                                totalPromptTokens.get(),
+                                totalCompletionTokens.get(),
+                                totalTokens.get(),
+                                totalCacheHitTokens.get());
+                        saveAgentRun(sessionId, currentThinking.toString(), AgentRunStatus.INTERRUPTED,
+                                steps, interruptedUsage, currentStep);
                         sink.next(SseEvent.interrupted("用户手动暂停"));
                         sink.complete();
                         return;
@@ -1508,7 +1593,8 @@ public class ReactAgent {
                             ToolExecResult tr = executeOneStreamToolWithHooks(sessionId, historyToolCall, sink, currentStep);
                             addStreamToolStep(steps, currentStep, currentThinking, currentReasoning,
                                     historyToolCall, tr, usageRef, persistedEvents);
-                            messages.add(ChatMessage.assistantToolCallMessage(historyToolCall));
+                            messages.add(ChatMessage.assistantToolCallMessage(
+                                    currentThinking.toString(), currentReasoning.toString(), historyToolCall));
                             messages.add(ChatMessage.toolMessage(historyToolCall.id(), tr.observation()));
                             for (ChatMessage inj : tr.injections()) {
                                 messages.add(inj);
@@ -1528,7 +1614,8 @@ public class ReactAgent {
                                 addStreamToolStep(steps, currentStep, currentThinking, currentReasoning,
                                         historyCalls.get(i), results.get(i), usageRef, persistedEvents);
                             }
-                            messages.add(ChatMessage.assistantToolCallsMessage(historyCalls));
+                            messages.add(ChatMessage.assistantToolCallsMessage(
+                                    currentThinking.toString(), currentReasoning.toString(), historyCalls));
                             for (int i = 0; i < historyCalls.size(); i++) {
                                 messages.add(ChatMessage.toolMessage(historyCalls.get(i).id(), results.get(i).observation()));
                             }
@@ -1618,7 +1705,8 @@ public class ReactAgent {
                                         sink.next(SseEvent.toolCall(historyTc.name(), historyTc.arguments(), digestStep, digestDisplayReason, historyTc.id()));
 
                                         String obs = executeTool(sessionId, historyTc.name(), historyTc.arguments());
-                                        messages.add(ChatMessage.assistantToolCallMessage(historyTc));
+                                        messages.add(ChatMessage.assistantToolCallMessage(
+                                                digestResponse.getContent(), digestResponse.getReasoningContent(), historyTc));
                                         messages.add(ChatMessage.toolMessage(historyTc.id(), obs));
 
                                         sink.next(SseEvent.observation(historyTc.name(), obs, 0, digestDisplayReason, historyTc.id()));
@@ -1641,16 +1729,18 @@ public class ReactAgent {
                                     null, null, usageRef.get());
                             persistedEvents.addAll(AgentEventMapper.fromStep(finalStep));
                         }
-                        // 保存完成的助手消息
-                        saveAssistantMessage(finalContent, finalReasoning, persistedEvents);
-
-                        sink.next(SseEvent.answer(finalContent, finalReasoning));
-
                         LlmUsage totalUsage = new LlmUsage(
                                 totalPromptTokens.get(),
                                 totalCompletionTokens.get(),
                                 totalTokens.get(),
                                 totalCacheHitTokens.get());
+
+                        // 保存完成的助手消息和本次运行轨迹
+                        saveAssistantMessage(finalContent, finalReasoning, persistedEvents);
+                        saveAgentRun(sessionId, finalContent, AgentRunStatus.COMPLETED,
+                                steps, totalUsage, currentStep);
+
+                        sink.next(SseEvent.answer(finalContent, finalReasoning));
 
                         sink.next(SseEvent.done(currentStep, totalUsage));
                         sink.complete();
@@ -1666,14 +1756,16 @@ public class ReactAgent {
                             "type", "status",
                             "content", limitMessage));
 
-                    savePausedAssistantMessage(limitMessage, persistedEvents, messages);
-                    sink.next(SseEvent.status(limitMessage));
-                    sink.next(SseEvent.answer(limitMessage, null));
                     LlmUsage totalUsage = new LlmUsage(
                             totalPromptTokens.get(),
                             totalCompletionTokens.get(),
                             totalTokens.get(),
                             totalCacheHitTokens.get());
+                    savePausedAssistantMessage(limitMessage, persistedEvents, messages);
+                    saveAgentRun(sessionId, limitMessage, AgentRunStatus.PAUSED_MAX_ITERATIONS,
+                            steps, totalUsage, iteration.get());
+                    sink.next(SseEvent.status(limitMessage));
+                    sink.next(SseEvent.answer(limitMessage, null));
                     sink.next(SseEvent.done(iteration.get(), totalUsage));
                     sink.complete();
                 }
@@ -1767,5 +1859,34 @@ public class ReactAgent {
         // 2. 保存用户中断标记
         conversationService.addUserMessage(sessionId, INTERRUPTED_MARKER);
         log.info("【Stream 中断保存】中断标记已保存");
+    }
+
+    /**
+     * 保存流式执行产生的单次运行轨迹。
+     *
+     * <p>持久化服务未装配时跳过，主要兼容独立单元测试和子 Agent；正式流式入口由
+     * {@link ReactAgentFactory} 完成装配。序列化或数据库异常不吞掉，交由外层流式错误处理。</p>
+     *
+     * @param runSessionId 会话 ID
+     * @param finalAnswer  最终回答、暂停提示或中断前部分正文
+     * @param status       运行结束状态
+     * @param steps        已完成的工具步骤
+     * @param usage        累计 token 用量
+     * @param iterations   迭代次数
+     */
+    private void saveAgentRun(String runSessionId, String finalAnswer, AgentRunStatus status,
+                              List<AgentStep> steps, LlmUsage usage, int iterations) {
+        if (agentRunPersistenceService == null || runSessionId == null) {
+            return;
+        }
+        agentRunPersistenceService.save(
+                runSessionId,
+                persistedUserMessage,
+                plan,
+                steps,
+                finalAnswer,
+                status,
+                usage,
+                iterations);
     }
 }

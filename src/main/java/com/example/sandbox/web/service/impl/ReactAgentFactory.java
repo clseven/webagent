@@ -27,6 +27,12 @@ public class ReactAgentFactory {
     /** Hook 装配服务。 */
     private final ReactAgentHookService hookService;
 
+    /** 流式 Agent 运行轨迹持久化服务。 */
+    private final AgentRunPersistenceService agentRunPersistenceService;
+
+    /** 持久上下文和分层压缩服务。 */
+    private final ConversationContextService conversationContextService;
+
     /**
      * 创建执行器工厂。
      *
@@ -34,15 +40,21 @@ public class ReactAgentFactory {
      * @param conversationService   对话服务
      * @param backgroundTaskManager 后台任务管理器
      * @param hookService           Hook 装配服务
+     * @param agentRunPersistenceService Agent 运行轨迹持久化服务
+     * @param conversationContextService 持久上下文和分层压缩服务
      */
     public ReactAgentFactory(@Qualifier("executorLlm") LlmService executorLlm,
                              ConversationService conversationService,
                              BackgroundTaskManager backgroundTaskManager,
-                             ReactAgentHookService hookService) {
+                             ReactAgentHookService hookService,
+                             AgentRunPersistenceService agentRunPersistenceService,
+                             ConversationContextService conversationContextService) {
         this.executorLlm = executorLlm;
         this.conversationService = conversationService;
         this.backgroundTaskManager = backgroundTaskManager;
         this.hookService = hookService;
+        this.agentRunPersistenceService = agentRunPersistenceService;
+        this.conversationContextService = conversationContextService;
     }
 
     /**
@@ -57,6 +69,9 @@ public class ReactAgentFactory {
             ReactAgent socialAgent = new ReactAgent(
                     executorLlm, List.of(), ReactPromptAssembler.assembleSocial(context.runtimeTimeContext()),
                     null, null, null, backgroundTaskManager);
+            socialAgent.setAgentRunPersistenceService(agentRunPersistenceService);
+            socialAgent.setPersistedUserMessage(context.userMessage());
+            socialAgent.setConversationContextService(conversationContextService);
             socialAgent.setUseRawSystemPrompt(true);
             hookService.configureForChat(socialAgent, List.of(),
                     context.sessionId(), context.userMessage(), null, context.policy());
@@ -72,6 +87,9 @@ public class ReactAgentFactory {
                 backgroundTaskManager,
                 context.runtimeTimeContext()
         );
+        reactAgent.setAgentRunPersistenceService(agentRunPersistenceService);
+        reactAgent.setPersistedUserMessage(context.userMessage());
+        reactAgent.setConversationContextService(conversationContextService);
         hookService.configureForChat(reactAgent, context.toolContext().filteredTools(),
                 context.sessionId(), context.userMessage(), plan, context.policy());
         return reactAgent;
@@ -89,6 +107,9 @@ public class ReactAgentFactory {
             ReactAgent socialAgent = new ReactAgent(
                     executorLlm, List.of(), ReactPromptAssembler.assembleSocial(context.runtimeTimeContext()),
                     null, conversationService, context.sessionId(), backgroundTaskManager);
+            socialAgent.setAgentRunPersistenceService(agentRunPersistenceService);
+            socialAgent.setPersistedUserMessage(context.userMessage());
+            socialAgent.setConversationContextService(conversationContextService);
             socialAgent.setUseRawSystemPrompt(true);
             hookService.configureForStream(socialAgent, List.of(),
                     context.sessionId(), context.userMessage(), null, context.policy());
@@ -104,6 +125,9 @@ public class ReactAgentFactory {
                 backgroundTaskManager,
                 context.runtimeTimeContext()
         );
+        reactAgent.setAgentRunPersistenceService(agentRunPersistenceService);
+        reactAgent.setPersistedUserMessage(context.userMessage());
+        reactAgent.setConversationContextService(conversationContextService);
         hookService.configureForStream(reactAgent, context.toolContext().filteredTools(),
                 context.sessionId(), context.userMessage(), plan, context.policy());
         return reactAgent;

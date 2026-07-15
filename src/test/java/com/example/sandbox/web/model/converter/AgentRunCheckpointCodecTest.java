@@ -22,7 +22,7 @@ class AgentRunCheckpointCodecTest {
     void 检查点应无损恢复并发工具调用和对应结果() {
         List<ChatMessage> messages = List.of(
                 ChatMessage.userMessage("继续任务"),
-                ChatMessage.assistantToolCallsMessage(List.of(
+                ChatMessage.assistantToolCallsMessage("准备并行检查文件和资料", "需要同时读取本地文件并搜索外部资料", List.of(
                         new LlmToolCall("call_1", "read_file", Map.of("path", "/a")),
                         new LlmToolCall("call_2", "web_search", Map.of("query", "x")))),
                 ChatMessage.toolMessage("call_1", "A"),
@@ -32,6 +32,8 @@ class AgentRunCheckpointCodecTest {
         List<ChatMessage> restored = EntityConverter.parseCheckpoint(json).toMessages();
 
         assertThat(restored).hasSize(4);
+        assertThat(restored.get(1).getContent()).isEqualTo("准备并行检查文件和资料");
+        assertThat(restored.get(1).getReasoning()).isEqualTo("需要同时读取本地文件并搜索外部资料");
         assertThat(restored.get(1).getToolCalls())
                 .extracting(LlmToolCall::id)
                 .containsExactly("call_1", "call_2");

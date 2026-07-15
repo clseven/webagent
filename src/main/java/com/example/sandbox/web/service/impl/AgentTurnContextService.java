@@ -6,6 +6,7 @@ import com.example.sandbox.web.model.entity.ChatMessage;
 import com.example.sandbox.web.model.entity.ConversationSession;
 import com.example.sandbox.web.model.entity.Skill;
 import com.example.sandbox.web.model.llm.AgentContinuation;
+import com.example.sandbox.web.model.llm.ConversationContextView;
 import com.example.sandbox.web.service.SandboxService;
 import com.example.sandbox.web.service.WorkspaceDirectoryMemoryService;
 import org.slf4j.Logger;
@@ -39,6 +40,8 @@ public class AgentTurnContextService {
     private final AgentToolContextService toolContextService;
     private final AgentSkillRuntimeService skillRuntimeService;
     private final AgentPlannerService agentPlannerService;
+    /** 持久会话上下文服务；非 Spring 旧调用方允许为空。 */
+    private final ConversationContextService conversationContextService;
     /** 为每一轮创建一次且仅一次的不可变时间快照。 */
     private final AgentTimeContextService timeContextService;
 
@@ -54,6 +57,7 @@ public class AgentTurnContextService {
      * @param toolContextService 工具上下文服务
      * @param skillRuntimeService 技能运行时服务
      * @param agentPlannerService 规划器服务
+     * @param conversationContextService 持久会话上下文服务
      * @param timeContextService 时间快照服务
      */
     @Autowired
@@ -66,6 +70,7 @@ public class AgentTurnContextService {
                                    AgentToolContextService toolContextService,
                                    AgentSkillRuntimeService skillRuntimeService,
                                    AgentPlannerService agentPlannerService,
+                                   ConversationContextService conversationContextService,
                                    AgentTimeContextService timeContextService) {
         this.conversationService = conversationService;
         this.sandboxService = sandboxService;
@@ -76,6 +81,7 @@ public class AgentTurnContextService {
         this.toolContextService = toolContextService;
         this.skillRuntimeService = skillRuntimeService;
         this.agentPlannerService = agentPlannerService;
+        this.conversationContextService = conversationContextService;
         this.timeContextService = timeContextService;
     }
 
@@ -103,7 +109,7 @@ public class AgentTurnContextService {
                                    AgentPlannerService agentPlannerService) {
         this(conversationService, sandboxService, lightweightChatRouter, turnPolicyResolver,
                 workspaceDirectoryMemoryService, knowledgeContextService, toolContextService,
-                skillRuntimeService, agentPlannerService, AgentTimeContextService.systemDefault());
+                skillRuntimeService, agentPlannerService, null, AgentTimeContextService.systemDefault());
     }
 
     /**
@@ -122,8 +128,16 @@ public class AgentTurnContextService {
         if (continuation == null) {
             continuation = AgentContinuation.none();
         }
-        List<ChatMessage> history = buildHistory(sessionId, continuation);
+        ConversationContextView durableContext = conversationContextService != null
+                ? conversationContextService.load(sessionId)
+                : ConversationContextView.empty();
+        List<ChatMessage> history = buildHistory(sessionId, continuation, durableContext);
         String continuationContext = continuation.context() != null ? continuation.context() : "";
+        if (conversationContextService != null) {
+            continuationContext = prependContext(
+                    conversationContextService.formatSummaryContext(durableContext.summary()),
+                    continuationContext);
+        }
         log.info("{}历史消息】会话: {} 条数: {}", logPrefix, sessionId, history.size());
         if (continuation.available()) {
             log.info("{}续接检查点】会话: {} exact={} 历史条数={} 上下文字符={}",
@@ -247,10 +261,16 @@ public class AgentTurnContextService {
      * @param continuation 上轮续接资料
      * @return 可安全继续执行的历史消息
      */
-    private List<ChatMessage> buildHistory(String sessionId, AgentContinuation continuation) {
+    private List<ChatMessage> buildHistory(String sessionId, AgentContinuation continuation,
+                                           ConversationContextView durableContext) {
         if (continuation.exactCheckpoint() && continuation.resumeHistory() != null
                 && !continuation.resumeHistory().isEmpty()) {
             return new ArrayList<>(continuation.resumeHistory());
+        }
+
+        if (durableContext != null && durableContext.recentMessages() != null
+                && !durableContext.recentMessages().isEmpty()) {
+            return new ArrayList<>(durableContext.recentMessages());
         }
 
         List<ChatMessage> recentHistory = new ArrayList<>(
