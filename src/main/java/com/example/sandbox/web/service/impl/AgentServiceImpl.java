@@ -103,6 +103,10 @@ public class AgentServiceImpl implements AgentService {
     @Autowired
     private AgentToolContextService agentToolContextService;
 
+    /** 活动运行状态服务，用于页面刷新和跨设备查询。 */
+    @Autowired
+    private ActiveAgentRunService activeAgentRunService;
+
     /**
      * 创建新会话（无关联应用）
      *
@@ -432,6 +436,7 @@ public class AgentServiceImpl implements AgentService {
             try {
                 ConversationSession session = conversationService.getSession(sessionId);
                 validateSessionOwnership(session);
+                activeAgentRunService.start(sessionId);
                 AgentTurnContext context = agentTurnContextService.prepare(session, userMessage, true);
                 contextRef.set(context);
                 String plan = agentPlannerService.plan(context, userMessage, "plan_stream", "【Stream 规划结果】", 200);
@@ -440,14 +445,15 @@ public class AgentServiceImpl implements AgentService {
                 }
 
                 if (sink.isCancelled()) {
-                    sink.next(SseEvent.interrupted("用户在规划后中断"));
-                    sink.complete();
-                    return;
+                    // 浏览器刷新只会断开当前 SSE 订阅，服务端任务仍需继续执行并保存最终结果，
+                    // 否则其他设备恢复出的活动状态会停在规划阶段且永远无法收尾。
+                    log.info("SSE 已断开，任务继续在服务端执行: sessionId={}", sessionId);
                 }
 
                 ReactAgent reactAgent = reactAgentFactory.createForStream(context, plan);
                 reactAgent.runStream(sessionId, context.executionUserMessage(), context.history())
                     .doOnNext(event -> {
+                        activeAgentRunService.update(sessionId, event);
                         if (!sink.isCancelled()) {
                             sink.next(event);
 
@@ -480,6 +486,7 @@ public class AgentServiceImpl implements AgentService {
                         }
                     })
                     .doOnError(e -> {
+                        activeAgentRunService.finish(sessionId);
                         log.error("ReactAgent Stream 失败", e);
                         if (!sink.isCancelled()) {
                             sink.next(SseEvent.error(e.getMessage()));
@@ -488,6 +495,7 @@ public class AgentServiceImpl implements AgentService {
                         agentToolContextService.clearRuntimeState(context.toolContext());
                     })
                     .doOnComplete(() -> {
+                        activeAgentRunService.finish(sessionId);
                         agentToolContextService.clearRuntimeState(context.toolContext());
                         if (!sink.isCancelled()) {
                             sink.complete();
@@ -496,6 +504,7 @@ public class AgentServiceImpl implements AgentService {
                     .subscribe();
 
             } catch (Exception e) {
+                activeAgentRunService.finish(sessionId);
                 log.error("chatStream 失败", e);
                 if (!sink.isCancelled()) {
                     sink.next(SseEvent.error(e.getMessage()));

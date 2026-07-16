@@ -15,6 +15,8 @@ import java.util.List;
  * @param connected  当前是否存在可用 Client
  * @param toolNames  当前缓存的工具名称
  * @param lastError  最近一次结构化连接错误；没有错误时为 null
+ * @param headerNames 已配置的请求头名称；不包含请求头值
+ * @param requestTimeoutSeconds 单 Server 请求超时秒数；为空时继承全局值
  */
 public record McpServerView(
         McpClientScope scope,
@@ -24,6 +26,8 @@ public record McpServerView(
         boolean enabled,
         boolean connected,
         List<String> toolNames,
-        McpOperationError lastError
+        McpOperationError lastError,
+        List<String> headerNames,
+        Integer requestTimeoutSeconds
 ) {
 }

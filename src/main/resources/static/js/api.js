@@ -78,6 +78,10 @@ function createApiClient() {
             'POST', `/api/sessions/${sessionId}/chat`, { message, searchEnabled, planningEnabled, knowledgeEnabled }
         ),
         getHistory: (sessionId) => request('GET', `/api/sessions/${sessionId}/history`),
+        getActiveRun: (sessionId) => request('GET', `/api/sessions/${sessionId}/runs/active`),
+        getActiveRunEvents: (sessionId, afterSequence = 0) => request(
+            'GET', `/api/sessions/${sessionId}/runs/active/events?after=${encodeURIComponent(afterSequence)}`
+        ),
 
         // 流式聊天（SSE）
         // 返回 EventSource 和停止函数
@@ -344,6 +348,17 @@ function createApiClient() {
         deleteApp: (appId) => request('DELETE', `/api/apps/${appId}`),
         updateAppKnowledgeBases: (appId, kbIds) => request('PUT', `/api/apps/${appId}/knowledge-bases`, { kbIds }),
         updateAppSkills: (appId, skillIds) => request('PUT', `/api/apps/${appId}/skills`, { skillIds }),
+
+        // 用户私有 MCP
+        listMcpServers: () => request('GET', '/api/mcp/servers'),
+        createMcpServer: (server) => request('POST', '/api/mcp/servers', server),
+        updateMcpServer: (serverId, server) => request(
+            'PUT', `/api/mcp/servers/${encodeURIComponent(serverId)}`, server
+        ),
+        deleteMcpServer: (serverId) => request(
+            'DELETE', `/api/mcp/servers/${encodeURIComponent(serverId)}`
+        ),
+        reloadMcpServers: () => request('POST', '/api/mcp/reload'),
 
         // 知识库
         createKnowledgeBase: (name, description) => request('POST', '/api/rag/bases', { name, description }),

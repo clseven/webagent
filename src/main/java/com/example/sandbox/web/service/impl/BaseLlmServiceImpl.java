@@ -45,6 +45,7 @@ import java.util.regex.Pattern;
  * <h3>工具调用解析策略</h3>
  * <ol>
  *   <li>优先解析 LLM 原生 tool_calls 字段，收集全部 tool_call 到列表供并发调度（OpenAI 标准）</li>
+ *   <li>兼容 DeepSeek V4 DSML，并在协议适配层把泄漏到 content/reasoning 的标记恢复为结构化工具调用</li>
  *   <li>回退到 ReAct 文本解析（兼容老模型）</li>
  * </ol>
  *
@@ -217,6 +218,16 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             String content = assistantMsg != null ? assistantMsg.getContent() : "";
             String reasoning = assistantMsg != null ? assistantMsg.getReasoningContent() : null;
 
+            // DeepSeek V4 原生 DSML 偶尔会被兼容层放入普通文字字段。
+            // 可读思考照常保留，只有协议块会被移除并恢复为结构化工具调用。
+            DeepSeekDsmlStreamParser.ParseResult parsedContent =
+                    DeepSeekDsmlStreamParser.parseComplete(objectMapper, content);
+            DeepSeekDsmlStreamParser.ParseResult parsedReasoning =
+                    DeepSeekDsmlStreamParser.parseComplete(objectMapper, reasoning);
+            content = parsedContent.visibleText();
+            reasoning = parsedReasoning.visibleText();
+            List<LlmToolCall> recoveredDsmlCalls = selectRecoveredDsmlCalls(parsedContent, parsedReasoning);
+
             // 优先解析原生 tool_calls（一轮可能有多个，全部接出供并发调度）
             if (completion.hasToolCalls()) {
                 List<LlmToolCall> validCalls = new ArrayList<>();
@@ -234,6 +245,19 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                     }
                     return LlmResponse.toolCalls(validCalls, content, reasoning, usage);
                 }
+            }
+
+            // 上游没有返回原生 tool_calls 时，使用从 DeepSeek DSML 恢复的调用。
+            if (!recoveredDsmlCalls.isEmpty()) {
+                List<LlmToolCall> validCalls = recoveredDsmlCalls.stream()
+                        .filter(tc -> isValidToolName(tc.name()))
+                        .toList();
+                if (validCalls.size() != recoveredDsmlCalls.size()) {
+                    throw new DeepSeekDsmlStreamParser.ProtocolException(
+                            "DeepSeek DSML 包含非法工具名称，已拒绝执行");
+                }
+                logRecoveredDsmlCalls(validCalls);
+                return LlmResponse.toolCalls(validCalls, content, reasoning, usage);
             }
 
             // 回退：ReAct 文本解析
@@ -508,6 +532,63 @@ public abstract class BaseLlmServiceImpl implements LlmService {
     }
 
     // ==================== 工具方法 ====================
+
+    /**
+     * 从非流式 content/reasoning 解析结果中选择 DSML 工具调用。
+     *
+     * <p>DeepSeek 官方格式把工具调用放在最终 content。若兼容层异常地在两个字段都返回，
+     * 优先采用 content，避免同一个有副作用的工具被执行两次。</p>
+     *
+     * @param contentResult   content 的 DSML 解析结果
+     * @param reasoningResult reasoning_content 的 DSML 解析结果
+     * @return 待执行的 DSML 工具调用
+     */
+    private List<LlmToolCall> selectRecoveredDsmlCalls(
+            DeepSeekDsmlStreamParser.ParseResult contentResult,
+            DeepSeekDsmlStreamParser.ParseResult reasoningResult) {
+        return selectRecoveredDsmlCalls(contentResult.toolCalls(), reasoningResult.toolCalls());
+    }
+
+    /**
+     * 从流式 content/reasoning 收尾结果中选择 DSML 工具调用。
+     *
+     * @param contentResult   content 的流式解析结果
+     * @param reasoningResult reasoning_content 的流式解析结果
+     * @return 待执行的 DSML 工具调用
+     */
+    private List<LlmToolCall> selectRecoveredDsmlCalls(
+            DeepSeekDsmlStreamParser.StreamCompletion contentResult,
+            DeepSeekDsmlStreamParser.StreamCompletion reasoningResult) {
+        return selectRecoveredDsmlCalls(contentResult.toolCalls(), reasoningResult.toolCalls());
+    }
+
+    /**
+     * 按 DeepSeek 官方字段优先级选择一组 DSML 工具调用。
+     *
+     * @param contentCalls   content 中的工具调用
+     * @param reasoningCalls reasoning_content 中的工具调用
+     * @return content 优先的一组工具调用
+     */
+    private List<LlmToolCall> selectRecoveredDsmlCalls(List<LlmToolCall> contentCalls,
+                                                        List<LlmToolCall> reasoningCalls) {
+        if (contentCalls != null && !contentCalls.isEmpty()) {
+            if (reasoningCalls != null && !reasoningCalls.isEmpty()) {
+                log.warn("模型在 content 和 reasoning_content 中同时返回 DSML，已优先采用 content 防止重复执行");
+            }
+            return contentCalls;
+        }
+        return reasoningCalls != null ? reasoningCalls : List.of();
+    }
+
+    /**
+     * 记录从泄漏文字中恢复的 DSML 工具调用，不记录参数以避免敏感信息进入日志。
+     *
+     * @param calls 已恢复并通过名称校验的工具调用
+     */
+    private void logRecoveredDsmlCalls(List<LlmToolCall> calls) {
+        log.warn("检测到上游未结构化的 DeepSeek DSML，已恢复为 {} 个工具调用: {}",
+                calls.size(), calls.stream().map(LlmToolCall::name).toList());
+    }
 
     /**
      * 校验工具名称合法性（防止 LLM 注入非法字符）
@@ -1002,16 +1083,26 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                 // 按 OpenAI tool_calls[].index 分开累积（一轮可能并发多个工具调用，参数跨多个 chunk）
                 Map<Integer, LlmToolCall.Builder> toolCallBuilders = new java.util.TreeMap<>();
                 AtomicReference<LlmUsage> usageRef = new AtomicReference<>();
+                DeepSeekDsmlStreamParser contentDsmlParser = new DeepSeekDsmlStreamParser(objectMapper);
+                DeepSeekDsmlStreamParser reasoningDsmlParser = new DeepSeekDsmlStreamParser(objectMapper);
+                AtomicBoolean protocolFailed = new AtomicBoolean(false);
 
                 callLlmStream(apiFormat)
                     .subscribe(
                         chunk -> {
-                            if (emitter.isCancelled()) return;
+                            if (emitter.isCancelled() || protocolFailed.get()) return;
 
-                            // 只累积 token/reasoning 直接透传，工具调用累积到 map，完成时统一发出
-                            List<LlmStreamChunk> chunks = parseStreamChunkWithTools(chunk, toolCallBuilders, usageRef);
-                            for (LlmStreamChunk c : chunks) {
-                                emitter.next(c);
+                            try {
+                                // 普通文字和 reasoning 仍实时透传；原生工具调用与 DSML 分别累积，完成时统一决策。
+                                List<LlmStreamChunk> chunks = parseStreamChunkWithTools(
+                                        chunk, toolCallBuilders, usageRef, contentDsmlParser, reasoningDsmlParser);
+                                for (LlmStreamChunk c : chunks) {
+                                    emitter.next(c);
+                                }
+                            } catch (DeepSeekDsmlStreamParser.ProtocolException e) {
+                                protocolFailed.set(true);
+                                log.error("DeepSeek DSML 流式工具调用解析失败", e);
+                                emitter.error(e);
                             }
                         },
                         error -> {
@@ -1021,16 +1112,54 @@ public abstract class BaseLlmServiceImpl implements LlmService {
                             }
                         },
                         () -> {
-                            if (!emitter.isCancelled()) {
-                                // 按 index 顺序发出所有累积的工具调用（TreeMap 保序）
-                                for (LlmToolCall.Builder builder : toolCallBuilders.values()) {
-                                    if (builder != null && builder.getName() != null) {
-                                        emitter.next(LlmStreamChunk.toolCall(builder.build()));
+                            if (!emitter.isCancelled() && !protocolFailed.get()) {
+                                try {
+                                    DeepSeekDsmlStreamParser.StreamCompletion contentCompletion =
+                                            contentDsmlParser.complete();
+                                    DeepSeekDsmlStreamParser.StreamCompletion reasoningCompletion =
+                                            reasoningDsmlParser.complete();
+
+                                    for (String visible : contentCompletion.visibleFragments()) {
+                                        emitter.next(LlmStreamChunk.token(visible));
                                     }
+                                    for (String visible : reasoningCompletion.visibleFragments()) {
+                                        emitter.next(LlmStreamChunk.reasoning(visible));
+                                    }
+
+                                    List<LlmToolCall> recoveredDsmlCalls = selectRecoveredDsmlCalls(
+                                            contentCompletion, reasoningCompletion);
+
+                                    if (!toolCallBuilders.isEmpty()) {
+                                        if (!recoveredDsmlCalls.isEmpty()) {
+                                            log.warn("模型响应同时包含原生 tool_calls 和 DSML，已隐藏 DSML 并优先使用原生工具调用");
+                                        }
+                                        // 按 index 顺序发出所有原生工具调用（TreeMap 保序）。
+                                        for (LlmToolCall.Builder builder : toolCallBuilders.values()) {
+                                            if (builder != null && builder.getName() != null) {
+                                                emitter.next(LlmStreamChunk.toolCall(builder.build()));
+                                            }
+                                        }
+                                    } else {
+                                        for (LlmToolCall call : recoveredDsmlCalls) {
+                                            if (!isValidToolName(call.name())) {
+                                                throw new DeepSeekDsmlStreamParser.ProtocolException(
+                                                        "DeepSeek DSML 包含非法工具名称，已拒绝执行");
+                                            }
+                                            emitter.next(LlmStreamChunk.toolCall(call));
+                                        }
+                                        if (!recoveredDsmlCalls.isEmpty()) {
+                                            logRecoveredDsmlCalls(recoveredDsmlCalls);
+                                        }
+                                    }
+
+                                    // 发出 finish 事件。
+                                    emitter.next(LlmStreamChunk.finish(usageRef.get()));
+                                    emitter.complete();
+                                } catch (DeepSeekDsmlStreamParser.ProtocolException e) {
+                                    protocolFailed.set(true);
+                                    log.error("DeepSeek DSML 流式工具调用收尾失败", e);
+                                    emitter.error(e);
                                 }
-                                // 发出 finish 事件
-                                emitter.next(LlmStreamChunk.finish(usageRef.get()));
-                                emitter.complete();
                             }
                         }
                     );
@@ -1103,7 +1232,9 @@ public abstract class BaseLlmServiceImpl implements LlmService {
     @SuppressWarnings("unchecked")
     private List<LlmStreamChunk> parseStreamChunkWithTools(String chunk,
                                                             Map<Integer, LlmToolCall.Builder> toolCallBuilders,
-                                                            AtomicReference<LlmUsage> usageRef) {
+                                                            AtomicReference<LlmUsage> usageRef,
+                                                            DeepSeekDsmlStreamParser contentDsmlParser,
+                                                            DeepSeekDsmlStreamParser reasoningDsmlParser) {
         List<LlmStreamChunk> result = new ArrayList<>();
 
         String json = normalizeStreamJson(chunk);
@@ -1133,13 +1264,17 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             // 1. 处理普通 content token
             String content = (String) delta.get("content");
             if (content != null && !content.isEmpty()) {
-                result.add(LlmStreamChunk.token(content));
+                for (String visible : contentDsmlParser.accept(content)) {
+                    result.add(LlmStreamChunk.token(visible));
+                }
             }
 
             // 2. 处理思考链 token（reasoning_content）
             String reasoning = (String) delta.get("reasoning_content");
             if (reasoning != null && !reasoning.isEmpty()) {
-                result.add(LlmStreamChunk.reasoning(reasoning));
+                for (String visible : reasoningDsmlParser.accept(reasoning)) {
+                    result.add(LlmStreamChunk.reasoning(visible));
+                }
             }
 
             // 3. 处理工具调用（按 index 分开累积；并发下一轮多个工具，参数跨多个 chunk）
@@ -1175,6 +1310,8 @@ public abstract class BaseLlmServiceImpl implements LlmService {
             // 注：不在 finish_reason 处发出 tool_call。所有累积的工具调用在流完成时（onComplete）
             // 按 index 顺序统一发出，确保并发的多个工具调用不被中途截断或漏发。
 
+        } catch (DeepSeekDsmlStreamParser.ProtocolException e) {
+            throw e;
         } catch (Exception e) {
             log.debug("解析流式响应失败: {}", chunk, e);
         }

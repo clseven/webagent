@@ -15,9 +15,9 @@ import java.util.Map;
 /**
  * 用户私有 MCP 添加或更新工具。
  *
- * <p>支持无需 headers 的远程 Streamable HTTP MCP，以及在用户 Sandbox 内运行的
+ * <p>支持带自定义 headers 的远程 Streamable HTTP MCP，以及在用户 Sandbox 内运行的
  * shell transport。模型必须先向用户展示来源、连接方式和预期能力，并取得明确确认后
- * 才能把 {@code confirmed} 设为 true。</p>
+ * 才能把 {@code confirmed} 设为 true。headers 会明文保存在用户自己的 Sandbox 配置中。</p>
  */
 @Component
 public class McpAddOrUpdateServerTool implements Tool {
@@ -57,6 +57,17 @@ public class McpAddOrUpdateServerTool implements Tool {
         properties.put("url", Map.of(
                 "type", "string",
                 "description", "streamable-http 的精确 endpoint；shell 类型不要填写"
+        ));
+        properties.put("headers", Map.of(
+                "type", "object",
+                "additionalProperties", Map.of("type", "string"),
+                "description", "streamable-http 自定义请求头键值；值会明文保存在用户 Sandbox"
+        ));
+        properties.put("request_timeout_seconds", Map.of(
+                "type", "integer",
+                "minimum", 1,
+                "maximum", 3600,
+                "description", "单次 MCP 工具调用超时秒数；省略时使用系统默认值"
         ));
         properties.put("command", Map.of(
                 "type", "string",
@@ -139,8 +150,21 @@ public class McpAddOrUpdateServerTool implements Tool {
             }
             config.setType("streamable-http");
             config.setUrl(url);
+            try {
+                config.setHeaders(stringMap(arguments.get("headers")));
+            } catch (IllegalArgumentException e) {
+                return "错误：" + e.getMessage();
+            }
         } else {
             return "错误：type 只能是 streamable-http 或 shell。";
+        }
+        Object timeoutValue = arguments.get("request_timeout_seconds");
+        if (timeoutValue != null) {
+            Integer timeoutSeconds = integerValue(timeoutValue);
+            if (timeoutSeconds == null || timeoutSeconds < 1 || timeoutSeconds > 3600) {
+                return "错误：request_timeout_seconds 必须是 1 到 3600 之间的整数。";
+            }
+            config.setRequestTimeoutSeconds(timeoutSeconds);
         }
         return McpManagementResultFormatter.formatReload(
                 configurationService.addOrReplaceUserServer(sessionId, config));
@@ -181,6 +205,46 @@ public class McpAddOrUpdateServerTool implements Tool {
             result.add(item);
         }
         return List.copyOf(result);
+    }
+
+    /**
+     * 将参数转换为非空字符串映射。
+     *
+     * @param value 原始参数
+     * @return 请求头键值；未提供时返回空映射
+     * @throws IllegalArgumentException 请求头名称或值为空时抛出
+     */
+    private Map<String, String> stringMap(Object value) {
+        if (!(value instanceof Map<?, ?> values)) {
+            return Map.of();
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : values.entrySet()) {
+            String name = stringValue(entry.getKey());
+            String headerValue = stringValue(entry.getValue());
+            if (name == null || headerValue == null) {
+                throw new IllegalArgumentException("headers 的名称和值都不能为空。");
+            }
+            result.put(name, headerValue);
+        }
+        return Map.copyOf(result);
+    }
+
+    /**
+     * 将数字或数字文本转换为整数。
+     *
+     * @param value 原始参数
+     * @return 可转换的整数；格式无效时返回 null
+     */
+    private Integer integerValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.valueOf(value.toString().trim());
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /**

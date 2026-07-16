@@ -98,13 +98,34 @@ public class McpConfigurationService {
      * @return 新增、更新、删除、未变化和失败项
      */
     public McpReloadResult reloadUserServers(String sessionId) {
+        Long userId = resolveUserId(sessionId);
+        return reloadUserServers(userId, sandboxClientFactory.getAioClient(sessionId));
+    }
+
+    /**
+     * 按用户重新加载全部私有 MCP Server，供不依赖聊天会话的管理页面调用。
+     *
+     * @param userId 当前登录用户 ID
+     * @return 新增、更新、删除、未变化和失败项
+     */
+    public McpReloadResult reloadUserServers(Long userId) {
+        return reloadUserServers(userId, requireUserAioClient(userId));
+    }
+
+    /**
+     * 使用已解析的用户与 AIO Client 执行重新加载。
+     *
+     * @param userId 用户 ID
+     * @param aio    用户 Sandbox 客户端
+     * @return 重新加载结果
+     */
+    private McpReloadResult reloadUserServers(Long userId, AioClient aio) {
         if (!manager.isEnabled()) {
             return configFailure(McpErrorCode.MCP_DISABLED, MCP_DISABLED_MESSAGE);
         }
 
-        Long userId = resolveUserId(sessionId);
         try {
-            McpUserConfigDocument document = readDocument(sessionId, true);
+            McpUserConfigDocument document = readDocument(aio, true);
             List<McpServerConfig> configs =
                     validator.validateDocument(document, systemServerIds());
             McpReloadResult result = applyUserConfigs(userId, configs);
@@ -153,6 +174,31 @@ public class McpConfigurationService {
      * @return 重新加载结果
      */
     public McpReloadResult addOrReplaceUserServer(String sessionId, McpServerConfig config) {
+        Long userId = resolveUserId(sessionId);
+        return addOrReplaceUserServer(userId, sandboxClientFactory.getAioClient(sessionId), config);
+    }
+
+    /**
+     * 按用户添加或更新私有 MCP Server，并立即重新连接。
+     *
+     * @param userId 当前登录用户 ID
+     * @param config 待保存配置
+     * @return 重新加载结果
+     */
+    public McpReloadResult addOrReplaceUserServer(Long userId, McpServerConfig config) {
+        return addOrReplaceUserServer(userId, requireUserAioClient(userId), config);
+    }
+
+    /**
+     * 使用指定用户 Sandbox 保存并应用单个 Server 配置。
+     *
+     * @param userId 用户 ID
+     * @param aio    用户 Sandbox 客户端
+     * @param config 待保存配置
+     * @return 重新加载结果
+     */
+    private McpReloadResult addOrReplaceUserServer(Long userId, AioClient aio,
+                                                    McpServerConfig config) {
         if (!manager.isEnabled()) {
             return configFailure(McpErrorCode.MCP_DISABLED, MCP_DISABLED_MESSAGE);
         }
@@ -160,7 +206,7 @@ public class McpConfigurationService {
         try {
             McpServerConfig safeConfig =
                     validator.validateServer(config, systemServerIds());
-            McpUserConfigDocument document = readDocument(sessionId, true);
+            McpUserConfigDocument document = readDocument(aio, true);
             List<McpServerConfig> servers = new ArrayList<>(
                     validator.validateDocument(document, systemServerIds()));
 
@@ -195,8 +241,8 @@ public class McpConfigurationService {
             document.setVersion(McpUserConfigValidator.SUPPORTED_VERSION);
             document.setServers(servers);
             validator.validateDocument(document, systemServerIds());
-            writeDocument(sessionId, document);
-            McpReloadResult result = reloadUserServers(sessionId);
+            writeDocument(aio, document);
+            McpReloadResult result = reloadUserServers(userId, aio);
             if (reusedId == null) {
                 return result;
             }
@@ -220,20 +266,44 @@ public class McpConfigurationService {
      * @return 重新加载结果
      */
     public McpReloadResult removeUserServer(String sessionId, String serverId) {
+        Long userId = resolveUserId(sessionId);
+        return removeUserServer(userId, sandboxClientFactory.getAioClient(sessionId), serverId);
+    }
+
+    /**
+     * 按用户删除私有 MCP Server 配置并关闭对应 Client。
+     *
+     * @param userId  当前登录用户 ID
+     * @param serverId 待删除 Server ID
+     * @return 重新加载结果
+     */
+    public McpReloadResult removeUserServer(Long userId, String serverId) {
+        return removeUserServer(userId, requireUserAioClient(userId), serverId);
+    }
+
+    /**
+     * 使用指定用户 Sandbox 删除并应用配置。
+     *
+     * @param userId 用户 ID
+     * @param aio 用户 Sandbox 客户端
+     * @param serverId 待删除 Server ID
+     * @return 重新加载结果
+     */
+    private McpReloadResult removeUserServer(Long userId, AioClient aio, String serverId) {
         if (!manager.isEnabled()) {
             return configFailure(McpErrorCode.MCP_DISABLED, MCP_DISABLED_MESSAGE);
         }
 
         try {
-            McpUserConfigDocument document = readDocument(sessionId, true);
+            McpUserConfigDocument document = readDocument(aio, true);
             List<McpServerConfig> remaining = document.getServers().stream()
                     .filter(server -> server.getId() == null
                             || !server.getId().equalsIgnoreCase(serverId))
                     .toList();
             document.setServers(remaining);
             validator.validateDocument(document, systemServerIds());
-            writeDocument(sessionId, document);
-            return reloadUserServers(sessionId);
+            writeDocument(aio, document);
+            return reloadUserServers(userId, aio);
         } catch (Exception e) {
             return configFailure(McpErrorCode.CONFIG_INVALID, safeError(e));
         }
@@ -262,6 +332,55 @@ public class McpConfigurationService {
             views.add(toView(McpClientKey.user(userId, config.getId()), config));
         }
         return List.copyOf(views);
+    }
+
+    /**
+     * 列出当前用户私有 MCP Server 的安全状态，不包含系统内置配置和凭据值。
+     *
+     * @param userId 当前登录用户 ID
+     * @return 用户私有 Server 安全视图
+     */
+    public List<McpServerView> listUserServers(Long userId) {
+        ensureUserServersLoaded(userId);
+        McpUserConfigDocument document = readDocument(requireUserAioClient(userId), true);
+        List<McpServerConfig> configs = validator.validateDocument(document, systemServerIds());
+        return configs.stream()
+                .map(config -> toView(McpClientKey.user(userId, config.getId()), config))
+                .toList();
+    }
+
+    /**
+     * 获取一个用户私有 Server 的配置副本，供更新时保留未回显的敏感请求头。
+     *
+     * @param userId 当前登录用户 ID
+     * @param serverId Server ID
+     * @return 配置副本；不存在时返回 null
+     */
+    public McpServerConfig getUserServerConfig(Long userId, String serverId) {
+        McpUserConfigDocument document = readDocument(requireUserAioClient(userId), true);
+        return validator.validateDocument(document, systemServerIds()).stream()
+                .filter(config -> config.getId().equalsIgnoreCase(serverId))
+                .findFirst()
+                .map(McpServerConfig::copy)
+                .orElse(null);
+    }
+
+    /**
+     * 确保指定用户的动态 MCP 配置已完成首次懒加载。
+     *
+     * @param userId 用户 ID
+     */
+    private void ensureUserServersLoaded(Long userId) {
+        if (!manager.isEnabled() || loadedUsers.contains(userId)) {
+            return;
+        }
+        Object lock = userLoadLocks.computeIfAbsent(userId, ignored -> new Object());
+        synchronized (lock) {
+            if (!loadedUsers.contains(userId)) {
+                reloadUserServers(userId);
+            }
+        }
+        userLoadLocks.remove(userId, lock);
     }
 
     /**
@@ -373,7 +492,9 @@ public class McpConfigurationService {
                 config.isEnabled(),
                 manager.isConnected(key),
                 toolNames,
-                manager.getLastError(key));
+                manager.getLastError(key),
+                config.getHeaders().keySet().stream().sorted().toList(),
+                config.getRequestTimeoutSeconds());
     }
 
     /**
@@ -384,7 +505,17 @@ public class McpConfigurationService {
      * @return 解析后的配置文档
      */
     private McpUserConfigDocument readDocument(String sessionId, boolean createIfMissing) {
-        AioClient aio = sandboxClientFactory.getAioClient(sessionId);
+        return readDocument(sandboxClientFactory.getAioClient(sessionId), createIfMissing);
+    }
+
+    /**
+     * 使用指定 AIO Client 读取用户 MCP 配置文档。
+     *
+     * @param aio 用户 Sandbox 客户端
+     * @param createIfMissing 文件不存在时是否创建空配置
+     * @return 解析后的配置文档
+     */
+    private McpUserConfigDocument readDocument(AioClient aio, boolean createIfMissing) {
         try {
             String json = aio.files().readText(CONFIG_PATH);
             return parseDocument(json);
@@ -495,6 +626,20 @@ public class McpConfigurationService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("序列化 MCP 配置失败", e);
         }
+    }
+
+    /**
+     * 获取用户 Sandbox 客户端，未创建 Sandbox 时给出稳定错误。
+     *
+     * @param userId 当前登录用户 ID
+     * @return 用户 AIO Client
+     */
+    private AioClient requireUserAioClient(Long userId) {
+        AioClient aio = sandboxClientFactory.getAioClientByUserId(userId);
+        if (aio == null) {
+            throw new IllegalStateException("请先创建或恢复用户 Sandbox，再管理私有 MCP");
+        }
+        return aio;
     }
 
     /**

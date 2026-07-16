@@ -50,6 +50,9 @@ public class McpServerConfig {
     /** Streamable HTTP 自定义请求头，例如 Authorization。 */
     private Map<String, String> headers = Map.of();
 
+    /** 单次工具调用请求超时秒数；为空时使用后端全局默认值。 */
+    private Integer requestTimeoutSeconds;
+
     public String getId() {
         return id;
     }
@@ -125,6 +128,24 @@ public class McpServerConfig {
     }
 
     /**
+     * 获取当前 Server 的单次请求超时。
+     *
+     * @return 超时秒数；为空时表示继承全局默认值
+     */
+    public Integer getRequestTimeoutSeconds() {
+        return requestTimeoutSeconds;
+    }
+
+    /**
+     * 设置当前 Server 的单次请求超时。
+     *
+     * @param requestTimeoutSeconds 超时秒数；为空时继承全局默认值
+     */
+    public void setRequestTimeoutSeconds(Integer requestTimeoutSeconds) {
+        this.requestTimeoutSeconds = requestTimeoutSeconds;
+    }
+
+    /**
      * 创建独立副本，避免配置绑定对象在运行期间被外部修改。
      *
      * @return 当前配置的深度足够的运行时副本
@@ -139,6 +160,7 @@ public class McpServerConfig {
         copy.setEnv(Map.copyOf(env));
         copy.setUrl(url);
         copy.setHeaders(Map.copyOf(headers));
+        copy.setRequestTimeoutSeconds(requestTimeoutSeconds);
         return copy;
     }
 
@@ -159,7 +181,8 @@ public class McpServerConfig {
                 && Objects.equals(args, other.args)
                 && Objects.equals(env, other.env)
                 && Objects.equals(url, other.url)
-                && Objects.equals(headers, other.headers);
+                && Objects.equals(headers, other.headers)
+                && Objects.equals(requestTimeoutSeconds, other.requestTimeoutSeconds);
     }
 
     /**

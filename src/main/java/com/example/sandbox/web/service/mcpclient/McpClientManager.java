@@ -347,7 +347,7 @@ public class McpClientManager {
         try {
             McpClientTransport transport = createTransport(config, shellApi);
             replacement = McpClient.sync(transport)
-                    .requestTimeout(properties.getRequestTimeout())
+                    .requestTimeout(requestTimeout(config))
                     .initializationTimeout(initializationTimeout(config))
                     .toolsChangeConsumer(tools -> {
                         if (generation.equals(activeGenerations.get(key))) {
@@ -524,6 +524,17 @@ public class McpClientManager {
             return MIN_SHELL_INITIALIZATION_TIMEOUT;
         }
         return properties.getInitializationTimeout();
+    }
+
+    /**
+     * 获取当前 Server 的工具调用请求超时。
+     *
+     * @param config MCP Server 配置
+     * @return Server 自定义超时，未设置时返回全局默认值
+     */
+    private Duration requestTimeout(McpServerConfig config) {
+        Integer seconds = config.getRequestTimeoutSeconds();
+        return seconds != null ? Duration.ofSeconds(seconds) : properties.getRequestTimeout();
     }
 
     /**

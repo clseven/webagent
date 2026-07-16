@@ -19,7 +19,8 @@ import java.util.regex.Pattern;
  * 用户 MCP 配置校验器。
  *
  * <p>用户动态配置允许远程 Streamable HTTP，以及在用户 Sandbox 内运行的 shell transport。
- * 仍然不允许用户动态配置宿主机 stdio，也不允许 headers，避免凭据明文写入沙箱配置。</p>
+ * 仍然不允许用户动态配置宿主机 stdio。HTTP headers 会明文保存在用户自己的 Sandbox，
+ * 因此本校验器限制名称、数量和长度，但不会把凭据提升为系统级配置。</p>
  */
 @Component
 public class McpUserConfigValidator {
@@ -46,6 +47,22 @@ public class McpUserConfigValidator {
 
     /** 单个 shell Server 最多允许的环境变量数量。 */
     private static final int MAX_SHELL_ENV = 32;
+
+    /** 单个 HTTP Server 最多允许的请求头数量。 */
+    private static final int MAX_HTTP_HEADERS = 32;
+
+    /** 请求头名称允许的格式。 */
+    private static final Pattern HEADER_NAME_PATTERN =
+            Pattern.compile("[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}");
+
+    /** 单个请求头值允许的最大长度。 */
+    private static final int MAX_HEADER_VALUE_LENGTH = 4096;
+
+    /** 用户可配置的最小请求超时秒数。 */
+    private static final int MIN_REQUEST_TIMEOUT_SECONDS = 1;
+
+    /** 用户可配置的最大请求超时秒数。 */
+    private static final int MAX_REQUEST_TIMEOUT_SECONDS = 3600;
 
     /** MCP 安全配置属性。 */
     private final McpClientProperties properties;
@@ -144,10 +161,7 @@ public class McpUserConfigValidator {
             throw new IllegalArgumentException(
                     "用户动态 MCP 只允许 streamable-http 或 shell，不允许宿主机 stdio");
         }
-        if (!server.getHeaders().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "用户动态 MCP 暂不允许 headers，避免凭据明文写入沙箱配置");
-        }
+        Integer timeoutSeconds = validateRequestTimeout(server.getRequestTimeoutSeconds());
 
         if (shellType) {
             return validateShellServer(id, server);
@@ -163,6 +177,8 @@ public class McpUserConfigValidator {
         safe.setEnabled(server.isEnabled());
         safe.setType("streamable-http");
         safe.setUrl(normalizedUrl);
+        safe.setHeaders(validateHeaders(server.getHeaders()));
+        safe.setRequestTimeoutSeconds(timeoutSeconds);
         return safe;
     }
 
@@ -209,7 +225,55 @@ public class McpUserConfigValidator {
         safe.setCommand(command);
         safe.setArgs(args);
         safe.setEnv(env);
+        safe.setRequestTimeoutSeconds(validateRequestTimeout(server.getRequestTimeoutSeconds()));
         return safe;
+    }
+
+    /**
+     * 校验并复制 Streamable HTTP 自定义请求头。
+     *
+     * <p>请求头值允许包含 Token 等敏感信息，调用方必须确保响应和日志不回显这些值。</p>
+     *
+     * @param source 原始请求头
+     * @return 保留输入顺序的安全副本
+     */
+    private Map<String, String> validateHeaders(Map<String, String> source) {
+        Map<String, String> headers = source != null ? source : Map.of();
+        if (headers.size() > MAX_HTTP_HEADERS) {
+            throw new IllegalArgumentException("MCP headers 数量超过上限 " + MAX_HTTP_HEADERS);
+        }
+        Map<String, String> safe = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            String name = entry.getKey() != null ? entry.getKey().trim() : "";
+            if (!HEADER_NAME_PATTERN.matcher(name).matches()) {
+                throw new IllegalArgumentException("MCP header 名称不合法: " + name);
+            }
+            String value = entry.getValue();
+            if (value == null || value.isBlank()) {
+                throw new IllegalArgumentException("MCP header 值不能为空: " + name);
+            }
+            if (value.length() > MAX_HEADER_VALUE_LENGTH) {
+                throw new IllegalArgumentException("MCP header 值过长: " + name);
+            }
+            safe.put(name, value);
+        }
+        return Map.copyOf(safe);
+    }
+
+    /**
+     * 校验单 Server 请求超时。
+     *
+     * @param seconds 原始超时秒数
+     * @return 合法秒数；为空时保持继承全局默认值
+     */
+    private Integer validateRequestTimeout(Integer seconds) {
+        if (seconds == null) {
+            return null;
+        }
+        if (seconds < MIN_REQUEST_TIMEOUT_SECONDS || seconds > MAX_REQUEST_TIMEOUT_SECONDS) {
+            throw new IllegalArgumentException("MCP 请求超时必须在 1 到 3600 秒之间");
+        }
+        return seconds;
     }
 
     /**

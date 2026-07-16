@@ -413,6 +413,10 @@ const ChatPage = {
                                         <span>{{ streamingStatus }}</span>
                                     </summary>
                                     <div class="process-timeline">
+                                        <div v-if="groupedSteps.length === 0 && activeRunPhase" class="process-item live-step active-run-placeholder">
+                                            <span class="process-dot active"></span>
+                                            <span class="process-item-title">{{ activeRunPhase }}</span>
+                                        </div>
                                         <details v-for="(group, gi) in groupedSteps" :key="'live-step-' + gi"
                                                  class="process-item live-step" :open="gi === groupedSteps.length - 1">
                                             <summary v-if="group.kind === 'step'">
@@ -524,13 +528,16 @@ const ChatPage = {
                         <textarea
                             v-model="inputText"
                             class="composer-input"
-                            placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                            :placeholder="sending ? '当前任务正在运行，可以先输入下一条消息' : '输入消息，Enter 发送，Shift + Enter 换行'"
                             rows="1"
-                            :disabled="sending"
                             @keydown.enter.exact.prevent="send"
                             @input="autoResize"
                             ref="composerInput"
                         ></textarea>
+
+                        <div v-if="sending" class="composer-run-draft-hint">
+                            当前任务正在运行，输入内容会按会话暂存，任务完成后可以发送
+                        </div>
 
                         <div class="composer-toolbar">
                             <div class="composer-tools-left">
@@ -594,7 +601,7 @@ const ChatPage = {
                                 </button>
                             </div>
 
-                            <button v-if="streaming" @click="stopStream" class="composer-send-btn stop-btn" title="停止生成">
+                            <button v-if="streaming && !activeRunRecovered" @click="stopStream" class="composer-send-btn stop-btn" title="停止生成">
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                                     <rect x="6" y="6" width="12" height="12" rx="1"/>
                                 </svg>
@@ -944,6 +951,26 @@ const ChatPage = {
         const composerHeight = Vue.ref(118);
         const pendingImagePreviewUrls = Vue.reactive({});
         const sentUploadPreviews = Vue.reactive({});
+
+        /**
+         * 生成当前会话的草稿缓存键；尚未创建会话时按用户和 Agent 隔离临时草稿。
+         */
+        const draftStorageKey = (sessionId = currentSessionId.value, appId = currentAppId.value) => {
+            const owner = store.userId || store.username || 'anonymous';
+            const target = sessionId || `new-${appId || 'default'}`;
+            return `webagent-chat-draft:${owner}:${target}`;
+        };
+
+        /** 从浏览器本地缓存恢复当前会话草稿。 */
+        const restoreDraft = () => {
+            inputText.value = localStorage.getItem(draftStorageKey()) || '';
+            Vue.nextTick(() => autoResize());
+        };
+
+        /** 清理已经提交的草稿，兼容发送过程中由临时会话切换到真实会话。 */
+        const clearDraftKeys = (...keys) => {
+            [...new Set(keys.filter(Boolean))].forEach(key => localStorage.removeItem(key));
+        };
         const searchEnabled = Vue.ref(localStorage.getItem('web_search_enabled') === 'true');
         const planningEnabled = Vue.ref(localStorage.getItem('planning_enabled') !== 'false');
         // 知识库默认开启；没有关联知识库时按钮置灰且后端不会产生检索结果。
@@ -965,6 +992,8 @@ const ChatPage = {
         const copied = Vue.ref(false);
         const loadingHistory = Vue.ref(false);
         const showScrollBtn = Vue.ref(false);
+        // 每秒推进一次运行时钟，让运行耗时无需依赖新的 SSE 事件也能持续更新。
+        const runtimeNow = Vue.ref(Date.now());
 
         // 当前会话的流式状态来自全局 store，确保切会话或切页面后思考链不会串线或丢失。
         const currentLiveStream = Vue.computed(() => store.getLiveStream(currentSessionId.value));
@@ -977,6 +1006,8 @@ const ChatPage = {
         const finalAnswerSaved = Vue.computed(() => Boolean(currentLiveStream.value?.finalAnswerSaved));
         const streamPhase = Vue.computed(() => currentLiveStream.value?.streamPhase || 'idle');
         const currentEvents = Vue.computed(() => currentLiveStream.value?.currentEvents || []);
+        const activeRunPhase = Vue.computed(() => currentLiveStream.value?.activePhase || '');
+        const activeRunRecovered = Vue.computed(() => Boolean(currentLiveStream.value?.recovered));
         const artifactBlobUrls = Vue.reactive({});
         const artifactLoadErrors = Vue.reactive({});
         const artifactLoadPromises = new Map();
@@ -995,10 +1026,22 @@ const ChatPage = {
         const stepOverview = (group) => ChatStepGrouper.overview(group).title;
         const stepOverviewBadge = (group) => ChatStepGrouper.overview(group).badge;
 
+        // 使用固定宽度的分秒格式展示耗时，长任务超过一小时后显示小时位。
+        const formatRunDuration = (elapsedMs) => {
+            const totalSeconds = Math.max(0, Math.floor((elapsedMs || 0) / 1000));
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            return `${minutes}:${String(seconds).padStart(2, '0')}`;
+        };
+
         const streamingStatus = Vue.computed(() => {
             const phase = streamPhase.value;
-            if (phase === 'disconnected') return '连接中断，正在同步结果…';
-            return '已运行';
+            const startedAt = Number(currentLiveStream.value?.startedAt) || runtimeNow.value;
+            const elapsed = formatRunDuration(runtimeNow.value - startedAt);
+            const label = phase === 'disconnected' ? '连接中断，正在同步结果' : '正在运行';
+            return `${label} · ${elapsed}`;
         });
 
         const activeToolDock = Vue.ref('');
@@ -1073,6 +1116,9 @@ const ChatPage = {
         };
 
         const titleRefreshTimers = new Map();
+        let activeRunPollTimer = null;
+        let runtimeClockTimer = null;
+        let activeRunSyncing = false;
         // 首轮回复完成后标题在后端异步生成；这里短轮询当前会话，拿到标题后停止。
         const scheduleSessionTitleRefresh = (sessionId) => {
             if (!sessionId || titleRefreshTimers.has(sessionId)) return;
@@ -1282,8 +1328,12 @@ const ChatPage = {
         };
 
         const send = async () => {
+            // 当前会话运行时允许继续编辑草稿，但不启动第二个并行任务。
+            if (sending.value) return;
             const text = inputText.value.trim();
             if (!text && pendingFiles.value.length === 0) return;
+
+            const draftKeyBeforeSend = draftStorageKey();
 
             let sessionId = currentSessionId.value;
             if (!sessionId) {
@@ -1305,6 +1355,7 @@ const ChatPage = {
             const streamBaselineLength = messages.value.length + 1;
             stream.streamBaselineLength = streamBaselineLength;
             inputText.value = '';
+            clearDraftKeys(draftKeyBeforeSend, draftStorageKey(sessionId));
             scrollToBottom();
 
             let uploadedFiles = [];
@@ -1576,7 +1627,8 @@ const ChatPage = {
                     stream.finalAnswer = data.content || ''; stream.streamPhase = 'answer';
                     const idx = stream.currentEvents.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(stream.finalAnswer);
                     if (idx >= 0) stream.currentEvents.splice(idx, 1);
-                    scheduleAutoFinish(sessionId, streamId);
+                    // 服务端恢复流由活动运行查询负责收尾，避免补播 answer 后过早清掉页面状态。
+                    if (!stream.recovered) scheduleAutoFinish(sessionId, streamId);
                     scrollToBottom(); break;
                 case 'done': finishStream(sessionId, streamId, { refreshIfEmpty: true, refreshHistory: true }); break;
                 case 'interrupted':
@@ -2227,6 +2279,77 @@ const ChatPage = {
             if (completed?.refreshHistory) await loadHistory();
         };
 
+        // 把服务端缓存的增量事件送入原有 SSE 渲染器，保证刷新前后展示结构完全一致。
+        const syncRecoveredRunEvents = async (sessionId, activeRun, stream) => {
+            if (!stream?.recovered || !activeRun?.runId) return;
+            const afterSequence = Number(stream.serverEventSequence) || 0;
+            const events = await api.getActiveRunEvents(sessionId, afterSequence);
+            if (!Array.isArray(events) || events.length === 0) return;
+
+            for (const serverEvent of events) {
+                const latest = streamForRun(sessionId, stream.streamId);
+                if (!latest?.recovered || latest.runId !== activeRun.runId) return;
+                const sequence = Number(serverEvent.sequence) || 0;
+                if (sequence <= (Number(latest.serverEventSequence) || 0)) continue;
+                handleStreamEvent({
+                    type: serverEvent.type,
+                    data: serverEvent.data || {}
+                }, sessionId, latest.streamId);
+                const current = streamForRun(sessionId, latest.streamId);
+                if (!current) return;
+                current.serverEventSequence = sequence;
+            }
+        };
+
+        // 从服务端恢复当前会话的活动运行及完整展示事件；刷新或换设备后继续同一过程。
+        const syncActiveRun = async () => {
+            const sessionId = currentSessionId.value;
+            if (!sessionId || activeRunSyncing) return;
+            activeRunSyncing = true;
+            try {
+                const activeRun = await api.getActiveRun(sessionId);
+                if (currentSessionId.value !== sessionId) return;
+
+                let existing = store.getLiveStream(sessionId);
+                if (activeRun) {
+                    if (!existing || (existing.recovered && existing.runId !== activeRun.runId)) {
+                        existing = store.createLiveStream(sessionId, {
+                            runId: activeRun.runId || '',
+                            streamId: `server-${activeRun.runId || Date.now()}`,
+                            recovered: true,
+                            startedAt: Number(activeRun.startedAt) || Date.now(),
+                            activePhase: activeRun.phase || '正在运行',
+                            serverEventSequence: 0,
+                            streamPhase: 'recovered'
+                        });
+                        existing.streamBaselineLength = messages.value.length;
+                    } else {
+                        existing.runId = activeRun.runId || existing.runId;
+                        existing.activePhase = activeRun.phase || existing.activePhase || '正在运行';
+                        if (existing.recovered) {
+                            existing.startedAt = Number(activeRun.startedAt) || existing.startedAt;
+                            existing.streamPhase = 'recovered';
+                        }
+                    }
+                    if (existing.recovered) {
+                        await syncRecoveredRunEvents(sessionId, activeRun, existing);
+                    }
+                    return;
+                }
+
+                // 只有服务端恢复出来的占位流才由轮询收尾；本机新发起的 SSE 仍由原事件链控制。
+                if (existing?.recovered) {
+                    store.clearLiveStream(sessionId);
+                    await loadHistory();
+                    scheduleSessionTitleRefresh(sessionId);
+                }
+            } catch (e) {
+                console.warn('同步活动运行失败:', e);
+            } finally {
+                activeRunSyncing = false;
+            }
+        };
+
         Vue.watch(currentSessionId, () => {
             vncUrl.value = '';
             sandboxBaseUrl.value = '';
@@ -2235,6 +2358,17 @@ const ChatPage = {
             vncPlaceholder.value = '请先创建会话';
             if (activeToolDock.value === 'sandbox') loadVncView();
             consumeCompletedStream();
+            syncActiveRun();
+        });
+
+        // 会话或 Agent 切换时恢复对应草稿，避免不同会话互相覆盖输入内容。
+        Vue.watch([currentSessionId, currentAppId], () => restoreDraft());
+
+        // 输入内容实时落到会话级本地草稿；清空后同步删除缓存。
+        Vue.watch(inputText, value => {
+            const key = draftStorageKey();
+            if (value) localStorage.setItem(key, value);
+            else localStorage.removeItem(key);
         });
 
         Vue.watch(() => store.liveStreamVersion, () => {
@@ -2259,10 +2393,14 @@ const ChatPage = {
 
         Vue.onMounted(() => {
             const p = new URLSearchParams(window.location.hash.split('?')[1] || ''); const aid = p.get('appId'); if (aid) currentAppId.value = aid;
+            restoreDraft();
             Promise.all([loadApps(), loadSessions()]).then(async () => {
                 if (currentSessionId.value) await loadHistory();
                 await consumeCompletedStream();
+                await syncActiveRun();
             });
+            runtimeClockTimer = setInterval(() => { runtimeNow.value = Date.now(); }, 1000);
+            activeRunPollTimer = setInterval(syncActiveRun, 800);
             Vue.nextTick(() => {
                 if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition);
                 updateComposerHeight();
@@ -2275,6 +2413,10 @@ const ChatPage = {
         });
 
         Vue.onBeforeUnmount(() => {
+            if (runtimeClockTimer) clearInterval(runtimeClockTimer);
+            if (activeRunPollTimer) clearInterval(activeRunPollTimer);
+            runtimeClockTimer = null;
+            activeRunPollTimer = null;
             if (messagesEl.value) messagesEl.value.removeEventListener('scroll', checkScrollPosition);
             if (composerResizeObserver) composerResizeObserver.disconnect();
             window.removeEventListener('resize', updateComposerHeight);
@@ -2301,6 +2443,7 @@ const ChatPage = {
             batchDeletePending, batchDeleteError, batchDeleting,
             sessionPendingDelete, deleteSessionError, deletingSessionId,
             streaming, streamingStatus, streamPhase, currentThinking, currentReasoning, currentToolCall,
+            activeRunPhase, activeRunRecovered,
             finalAnswer, finalAnswerSaved, currentEvents, groupedSteps, historySteps, stepOverview, stepOverviewBadge, stepAllDone,
             liveArtifacts, messageArtifacts, artifactBlobUrl, artifactLoadError,
             previewArtifact, previewArtifactGallery, downloadArtifact,

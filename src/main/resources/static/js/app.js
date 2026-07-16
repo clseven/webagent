@@ -214,8 +214,13 @@
             const stream = {
                 sessionId,
                 streamId: Date.now() + Math.random().toString(36).slice(2),
+                runId: '',
                 streaming: true,
                 sending: true,
+                recovered: false,
+                startedAt: Date.now(),
+                activePhase: '正在准备任务',
+                serverEventSequence: 0,
                 stopStreamFn: null,
                 currentThinking: '',
                 currentReasoning: '',

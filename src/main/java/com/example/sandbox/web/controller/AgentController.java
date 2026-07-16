@@ -6,6 +6,8 @@ import com.example.sandbox.web.model.entity.ConversationSession;
 import com.example.sandbox.web.model.request.BatchDeleteSessionsRequest;
 import com.example.sandbox.web.model.request.ChatRequest;
 import com.example.sandbox.web.model.response.ApiResponse;
+import com.example.sandbox.web.model.response.ActiveAgentRunResponse;
+import com.example.sandbox.web.model.response.ActiveAgentRunEventResponse;
 import com.example.sandbox.web.model.response.BatchDeleteSessionsResponse;
 import com.example.sandbox.web.model.response.SessionResponse;
 import com.example.sandbox.web.model.response.SkillView;
@@ -13,6 +15,7 @@ import com.example.sandbox.web.model.sse.SseEvent;
 import com.example.sandbox.web.service.AgentService;
 import com.example.sandbox.web.service.ConversationService;
 import com.example.sandbox.web.service.impl.ConversationServiceImpl;
+import com.example.sandbox.web.service.impl.ActiveAgentRunService;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -42,6 +45,10 @@ public class AgentController {
 
     @Autowired
     private ConversationServiceImpl conversationServiceImpl;
+
+    /** 活动运行状态查询服务。 */
+    @Autowired
+    private ActiveAgentRunService activeAgentRunService;
 
     /**
      * 列出当前用户的所有会话
@@ -106,6 +113,36 @@ public class AgentController {
     }
 
     /**
+     * 查询当前用户会话中正在执行的 Agent 运行。
+     *
+     * @param id 会话 ID
+     * @return 活动运行快照；当前没有运行时 data 为 null
+     */
+    @GetMapping("/{id}/runs/active")
+    public ApiResponse<ActiveAgentRunResponse> getActiveRun(@PathVariable String id) {
+        agentService.getSession(id);
+        return ApiResponse.success(activeAgentRunService.findActive(id).orElse(null));
+    }
+
+    /**
+     * 增量查询当前活动运行中可供页面补播的展示事件。
+     *
+     * <p>接口先复用会话查询校验当前用户所有权，再按事件序号返回文字和工具过程。
+     * 当前运行已经结束时返回空列表，前端随后加载正常聊天历史。</p>
+     *
+     * @param id    会话 ID
+     * @param after 客户端已消费的最后事件序号
+     * @return 当前活动运行的后续展示事件
+     */
+    @GetMapping("/{id}/runs/active/events")
+    public ApiResponse<List<ActiveAgentRunEventResponse>> getActiveRunEvents(
+            @PathVariable String id,
+            @RequestParam(defaultValue = "0") long after) {
+        agentService.getSession(id);
+        return ApiResponse.success(activeAgentRunService.findEventsAfter(id, after));
+    }
+
+    /**
      * 发送消息
      */
     @PostMapping("/{id}/chat")
@@ -125,7 +162,7 @@ public class AgentController {
      * 流式对话（SSE）
      *
      * <p>实时返回思考过程、工具调用、最终答案等事件。</p>
-     * <p>客户端可通过关闭连接中断执行。</p>
+     * <p>客户端刷新或关闭连接只会结束当前订阅，服务端任务继续执行并可由活动运行接口恢复状态。</p>
      *
      * @param id      会话 ID
      * @param message 用户消息
