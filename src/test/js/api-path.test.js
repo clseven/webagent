@@ -46,10 +46,10 @@ const api = sandbox.createApiClient();
 
 const chatProcessSandbox = { window: {} };
 const chatProcessSource = chatSource.slice(0, chatSource.indexOf('// 对话页组件'))
-    + '\nwindow.__chatProcessTest = { processTitle, processPreview, ChatStepGrouper };';
+    + '\nwindow.__chatProcessTest = { processTitle, processPreview, ChatStepGrouper, parseVsCodeLocation };';
 vm.createContext(chatProcessSandbox);
 vm.runInContext(chatProcessSource, chatProcessSandbox);
-const { processTitle, processPreview, ChatStepGrouper } = chatProcessSandbox.window.__chatProcessTest;
+const { processTitle, processPreview, ChatStepGrouper, parseVsCodeLocation } = chatProcessSandbox.window.__chatProcessTest;
 
 (async () => {
     await api.previewFileInSandbox(
@@ -61,6 +61,28 @@ const { processTitle, processPreview, ChatStepGrouper } = chatProcessSandbox.win
         requestedUrl,
         '/api/sessions/session-1/files/preview?path=%2Fhome%2Fgem%2Fknowledge%2F%E5%BA%84%E5%8D%9A%E7%84%B6(4).pdf'
     );
+
+    await api.openFileInVsCode('session-1', 'src/main/App.js', 42, 3);
+
+    const vscodeRequest = requests.find(request => request.url === '/api/sessions/session-1/vscode/open');
+    assert.ok(vscodeRequest);
+    assert.deepEqual(JSON.parse(vscodeRequest.options.body), {
+        path: 'src/main/App.js',
+        line: 42,
+        column: 3,
+    });
+
+    const absoluteLocation = parseVsCodeLocation('/home/gem/project/src/App.java:18:7');
+    assert.equal(absoluteLocation.path, '/home/gem/project/src/App.java');
+    assert.equal(absoluteLocation.line, 18);
+    assert.equal(absoluteLocation.column, 7);
+
+    const relativeLocation = parseVsCodeLocation('src/main/App.js#L42C3');
+    assert.equal(relativeLocation.path, 'src/main/App.js');
+    assert.equal(relativeLocation.line, 42);
+    assert.equal(relativeLocation.column, 3);
+    assert.equal(parseVsCodeLocation('https://example.com/page:80'), null);
+    assert.equal(parseVsCodeLocation('C:/Users/test/App.js:12'), null);
 
     await api.sendMessage('session-1', '你好', true, false, true);
 

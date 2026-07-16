@@ -35,6 +35,9 @@ class ReactPromptAssemblerTest {
         assertThat(prompt)
                 .contains("你是沙箱环境中的执行者")
                 .contains("## 工作空间")
+                .contains("## 文件定位引用")
+                .contains("`/home/gem/workspace/src/main/App.java:42:1`")
+                .contains("不要只用表格或自然语言描述")
                 .contains("## 可用工具")
                 .contains("─── 以下为动态段");
         assertThat(prompt)
@@ -44,6 +47,8 @@ class ReactPromptAssemblerTest {
                 .doesNotContain("## MCP 动态工具管理");
         assertThat(prompt.indexOf("## 可用工具")).isLessThan(prompt.indexOf("─── 以下为动态段"));
         assertThat(prompt.indexOf("─── 以下为动态段")).isLessThan(prompt.indexOf("### 目标状态"));
+        assertThat(ReactPromptAssembler.sectionNames(List.of(tool("read_file")), "", ""))
+                .contains("file_location");
     }
 
     /**

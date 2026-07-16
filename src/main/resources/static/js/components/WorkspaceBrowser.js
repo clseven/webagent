@@ -7,7 +7,7 @@ const WorkspaceBrowser = {
         <div :class="['workspace-browser', embedded ? 'workspace-browser-embedded' : '']">
             <!-- 浮动按钮 -->
             <button v-if="!embedded" class="workspace-toggle-btn" @click="togglePanel" :class="{ active: isOpen }" :title="isOpen ? '关闭工作空间' : '打开工作空间'">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="workspace-folder-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
             </button>
@@ -17,7 +17,7 @@ const WorkspaceBrowser = {
                 <div v-if="isOpen || embedded" :class="embedded ? 'workspace-dock-content' : 'workspace-drawer'">
                     <div class="drawer-header">
                         <h3>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;vertical-align:-2px;opacity:0.7;">
+                            <svg class="workspace-folder-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px;vertical-align:-2px;">
                                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                             </svg>
                             工作空间

@@ -45,6 +45,19 @@ final class ReactPromptAssembler {
             - /home/gem/temp/ - 临时文件
             """;
 
+    /** 最终回答中的文件定位格式，所有任务场景都加载。 */
+    private static final String FILE_LOCATION_SECTION = """
+            ## 文件定位引用
+
+            最终回答提到沙箱文件的具体位置，或用户要求定位、打开、跳转到某一行时：
+            - 必须额外输出一个行内代码位置，格式为 `绝对路径:行号:列号`
+            - 示例：`/home/gem/workspace/src/main/App.java:42:1`
+            - 路径必须是 /home/gem 内真实存在的文件绝对路径
+            - 行号必须来自 read_file、file_search 或命令执行结果，不得猜测
+            - 已知行号但没有特殊列位置时，列号使用 1
+            - 不要只用表格或自然语言描述“第几行”，必须同时给出上述可点击位置
+            """;
+
     /** 浏览器工具组的共同使用约束，仅在存在浏览器工具时加载。 */
     private static final String BROWSER_SECTION = """
             ## 浏览器工具
@@ -168,6 +181,7 @@ final class ReactPromptAssembler {
         List<String> sections = new ArrayList<>();
         sections.add(IDENTITY_SECTION);
         sections.add(WORKSPACE_SECTION);
+        sections.add(FILE_LOCATION_SECTION);
 
         if (hasToolPrefix(toolDefinitions, "browser_")) {
             sections.add(BROWSER_SECTION);
@@ -241,6 +255,7 @@ final class ReactPromptAssembler {
         List<String> names = new ArrayList<>();
         names.add("identity");
         names.add("workspace");
+        names.add("file_location");
         if (hasToolPrefix(toolDefinitions, "browser_")) {
             names.add("browser");
         }

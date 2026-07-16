@@ -10,6 +10,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume;
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Host;
 
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -206,9 +207,10 @@ public class SandboxAgent implements AutoCloseable {
      * 续期沙箱
      *
      * @param duration 续期时长
+     * @return 续期后的到期时间
      */
-    public void renew(Duration duration) {
-        sandbox.renew(duration);
+    public OffsetDateTime renew(Duration duration) {
+        return sandbox.renew(duration).getExpiresAt();
     }
 
     /**
@@ -280,6 +282,8 @@ public class SandboxAgent implements AutoCloseable {
         private String domain = "localhost:8080";
         private String apiKey;
         private String image = DEFAULT_IMAGE;
+        /** 需要重新连接的已有沙箱 ID；为空时创建新沙箱。 */
+        private String sandboxId;
         private List<String> entrance;
         private Duration timeout = DEFAULT_TIMEOUT;
         private Duration readyTimeout = DEFAULT_READY_TIMEOUT;
@@ -299,6 +303,17 @@ public class SandboxAgent implements AutoCloseable {
 
         public Builder image(String image) {
             this.image = image;
+            return this;
+        }
+
+        /**
+         * 指定需要重新连接的已有沙箱。
+         *
+         * @param sandboxId 已有沙箱 ID
+         * @return 当前 Builder
+         */
+        public Builder sandboxId(String sandboxId) {
+            this.sandboxId = sandboxId;
             return this;
         }
 
@@ -356,7 +371,10 @@ public class SandboxAgent implements AutoCloseable {
         }
 
         /**
-         * 构建 SandboxAgent 实例
+         * 构建 SandboxAgent 实例。
+         *
+         * <p>设置 sandboxId 时连接已有沙箱，否则按当前配置创建新沙箱。连接失败或沙箱
+         * 已不存在时由 OpenSandbox SDK 抛出异常，调用方决定重试或重建。</p>
          *
          * @return SandboxAgent 实例
          */
@@ -366,6 +384,15 @@ public class SandboxAgent implements AutoCloseable {
                     .debug(debug)
                     .requestTimeout(requestTimeout)
                     .build();
+
+            if (sandboxId != null && !sandboxId.isBlank()) {
+                Sandbox sandbox = Sandbox.connector()
+                        .sandboxId(sandboxId)
+                        .connectionConfig(config)
+                        .connectTimeout(readyTimeout)
+                        .connect();
+                return new SandboxAgent(sandbox, config);
+            }
 
             Sandbox.Builder sandboxBuilder = Sandbox.builder()
                     .connectionConfig(config)

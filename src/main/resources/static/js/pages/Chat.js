@@ -227,6 +227,49 @@ const ChatStepGrouper = {
 };
 if (typeof window !== 'undefined') window.ChatStepGrouper = ChatStepGrouper;
 
+// 解析 Agent 输出中的文件位置，供 Markdown 链接和行内代码复用。
+const parseVsCodeLocation = (value) => {
+    let text = String(value || '').trim();
+    if (!text) return null;
+    if ((text.startsWith('`') && text.endsWith('`')) || (text.startsWith('<') && text.endsWith('>'))) {
+        text = text.substring(1, text.length - 1).trim();
+    }
+    try {
+        text = decodeURIComponent(text);
+    } catch (e) {
+        // 非法百分号编码保留原文，后续路径规则仍会拒绝不安全内容。
+    }
+
+    let match = text.match(/^(.+?)#L(\d+)(?:C(\d+))?$/i);
+    if (!match) {
+        match = text.match(/^(.+?):(\d+)(?::(\d+))?$/);
+    }
+    if (!match) {
+        match = text.match(/^(.+?)\s+\(line\s+(\d+)(?:,\s*column\s+(\d+))?\)$/i);
+    }
+    if (!match) return null;
+
+    let filePath = match[1].trim().replace(/\\/g, '/');
+    if (filePath.startsWith('file://')) filePath = filePath.substring('file://'.length);
+    while (filePath.startsWith('./')) filePath = filePath.substring(2);
+
+    const line = Number(match[2]);
+    const column = match[3] ? Number(match[3]) : 1;
+    if (!Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) return null;
+    if (!filePath || filePath.includes('\0') || filePath.includes('://')) return null;
+    if (/^[A-Za-z]:\//.test(filePath)) return null;
+    if (filePath.startsWith('/') && !filePath.startsWith('/home/gem/')) return null;
+
+    const pathToValidate = filePath.startsWith('/home/gem/')
+        ? filePath.substring('/home/gem/'.length)
+        : filePath;
+    const segments = pathToValidate.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) return null;
+    if (!filePath.includes('/') && !filePath.includes('.')) return null;
+
+    return { path: filePath, line, column };
+};
+
 // 单个工具调用行：流式与历史共用，消除两处手写模板重复。
 const ChatToolStep = {
     props: {
@@ -279,7 +322,7 @@ const ChatPage = {
                                 <button
                                     type="button"
                                     class="chat-tool-switch"
-                                    :class="{ active: activeToolDock === 'sandbox' }"
+                                    :class="{ active: activeToolDock === 'sandbox' && activeSandboxView !== 'files' }"
                                     @click="toggleToolDock('sandbox')"
                                     title="沙箱"
                                 >
@@ -290,8 +333,8 @@ const ChatPage = {
                                 </button>
                                 <button
                                     type="button"
-                                    class="chat-tool-switch"
-                                    :class="{ active: activeToolDock === 'workspace' }"
+                                    class="chat-tool-switch workspace-switch"
+                                    :class="{ active: activeToolDock === 'sandbox' && activeSandboxView === 'files' }"
                                     @click="toggleToolDock('workspace')"
                                     title="工作目录"
                                 >
@@ -528,16 +571,12 @@ const ChatPage = {
                         <textarea
                             v-model="inputText"
                             class="composer-input"
-                            :placeholder="sending ? '当前任务正在运行，可以先输入下一条消息' : '输入消息，Enter 发送，Shift + Enter 换行'"
+                            placeholder="输入消息，Enter 发送，Shift + Enter 换行"
                             rows="1"
                             @keydown.enter.exact.prevent="send"
                             @input="autoResize"
                             ref="composerInput"
                         ></textarea>
-
-                        <div v-if="sending" class="composer-run-draft-hint">
-                            当前任务正在运行，输入内容会按会话暂存，任务完成后可以发送
-                        </div>
 
                         <div class="composer-toolbar">
                             <div class="composer-tools-left">
@@ -774,8 +813,8 @@ const ChatPage = {
             <aside v-if="toolDockOpen" class="chat-tool-dock">
                 <header class="chat-tool-dock-header">
                     <div class="chat-tool-dock-title">
-                        <span class="chat-tool-dock-icon">
-                            <svg v-if="activeToolDock === 'sandbox'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                        <span class="chat-tool-dock-icon" :class="{ workspace: activeSandboxView === 'files' }">
+                            <svg v-if="activeSandboxView !== 'files'" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                             <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
                         </span>
                         <div>
@@ -796,7 +835,7 @@ const ChatPage = {
                                     :key="view.id"
                                     type="button"
                                     class="sandbox-view-option"
-                                    :class="{ active: activeSandboxView === view.id }"
+                                    :class="{ active: activeSandboxView === view.id, workspace: view.id === 'files' }"
                                     :title="view.title"
                                     @click="switchSandboxView(view.id)"
                                 >
@@ -809,7 +848,7 @@ const ChatPage = {
                                     <span>{{ view.label }}</span>
                                 </button>
                             </div>
-                            <div class="tool-sandbox-actions">
+                            <div v-if="activeSandboxView !== 'files'" class="tool-sandbox-actions">
                                 <span>{{ vncStatus }}</span>
                                 <button type="button" @click="loadVncView" :disabled="!currentSessionId || isSandboxResetting">刷新</button>
                                 <button type="button" @click="resetSandbox" :disabled="!currentSessionId || isSandboxResetting">
@@ -817,15 +856,15 @@ const ChatPage = {
                                 </button>
                             </div>
                         </div>
-                        <div class="tool-sandbox-frame">
-                            <iframe v-if="vncUrl" :src="vncUrl"></iframe>
+                        <workspace-browser v-if="activeSandboxView === 'files'" embedded></workspace-browser>
+                        <div v-else class="tool-sandbox-frame">
+                            <iframe ref="sandboxFrame" v-if="vncUrl" :src="vncUrl" :title="toolDockSubtitle" @load="handleSandboxFrameLoad"></iframe>
                             <div v-else class="vnc-placeholder">
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.35"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                                 <span>{{ vncPlaceholder }}</span>
                             </div>
                         </div>
                     </section>
-                    <workspace-browser v-else-if="activeToolDock === 'workspace'" embedded></workspace-browser>
                 </div>
             </aside>
 
@@ -992,6 +1031,10 @@ const ChatPage = {
         const copied = Vue.ref(false);
         const loadingHistory = Vue.ref(false);
         const showScrollBtn = Vue.ref(false);
+        // 用户停留在底部附近时自动跟随新输出，主动向上浏览后暂停跟随。
+        const autoScrollEnabled = Vue.ref(true);
+        // 距离底部不超过该像素值时，仍视为用户正在跟随最新消息。
+        const AUTO_SCROLL_THRESHOLD = 120;
         // 每秒推进一次运行时钟，让运行耗时无需依赖新的 SSE 事件也能持续更新。
         const runtimeNow = Vue.ref(Date.now());
 
@@ -1047,26 +1090,43 @@ const ChatPage = {
         const activeToolDock = Vue.ref('');
         const toolDockWidth = Vue.ref(460);
         const toolDockOpen = Vue.computed(() => Boolean(activeToolDock.value));
-        const toolDockTitle = Vue.computed(() => activeToolDock.value === 'workspace' ? '工作目录' : '沙箱');
+        const toolDockTitle = Vue.computed(() => activeSandboxView.value === 'files' ? '工作目录' : '沙箱');
         const sandboxViews = [
             { id: 'browser', label: '浏览器', title: '打开浏览器视图', path: '/vnc/index.html?autoconnect=true&resize=scale', websocketPath: 'websockify' },
             { id: 'terminal', label: '终端', title: '打开 Web 终端', path: '/terminal' },
             { id: 'vscode', label: 'VSCode', title: '打开 VSCode 工作区', path: '/code-server/?folder=/home/gem' },
-            { id: 'files', label: '文件', title: '打开工作目录', dock: 'workspace' },
+            { id: 'files', label: '文件', title: '打开工作目录' },
         ];
         const activeSandboxView = Vue.ref('browser');
         const sandboxBaseUrl = Vue.ref('');
         const sandboxViewById = (id) => sandboxViews.find(view => view.id === id) || sandboxViews[0];
         const toolDockSubtitle = Vue.computed(() => {
-            if (activeToolDock.value === 'workspace') return '当前会话文件';
+            if (activeSandboxView.value === 'files') return '当前会话文件';
             return sandboxViewById(activeSandboxView.value).label;
         });
         const isToolDockResizing = Vue.ref(false);
-        const vncOpen = Vue.computed(() => activeToolDock.value === 'sandbox');
+        const vncOpen = Vue.computed(() => activeToolDock.value === 'sandbox' && activeSandboxView.value !== 'files');
         const vncUrl = Vue.ref('');
         const vncStatus = Vue.ref('未连接');
         const vncPlaceholder = Vue.ref('请先创建会话');
         const isSandboxResetting = Vue.ref(false);
+        // 当前沙箱视图 iframe，供后台焦点保护和工作台加载判断使用。
+        const sandboxFrame = Vue.ref(null);
+        const vscodeFrameReady = Vue.ref(false);
+        // iframe load 之后为 code-server Extension Host 预留稳定时间。
+        const VSCODE_WORKBENCH_STABLE_DELAY_MILLIS = 1500;
+        // 当前 VSCode iframe 最近一次完成页面加载的时间。
+        let vscodeFrameLoadedAt = 0;
+        // 延迟执行文件定位的计时器，切换视图或会话时必须取消。
+        let vscodeOpenTimer = null;
+        let pendingVsCodeOpen = null;
+        let vscodeOpenInFlight = false;
+        // 页面进入后台时被保护的 iframe Window。
+        let guardedSandboxFrameWindow = null;
+        // 被覆盖前的原始 focus 方法，页面恢复可见时需要还原。
+        let originalSandboxFrameFocus = null;
+        // 后台期间忽略嵌入页面主动抢占 Windows 浏览器焦点。
+        const blockSandboxFrameFocus = () => {};
         let isResizing = false, startX = 0, pendingToolDockWidth = 0, toolDockResizeFrame = 0;
 
         const currentApp = Vue.computed(() => {
@@ -1314,7 +1374,12 @@ const ChatPage = {
             else messages.value = [];
         };
 
-        const loadHistory = async () => {
+        /**
+         * 加载当前会话历史。
+         * @param {Object} options 加载后的滚动策略。
+         * @param {boolean} options.followOnly 为 true 时仅在用户仍跟随底部时滚动。
+         */
+        const loadHistory = async ({ followOnly = false } = {}) => {
             const sessionId = currentSessionId.value;
             if (!sessionId) return;
             loadingHistory.value = true;
@@ -1322,7 +1387,8 @@ const ChatPage = {
                 const history = await api.getHistory(sessionId);
                 if (currentSessionId.value !== sessionId) return;
                 messages.value = history || [];
-                scrollToBottom();
+                if (followOnly) scrollToBottomIfFollowing();
+                else scrollToBottom();
             } catch (e) { console.error('加载历史失败:', e); }
             finally { loadingHistory.value = false; }
         };
@@ -1471,7 +1537,7 @@ const ChatPage = {
                 if (stop) stop();
                 if (currentSessionId.value === sessionId) {
                     messages.value = history;
-                    scrollToBottom();
+                    scrollToBottomIfFollowing();
                 }
                 store.markLiveStreamCompleted(sessionId, { refreshHistory: true });
                 scheduleSessionTitleRefresh(sessionId);
@@ -1517,11 +1583,11 @@ const ChatPage = {
                         error: '连接断开',
                         _lastText: latestStream.pendingUserMessage?._lastText || ''
                     });
-                    scrollToBottom();
+                    scrollToBottomIfFollowing();
                 }
                 store.markLiveStreamCompleted(sessionId, { refreshHistory: true });
             }, 60000);
-            if (currentSessionId.value === sessionId) scrollToBottom();
+            if (currentSessionId.value === sessionId) scrollToBottomIfFollowing();
         };
 
         // 计算同类步骤的展示序号，支持 toolCall 被替换成 toolResult 后仍连续编号。
@@ -1597,15 +1663,15 @@ const ChatPage = {
             if (!stream) return;
             const { type, data = {} } = event || {};
             switch (type) {
-                case 'plan': stream.currentEvents.push({ type: 'plan', content: data.content }); stream.streamPhase = 'plan_ready'; scrollToBottom(); break;
-                case 'thinking_start': stream.currentThinking = ''; stream.currentReasoning = ''; stream.currentStepIndex = data.stepIndex || 0; stream.streamPhase = 'thinking'; scrollToBottom(); break;
-                case 'token': stream.currentThinking += data.content || ''; stream.streamPhase = 'generating'; scrollToBottom(); break;
-                case 'reasoning_token': stream.currentReasoning += data.content || ''; stream.streamPhase = 'thinking'; scrollToBottom(); break;
+                case 'plan': stream.currentEvents.push({ type: 'plan', content: data.content }); stream.streamPhase = 'plan_ready'; scrollToBottomIfFollowing(); break;
+                case 'thinking_start': stream.currentThinking = ''; stream.currentReasoning = ''; stream.currentStepIndex = data.stepIndex || 0; stream.streamPhase = 'thinking'; scrollToBottomIfFollowing(); break;
+                case 'token': stream.currentThinking += data.content || ''; stream.streamPhase = 'generating'; scrollToBottomIfFollowing(); break;
+                case 'reasoning_token': stream.currentReasoning += data.content || ''; stream.streamPhase = 'thinking'; scrollToBottomIfFollowing(); break;
                 case 'thinking_end':
                     if (stream.currentThinking) stream.currentEvents.push({ type: 'thinking', content: stream.currentThinking, stepIndex: stream.currentStepIndex || nextStepIndex(stream, 'thinking') });
                     if (stream.currentReasoning) stream.currentEvents.push({ type: 'reasoning', content: stream.currentReasoning, stepIndex: stream.currentStepIndex || nextStepIndex(stream, 'reasoning') });
-                    stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'processing'; scrollToBottom(); break;
-                case 'tool_call': appendToolCallEvent(stream, data); stream.streamPhase = 'tool'; scrollToBottom(); break;
+                    stream.currentThinking = ''; stream.currentReasoning = ''; stream.streamPhase = 'processing'; scrollToBottomIfFollowing(); break;
+                case 'tool_call': appendToolCallEvent(stream, data); stream.streamPhase = 'tool'; scrollToBottomIfFollowing(); break;
                 case 'tool_executing': {
                     // 并发下按 toolCallId 定位正在执行的工具行；id 缺失时回退到 currentToolCall
                     const execId = data.toolCallId;
@@ -1622,14 +1688,14 @@ const ChatPage = {
                     break;
                 }
                 case 'observation':
-                    completeToolCallEvent(stream, data); stream.streamPhase = 'tool_done'; scrollToBottom(); break;
+                    completeToolCallEvent(stream, data); stream.streamPhase = 'tool_done'; scrollToBottomIfFollowing(); break;
                 case 'answer':
                     stream.finalAnswer = data.content || ''; stream.streamPhase = 'answer';
                     const idx = stream.currentEvents.map(e => e.type === 'thinking' ? e.content : null).lastIndexOf(stream.finalAnswer);
                     if (idx >= 0) stream.currentEvents.splice(idx, 1);
                     // 服务端恢复流由活动运行查询负责收尾，避免补播 answer 后过早清掉页面状态。
                     if (!stream.recovered) scheduleAutoFinish(sessionId, streamId);
-                    scrollToBottom(); break;
+                    scrollToBottomIfFollowing(); break;
                 case 'done': finishStream(sessionId, streamId, { refreshIfEmpty: true, refreshHistory: true }); break;
                 case 'interrupted':
                     finishStream(sessionId, streamId, { refreshHistory: false });
@@ -1648,7 +1714,7 @@ const ChatPage = {
                 case 'status':
                     stream.currentEvents.push({ type: 'status', content: data.message || '', stepIndex: stream.currentEvents.length + 1 });
                     stream.streamPhase = 'processing';
-                    scrollToBottom();
+                    scrollToBottomIfFollowing();
                     break;
                 case 'heartbeat': break;
             }
@@ -1671,7 +1737,7 @@ const ChatPage = {
             const shouldRefreshHistory = Boolean(options.refreshHistory || (!stream.finalAnswer && options.refreshIfEmpty));
             store.markLiveStreamCompleted(sessionId, { refreshHistory: shouldRefreshHistory });
             if (shouldRefreshHistory) scheduleSessionTitleRefresh(sessionId);
-            if (currentSessionId.value === sessionId) scrollToBottom();
+            if (currentSessionId.value === sessionId) scrollToBottomIfFollowing();
         };
 
         // 停止当前会话的流式回复，只影响当前会话，不会清理其他会话仍在进行的思考链。
@@ -1937,6 +2003,30 @@ const ChatPage = {
 
         const escapeAttribute = (v) => escapeHtml(String(v || ''));
         const chatMarkdownRenderer = new marked.Renderer();
+        const vsCodeLocationAttributes = (location) => `data-vscode-path="${escapeAttribute(location.path)}" data-vscode-line="${location.line}" data-vscode-column="${location.column}"`;
+        /**
+         * 根据文件扩展名生成紧凑的蓝色类型标记。
+         * @param {string} path 文件路径
+         * @return {string} 最多两个字符的文件类型
+         */
+        const vsCodeLocationBadgeText = (path) => {
+            const fileName = String(path || '').split('/').pop() || '';
+            const extension = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+            const labels = {
+                js: 'JS', jsx: 'JS', ts: 'TS', tsx: 'TS', vue: 'VU',
+                java: 'JV', py: 'PY', md: 'MD', json: '{}', css: 'CS',
+                html: 'HT', htm: 'HT', yml: 'YL', yaml: 'YL', sh: 'SH',
+                sql: 'SQ', xml: 'XM'
+            };
+            return labels[extension] || 'F';
+        };
+        /**
+         * 渲染与文件定位链接配套的蓝色文件类型图标。
+         * @param {Object} location 文件位置
+         * @return {string} 已转义的图标 HTML
+         */
+        const renderVsCodeLocationBadge = (location) =>
+            `<span class="chat-vscode-location-badge" aria-hidden="true">${escapeHtml(vsCodeLocationBadgeText(location.path))}</span>`;
 
         chatMarkdownRenderer.image = (href, title, text) => {
             const file = parseSandboxFileUrl(href);
@@ -1946,8 +2036,20 @@ const ChatPage = {
 
         chatMarkdownRenderer.link = (href, title, text) => {
             const file = parseSandboxFileUrl(href);
-            if (!file) return `<a href="${escapeAttribute(href)}"${title ? ` title="${escapeAttribute(title)}"` : ''} target="_blank" rel="noopener noreferrer">${text}</a>`;
-            return `<a href="#" class="chat-sandbox-file-link" data-sandbox-preview="true" data-session-id="${escapeAttribute(file.sessionId)}" data-file-path="${escapeAttribute(file.filePath)}" data-file-name="${escapeAttribute(file.fileName)}" data-file-type="${escapeAttribute(file.fileType)}">${text}</a>`;
+            if (file) {
+                return `<a href="#" class="chat-sandbox-file-link" data-sandbox-preview="true" data-session-id="${escapeAttribute(file.sessionId)}" data-file-path="${escapeAttribute(file.filePath)}" data-file-name="${escapeAttribute(file.fileName)}" data-file-type="${escapeAttribute(file.fileType)}">${text}</a>`;
+            }
+            const location = parseVsCodeLocation(href);
+            if (location) {
+                return `<a href="#" class="chat-vscode-location chat-vscode-location-link" ${vsCodeLocationAttributes(location)} title="在 VSCode 中打开">${renderVsCodeLocationBadge(location)}<span class="chat-vscode-location-label">${text}</span></a>`;
+            }
+            return `<a href="${escapeAttribute(href)}"${title ? ` title="${escapeAttribute(title)}"` : ''} target="_blank" rel="noopener noreferrer">${text}</a>`;
+        };
+
+        chatMarkdownRenderer.codespan = (text) => {
+            const location = parseVsCodeLocation(text);
+            if (!location) return `<code>${escapeHtml(text)}</code>`;
+            return `<button type="button" class="chat-vscode-location chat-vscode-location-code" ${vsCodeLocationAttributes(location)} title="在 VSCode 中打开">${renderVsCodeLocationBadge(location)}<span class="chat-vscode-location-label">${escapeHtml(text)}</span></button>`;
         };
 
         const handleMessageContentClick = (event) => {
@@ -1960,6 +2062,17 @@ const ChatPage = {
                     localImageTarget.dataset.fileType,
                     localImageTarget.dataset.fileSize
                 );
+                return;
+            }
+
+            const vsCodeTarget = event.target.closest('[data-vscode-path]');
+            if (vsCodeTarget) {
+                event.preventDefault();
+                openLocationInVsCode({
+                    path: vsCodeTarget.dataset.vscodePath,
+                    line: Number(vsCodeTarget.dataset.vscodeLine) || 1,
+                    column: Number(vsCodeTarget.dataset.vscodeColumn) || 1,
+                });
                 return;
             }
 
@@ -2021,8 +2134,31 @@ const ChatPage = {
         // previewText / processTitle / processPreview / toolPreview 等纯函数已提到模块顶层，供子组件与历史/流式共用。
         const formatTime = (ts) => { if (!ts) return ''; const d = new Date(ts); const now = new Date(); const hh = String(d.getHours()).padStart(2, '0'), mm = String(d.getMinutes()).padStart(2, '0'); return d.toDateString() === now.toDateString() ? `${hh}:${mm}` : `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`; };
 
-        const scrollToBottom = () => { Vue.nextTick(() => { if (messagesEl.value) { messagesEl.value.scrollTop = messagesEl.value.scrollHeight; checkScrollPosition(); } }); };
-        const checkScrollPosition = () => { if (!messagesEl.value) return; const { scrollTop, scrollHeight, clientHeight } = messagesEl.value; showScrollBtn.value = scrollHeight - scrollTop - clientHeight > 200; };
+        /**
+         * 执行滚动到底部；强制模式会恢复后续新输出的自动跟随。
+         * @param {boolean} forceFollow 是否忽略用户当前滚动位置并恢复跟随。
+         */
+        const scrollMessagesToBottom = (forceFollow) => {
+            if (forceFollow) autoScrollEnabled.value = true;
+            Vue.nextTick(() => {
+                if (!messagesEl.value || (!forceFollow && !autoScrollEnabled.value)) return;
+                messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+                checkScrollPosition();
+            });
+        };
+        /** 用户主动要求回到底部时，恢复自动跟随。 */
+        const scrollToBottom = () => scrollMessagesToBottom(true);
+        /** 新内容到达时，仅在用户仍位于底部附近的情况下继续跟随。 */
+        const scrollToBottomIfFollowing = () => scrollMessagesToBottom(false);
+        /** 根据用户当前滚动位置更新自动跟随状态和回到底部按钮。 */
+        const checkScrollPosition = () => {
+            if (!messagesEl.value) return;
+            const { scrollTop, scrollHeight, clientHeight } = messagesEl.value;
+            const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight);
+            const isNearBottom = distanceFromBottom <= AUTO_SCROLL_THRESHOLD;
+            autoScrollEnabled.value = isNearBottom;
+            showScrollBtn.value = !isNearBottom;
+        };
 
         const copyId = () => { if (currentSessionId.value) { navigator.clipboard.writeText(currentSessionId.value); copied.value = true; setTimeout(() => copied.value = false, 1500); } };
         let composerDragDepth = 0;
@@ -2132,8 +2268,48 @@ const ChatPage = {
             });
         };
 
+        /** 取消尚未执行的 VSCode 文件定位，避免旧位置在切换视图后生效。 */
+        const clearVsCodeOpenTimer = () => {
+            if (vscodeOpenTimer) clearTimeout(vscodeOpenTimer);
+            vscodeOpenTimer = null;
+        };
+        /** 恢复嵌入页面原始的程序化 focus 能力。 */
+        const restoreSandboxFrameFocus = () => {
+            if (!guardedSandboxFrameWindow || !originalSandboxFrameFocus) return;
+            try {
+                guardedSandboxFrameWindow.focus = originalSandboxFrameFocus;
+            } catch (e) {
+                // iframe 导航或卸载后无法访问旧 Window 时无需恢复。
+            }
+            guardedSandboxFrameWindow = null;
+            originalSandboxFrameFocus = null;
+        };
+        /**
+         * 页面隐藏时禁止沙箱 iframe 主动恢复 Windows 浏览器窗口。
+         *
+         * iframe 和 WebSocket 始终保留，Agent、终端、浏览器与 VSCode 仍会在后台运行。
+         */
+        const syncSandboxFrameFocusGuard = () => {
+            const frameWindow = sandboxFrame.value?.contentWindow;
+            if (!document.hidden || !frameWindow) {
+                restoreSandboxFrameFocus();
+                return;
+            }
+            if (guardedSandboxFrameWindow !== frameWindow) {
+                restoreSandboxFrameFocus();
+                guardedSandboxFrameWindow = frameWindow;
+                originalSandboxFrameFocus = frameWindow.focus;
+            }
+            try {
+                frameWindow.focus = blockSandboxFrameFocus;
+            } catch (e) {
+                // 非同源或浏览器禁止覆盖时保持原行为，不影响沙箱后台运行。
+            }
+        };
         const closeToolDock = () => {
+            clearVsCodeOpenTimer();
             activeToolDock.value = '';
+            vscodeFrameReady.value = false;
         };
         const sandboxProxyPath = (baseUrl) => {
             try {
@@ -2161,8 +2337,34 @@ const ChatPage = {
             return base + path;
         };
         const toggleToolDock = (dock) => {
-            activeToolDock.value = activeToolDock.value === dock ? '' : dock;
-            if (activeToolDock.value === 'sandbox' && currentSessionId.value && !vncUrl.value) {
+            const isCurrentView = activeToolDock.value === 'sandbox'
+                && (dock === 'workspace' ? activeSandboxView.value === 'files' : activeSandboxView.value !== 'files');
+            if (isCurrentView) {
+                clearVsCodeOpenTimer();
+                activeToolDock.value = '';
+                vscodeFrameReady.value = false;
+                return;
+            }
+
+            activeToolDock.value = 'sandbox';
+            if (dock === 'workspace') {
+                clearVsCodeOpenTimer();
+                activeSandboxView.value = 'files';
+                vscodeFrameReady.value = false;
+                return;
+            }
+
+            if (activeSandboxView.value === 'files') {
+                activeSandboxView.value = 'browser';
+            }
+            if (!currentSessionId.value) return;
+            if (sandboxBaseUrl.value) {
+                const view = sandboxViewById(activeSandboxView.value);
+                const nextUrl = sandboxViewUrl(sandboxBaseUrl.value, view);
+                if (nextUrl !== vncUrl.value) vscodeFrameReady.value = false;
+                vncUrl.value = nextUrl;
+                vncStatus.value = `已连接：${view.label}`;
+            } else {
                 loadVncView();
             }
         };
@@ -2170,12 +2372,15 @@ const ChatPage = {
         const loadVncView = async () => {
             if (!currentSessionId.value) { vncPlaceholder.value = '请先创建会话'; return; }
             const view = sandboxViewById(activeSandboxView.value);
+            if (view.id === 'files') return;
             vncStatus.value = '连接中...'; vncPlaceholder.value = '获取沙箱地址...';
             try {
                 const url = await api.getAioViewUrl(currentSessionId.value);
                 if (url) {
                     sandboxBaseUrl.value = url;
-                    vncUrl.value = sandboxViewUrl(url, view);
+                    const nextUrl = sandboxViewUrl(url, view);
+                    if (nextUrl !== vncUrl.value) vscodeFrameReady.value = false;
+                    vncUrl.value = nextUrl;
                     vncStatus.value = `已连接：${view.label}`;
                 } else {
                     vncPlaceholder.value = '无法获取地址';
@@ -2218,11 +2423,17 @@ const ChatPage = {
         };
         const switchSandboxView = async (viewId) => {
             const view = sandboxViewById(viewId);
-            if (view.dock === 'workspace') {
-                activeToolDock.value = view.dock;
+            activeToolDock.value = 'sandbox';
+            activeSandboxView.value = view.id;
+            if (view.id === 'files') {
+                clearVsCodeOpenTimer();
+                vscodeFrameReady.value = false;
                 return;
             }
-            activeSandboxView.value = view.id;
+            if (view.id !== 'vscode') {
+                clearVsCodeOpenTimer();
+                vscodeFrameReady.value = false;
+            }
             if (!currentSessionId.value) {
                 vncUrl.value = '';
                 vncPlaceholder.value = '请先创建会话';
@@ -2233,8 +2444,78 @@ const ChatPage = {
                 await loadVncView();
                 return;
             }
-            vncUrl.value = sandboxViewUrl(sandboxBaseUrl.value, view);
+            const nextUrl = sandboxViewUrl(sandboxBaseUrl.value, view);
+            if (nextUrl !== vncUrl.value) vscodeFrameReady.value = false;
+            vncUrl.value = nextUrl;
             vncStatus.value = `已连接：${view.label}`;
+        };
+        const flushPendingVsCodeOpen = async () => {
+            if (!pendingVsCodeOpen || vscodeOpenInFlight || !vscodeFrameReady.value) return;
+            if (activeToolDock.value !== 'sandbox' || activeSandboxView.value !== 'vscode') return;
+
+            const location = pendingVsCodeOpen;
+            vscodeOpenInFlight = true;
+            try {
+                await api.openFileInVsCode(
+                    location.sessionId,
+                    location.path,
+                    location.line,
+                    location.column
+                );
+                if (pendingVsCodeOpen === location) pendingVsCodeOpen = null;
+                const fileName = location.path.substring(location.path.lastIndexOf('/') + 1);
+                vncStatus.value = `已定位：${fileName}:${location.line}`;
+            } catch (e) {
+                if (pendingVsCodeOpen === location) pendingVsCodeOpen = null;
+                store.showToast({
+                    type: 'error',
+                    message: e?.message || '无法在 VSCode 中打开文件',
+                    duration: 3200,
+                });
+            } finally {
+                vscodeOpenInFlight = false;
+                if (pendingVsCodeOpen && pendingVsCodeOpen !== location) {
+                    schedulePendingVsCodeOpen();
+                }
+            }
+        };
+        /** 等待 VSCode 工作台稳定后执行最近一次文件定位请求。 */
+        const schedulePendingVsCodeOpen = () => {
+            clearVsCodeOpenTimer();
+            if (!pendingVsCodeOpen || !vscodeFrameReady.value) return;
+            const elapsed = Math.max(0, Date.now() - vscodeFrameLoadedAt);
+            const delay = Math.max(0, VSCODE_WORKBENCH_STABLE_DELAY_MILLIS - elapsed);
+            vscodeOpenTimer = setTimeout(() => {
+                vscodeOpenTimer = null;
+                flushPendingVsCodeOpen();
+            }, delay);
+        };
+        /**
+         * 处理沙箱 iframe 页面加载。
+         * @param {Event} event iframe load 事件
+         */
+        const handleSandboxFrameLoad = (event) => {
+            sandboxFrame.value = event?.currentTarget || sandboxFrame.value;
+            syncSandboxFrameFocusGuard();
+            vscodeFrameReady.value = activeSandboxView.value === 'vscode';
+            vscodeFrameLoadedAt = vscodeFrameReady.value ? Date.now() : 0;
+            if (vscodeFrameReady.value) schedulePendingVsCodeOpen();
+        };
+        const openLocationInVsCode = async (location) => {
+            const sessionId = currentSessionId.value;
+            if (!sessionId) {
+                store.showToast({ type: 'warning', message: '请先创建会话', duration: 2200 });
+                return;
+            }
+
+            pendingVsCodeOpen = { ...location, sessionId };
+            await switchSandboxView('vscode');
+            if (!vncUrl.value) {
+                pendingVsCodeOpen = null;
+                store.showToast({ type: 'error', message: '无法连接 VSCode 工作台', duration: 3000 });
+                return;
+            }
+            if (vscodeFrameReady.value) schedulePendingVsCodeOpen();
         };
         const resizeVnc = (d) => { toolDockWidth.value = Math.max(340, Math.min(820, toolDockWidth.value + d * 8)); };
         const startToolDockResize = (e) => {
@@ -2276,7 +2557,7 @@ const ChatPage = {
             const sessionId = currentSessionId.value;
             if (!sessionId) return;
             const completed = store.consumeCompletedLiveStream(sessionId);
-            if (completed?.refreshHistory) await loadHistory();
+            if (completed?.refreshHistory) await loadHistory({ followOnly: true });
         };
 
         // 把服务端缓存的增量事件送入原有 SSE 渲染器，保证刷新前后展示结构完全一致。
@@ -2340,7 +2621,7 @@ const ChatPage = {
                 // 只有服务端恢复出来的占位流才由轮询收尾；本机新发起的 SSE 仍由原事件链控制。
                 if (existing?.recovered) {
                     store.clearLiveStream(sessionId);
-                    await loadHistory();
+                    await loadHistory({ followOnly: true });
                     scheduleSessionTitleRefresh(sessionId);
                 }
             } catch (e) {
@@ -2351,12 +2632,17 @@ const ChatPage = {
         };
 
         Vue.watch(currentSessionId, () => {
+            autoScrollEnabled.value = true;
+            showScrollBtn.value = false;
+            clearVsCodeOpenTimer();
             vncUrl.value = '';
             sandboxBaseUrl.value = '';
-            activeSandboxView.value = 'browser';
+            vscodeFrameReady.value = false;
+            vscodeFrameLoadedAt = 0;
+            pendingVsCodeOpen = null;
             vncStatus.value = '未连接';
             vncPlaceholder.value = '请先创建会话';
-            if (activeToolDock.value === 'sandbox') loadVncView();
+            if (activeToolDock.value === 'sandbox' && activeSandboxView.value !== 'files') loadVncView();
             consumeCompletedStream();
             syncActiveRun();
         });
@@ -2384,7 +2670,7 @@ const ChatPage = {
                 currentLiveStream.value?.currentReasoning || '',
                 currentLiveStream.value?.finalAnswer || ''
             ],
-            () => { if (streaming.value) scrollToBottom(); }
+            () => { if (streaming.value) scrollToBottomIfFollowing(); }
         );
         Vue.watch(
             () => [pendingFiles.value.length, inputText.value],
@@ -2401,6 +2687,7 @@ const ChatPage = {
             });
             runtimeClockTimer = setInterval(() => { runtimeNow.value = Date.now(); }, 1000);
             activeRunPollTimer = setInterval(syncActiveRun, 800);
+            document.addEventListener('visibilitychange', syncSandboxFrameFocusGuard);
             Vue.nextTick(() => {
                 if (messagesEl.value) messagesEl.value.addEventListener('scroll', checkScrollPosition);
                 updateComposerHeight();
@@ -2417,6 +2704,9 @@ const ChatPage = {
             if (activeRunPollTimer) clearInterval(activeRunPollTimer);
             runtimeClockTimer = null;
             activeRunPollTimer = null;
+            clearVsCodeOpenTimer();
+            restoreSandboxFrameFocus();
+            document.removeEventListener('visibilitychange', syncSandboxFrameFocusGuard);
             if (messagesEl.value) messagesEl.value.removeEventListener('scroll', checkScrollPosition);
             if (composerResizeObserver) composerResizeObserver.disconnect();
             window.removeEventListener('resize', updateComposerHeight);
@@ -2459,8 +2749,8 @@ const ChatPage = {
             activeToolDock, toolDockOpen, toolDockWidth, toolDockTitle, toolDockSubtitle, isToolDockResizing,
             toggleToolDock, closeToolDock, startToolDockResize,
             sandboxViews, activeSandboxView, switchSandboxView,
-            vncOpen, vncUrl, vncStatus, vncPlaceholder, isSandboxResetting,
-            toggleVnc, loadVncView, resetSandbox, resizeVnc, startResize, scrollToBottom
+            sandboxFrame, vncOpen, vncUrl, vncStatus, vncPlaceholder, isSandboxResetting,
+            toggleVnc, loadVncView, resetSandbox, handleSandboxFrameLoad, resizeVnc, startResize, scrollToBottom
         };
     }
 };

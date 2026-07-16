@@ -2405,28 +2405,30 @@ input:checked + .slider:before {
 .chat-message.assistant .bubble li { margin-bottom: 2px; }
 
 .chat-message.assistant .bubble pre {
-  background: #1E1B2E;
-  color: #E2E8F0;
+  background: #f6f8fa;
+  color: #24292f;
   padding: var(--space-4);
   border-radius: var(--radius-sm);
   overflow-x: auto;
   margin: 8px 0;
   font-size: var(--text-xs);
   line-height: 1.6;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid #d8dee4;
 }
 
 .chat-message.assistant .bubble pre code {
   background: none;
+  color: inherit;
   padding: 0;
   font-family: var(--font-mono);
   font-size: inherit;
 }
 
 .chat-message.assistant .bubble code {
-  background: rgba(124, 58, 237, 0.08);
-  color: var(--color-primary);
+  background: #f1f3f5;
+  color: #24292f;
   padding: 2px 6px;
+  border: 1px solid #e1e4e8;
   border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -2486,7 +2488,8 @@ input:checked + .slider:before {
 .chat-message.assistant .bubble strong { font-weight: 600; }
 
 .chat-message.assistant .bubble .hljs {
-  background: #1E1B2E;
+  background: transparent;
+  color: #24292f;
   padding: 0;
 }
 
@@ -2553,6 +2556,54 @@ input:checked + .slider:before {
 }
 
 .chat-sandbox-file-link { cursor: pointer; }
+
+.chat-message.assistant .bubble .chat-vscode-location {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0969da;
+  font: inherit;
+  vertical-align: baseline;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.chat-vscode-location-badge {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  background: #218bff;
+  color: #fff;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.chat-vscode-location-label {
+  min-width: 0;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.chat-message.assistant .bubble .chat-vscode-location:hover .chat-vscode-location-label {
+  color: #0550ae;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-message.assistant .bubble .chat-vscode-location:focus-visible {
+  outline: none;
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px rgba(9, 105, 218, 0.2);
+}
 
 /* 聊天中的实际文件产物 */
 .chat-artifacts {
@@ -4162,6 +4213,11 @@ input:checked + .slider:before {
 
 .process-detail pre {
   margin: 5px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #24292f;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono);
@@ -4336,8 +4392,8 @@ input:checked + .slider:before {
   right: 16px;
   width: 40px;
   height: 40px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background: var(--workspace-folder-bg);
+  border: 1px solid var(--workspace-folder-border);
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 18px;
@@ -4346,18 +4402,24 @@ input:checked + .slider:before {
   display: flex;
   align-items: center;
   justify-content: center;
+  color: var(--workspace-folder-text);
   transition: all var(--transition-fast);
 }
 
 .workspace-toggle-btn:hover {
-  background: var(--color-bg);
-  border-color: var(--color-primary);
+  background: var(--workspace-folder-bg-hover);
+  border-color: var(--workspace-folder-border-hover);
+  color: var(--workspace-folder-text);
 }
 
 .workspace-toggle-btn.active {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: white;
+  background: var(--workspace-folder-bg-active);
+  border-color: var(--workspace-folder-border-hover);
+  color: var(--workspace-folder-text);
+}
+
+.drawer-header .workspace-folder-icon {
+  color: var(--workspace-folder-icon);
 }
 
 .workspace-toggle-btn .badge {
@@ -5358,6 +5420,13 @@ input:checked + .slider:before {
   --file-slide: #d24726;
   --file-image: #7c3aed;
   --file-generic: #64748b;
+  --workspace-folder-bg: #fff7d6;
+  --workspace-folder-bg-hover: #ffed9c;
+  --workspace-folder-bg-active: #f8c94a;
+  --workspace-folder-border: #f1c75b;
+  --workspace-folder-border-hover: #d99a00;
+  --workspace-folder-icon: #a16207;
+  --workspace-folder-text: #5f4300;
 }
 
 body {
@@ -5927,11 +5996,20 @@ body {
 
 .chat-message.assistant .bubble pre {
   border-radius: 8px;
-  background: #111827;
+  border-color: #d8dee4;
+  background: #f6f8fa;
+  color: #24292f;
 }
 
 .chat-message.assistant .bubble code {
   border-radius: 6px;
+}
+
+.chat-message.assistant .bubble pre code,
+.chat-message.assistant .bubble pre code.hljs {
+  border: 0;
+  background: transparent;
+  color: #24292f;
 }
 
 .chat-artifacts {
@@ -5988,8 +6066,7 @@ body {
 }
 
 .scroll-to-bottom,
-.vnc-float-btn,
-.workspace-toggle-btn {
+.vnc-float-btn {
   background: var(--color-primary);
   box-shadow: var(--shadow-md);
 }
@@ -6908,13 +6985,6 @@ body {
   line-height: 1.6;
 }
 
-.chatgpt-panel .composer-run-draft-hint {
-  padding: 0 4px 3px;
-  color: #737373;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
 .chatgpt-panel .composer-toolbar {
   align-items: center;
   min-height: 34px;
@@ -7671,6 +7741,19 @@ body {
   color: #111111;
 }
 
+.chat-tool-switch.workspace-switch .chat-tool-switch-icon {
+  border-color: var(--workspace-folder-border);
+  background: var(--workspace-folder-bg);
+  color: var(--workspace-folder-icon);
+}
+
+.chat-tool-switch.workspace-switch:hover .chat-tool-switch-icon,
+.chat-tool-switch.workspace-switch.active .chat-tool-switch-icon {
+  border-color: var(--workspace-folder-border-hover);
+  background: var(--workspace-folder-bg-active);
+  color: var(--workspace-folder-text);
+}
+
 .chat-tool-resize-handle {
   grid-column: 3;
   grid-row: 1;
@@ -7725,6 +7808,12 @@ body {
   border-radius: 9px;
   background: #111111;
   color: #ffffff;
+}
+
+.chat-tool-dock-icon.workspace {
+  border: 1px solid var(--workspace-folder-border-hover);
+  background: var(--workspace-folder-bg-active);
+  color: var(--workspace-folder-text);
 }
 
 .chat-tool-dock-title strong,
@@ -7830,6 +7919,17 @@ body {
   border-color: #dedede;
   background: #f4f4f4;
   color: #171717;
+}
+
+.sandbox-view-option.workspace {
+  color: var(--workspace-folder-icon);
+}
+
+.sandbox-view-option.workspace:hover,
+.sandbox-view-option.workspace.active {
+  border-color: var(--workspace-folder-border);
+  background: var(--workspace-folder-bg);
+  color: var(--workspace-folder-text);
 }
 
 .sandbox-view-option-icon {

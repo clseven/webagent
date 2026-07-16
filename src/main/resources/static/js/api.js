@@ -299,6 +299,11 @@ function createApiClient() {
         executeCommand: (sessionId, command) => request('POST', `/api/sessions/${sessionId}/execute`, { command }),
         refreshWorkspace: (sessionId) => request('POST', `/api/sessions/${sessionId}/workspace/refresh`),
         readFileInSandbox: (sessionId, path) => request('POST', `/api/sessions/${sessionId}/files/read`, { path }),
+        openFileInVsCode: (sessionId, path, line = 1, column = 1) => request(
+            'POST',
+            `/api/sessions/${sessionId}/vscode/open`,
+            { path, line, column }
+        ),
 
         // 沙箱文件预览（返回 ArrayBuffer，inline 渲染用）
         previewFileInSandbox: async (sessionId, path) => {

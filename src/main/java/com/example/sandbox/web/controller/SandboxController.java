@@ -4,6 +4,7 @@ import com.example.sandbox.aio.AioClient;
 import com.example.sandbox.web.model.entity.ExecutionResult;
 import com.example.sandbox.web.model.request.ExecuteRequest;
 import com.example.sandbox.web.model.request.FileWriteRequest;
+import com.example.sandbox.web.model.request.VsCodeOpenRequest;
 import com.example.sandbox.web.model.response.ApiResponse;
 import com.example.sandbox.web.model.response.FilePreviewContent;
 import com.example.sandbox.web.service.AgentService;
@@ -13,6 +14,7 @@ import com.example.sandbox.web.service.impl.SandboxClientFactory;
 import com.example.sandbox.web.service.impl.SandboxServiceImpl;
 import com.example.sandbox.web.service.impl.SandboxViewTokenService;
 import com.example.sandbox.web.service.impl.OfficePreviewService;
+import com.example.sandbox.web.service.impl.VsCodeNavigationService;
 import com.example.sandbox.web.service.mcpclient.McpClientToolProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
@@ -55,6 +57,10 @@ public class SandboxController {
 
     @Autowired
     private OfficePreviewService officePreviewService;
+
+    /** VSCode 文件定位服务，负责路径校验和 code-server 工作台控制。 */
+    @Autowired
+    private VsCodeNavigationService vsCodeNavigationService;
 
     /** MCP 动态工具提供器，工作区刷新时显式重新加载用户 MCP 配置。 */
     @Autowired
@@ -172,6 +178,41 @@ public class SandboxController {
             log.warn("刷新工作区目录记忆失败: session={}, error={}", id, e.getMessage(), e);
         }
         return ApiResponse.success();
+    }
+
+    /**
+     * 在当前会话沙箱的 VSCode 工作台中打开文件并定位到指定行列。
+     *
+     * <p>接口只接受 {@code /home/gem} 范围内的普通文件。前端应先加载 VSCode iframe，
+     * 后端仍会在 code-server 客户端连接尚未就绪时进行短暂重试。</p>
+     *
+     * @param id      会话 ID
+     * @param request 文件路径和目标行列
+     * @return 实际打开的沙箱绝对路径；参数错误或工作台未就绪时返回对应错误
+     */
+    @PostMapping("/{id}/vscode/open")
+    public ApiResponse<String> openFileInVsCode(
+            @PathVariable String id,
+            @RequestBody(required = false) VsCodeOpenRequest request) {
+        agentService.getSession(id);
+        if (request == null) {
+            return ApiResponse.error(400, "打开 VSCode 文件的请求不能为空");
+        }
+
+        try {
+            String resolvedPath = vsCodeNavigationService.openFile(
+                    id,
+                    request.path(),
+                    request.line(),
+                    request.column()
+            );
+            return ApiResponse.success(resolvedPath);
+        } catch (IllegalArgumentException e) {
+            return ApiResponse.error(400, e.getMessage());
+        } catch (IllegalStateException e) {
+            log.warn("VSCode 文件定位失败: session={}, reason={}", id, e.getMessage(), e);
+            return ApiResponse.error(503, e.getMessage());
+        }
     }
 
     /**

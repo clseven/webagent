@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -44,7 +45,8 @@ public class SandboxServiceImpl implements SandboxService {
 
     private static final Logger log = LoggerFactory.getLogger(SandboxServiceImpl.class);
 
-    private static final Duration RENEW_INTERVAL = Duration.ofMinutes(30);
+    /** 沙箱续期配置无效时使用的一天兜底时长。 */
+    private static final Duration DEFAULT_RENEW_DURATION = Duration.ofDays(1);
 
     /** AIO 工作目录创建命令，使用显式路径避免不同 shell 对花括号展开支持不一致。 */
     private static final String AIO_WORKSPACE_DIRS_COMMAND = """
@@ -122,6 +124,25 @@ public class SandboxServiceImpl implements SandboxService {
                                 userId, sandboxId, endpoint);
                         continue;
                     }
+                    try {
+                        SandboxAgent agent = connectSandboxAgent(sandboxId);
+                        sandboxAgents.put(sandboxId, agent);
+                        OffsetDateTime expiresAt = agent.renew(getSandboxRenewDuration());
+                        String currentEndpoint = agent.getAioEndpoint();
+                        if (currentEndpoint != null
+                                && !currentEndpoint.isBlank()
+                                && !currentEndpoint.equals(endpoint)) {
+                            endpoint = currentEndpoint;
+                            userSandbox.setAioEndpoint(currentEndpoint);
+                            userSandboxRepository.save(userSandbox);
+                        }
+                        log.info("恢复并续期用户沙箱: userId={}, sandboxId={}, expiresAt={}",
+                                userId, sandboxId, expiresAt);
+                    } catch (Exception e) {
+                        // endpoint 仍健康时保留映射，定时任务会继续尝试恢复续期句柄。
+                        log.warn("恢复用户沙箱续期句柄失败，将保留 endpoint 并稍后重试: userId={}, sandboxId={}",
+                                userId, sandboxId, e);
+                    }
                     aioSandboxStore.register(userSandboxKey(userId), sandboxId, endpoint);
                 }
                 userSandboxMap.put(userId, sandboxId);
@@ -138,25 +159,68 @@ public class SandboxServiceImpl implements SandboxService {
 
     @Scheduled(fixedRate = 20 * 60 * 1000)
     public void renewAllSandboxes() {
-        if (isCurrentImageAio()) {
-            // AIO 模式：沙箱由平台管理，不需要续期
-            return;
-        }
+        boolean aioMode = isCurrentImageAio();
+        Duration renewDuration = getSandboxRenewDuration();
         for (var entry : userSandboxMap.entrySet()) {
             try {
                 String sandboxId = entry.getValue();
                 SandboxAgent agent = sandboxAgents.get(sandboxId);
+                if (agent == null && aioMode) {
+                    agent = connectSandboxAgent(sandboxId);
+                    sandboxAgents.put(sandboxId, agent);
+                    log.info("已恢复 AIO 沙箱续期句柄: sandboxId={}, userId={}",
+                            sandboxId, entry.getKey());
+                }
                 if (agent != null && agent.isHealthy()) {
-                    agent.renew(RENEW_INTERVAL);
-                    log.debug("续期沙箱 {}（用户 {}）", sandboxId, entry.getKey());
+                    OffsetDateTime expiresAt = agent.renew(renewDuration);
+                    log.debug("续期沙箱 {}（用户 {}），新的到期时间 {}",
+                            sandboxId, entry.getKey(), expiresAt);
                 } else {
-                    log.warn("沙箱 {} 不健康，移除用户 {} 映射", sandboxId, entry.getKey());
-                    userSandboxMap.remove(entry.getKey());
-                    sandboxUserMap.remove(sandboxId);
+                    log.warn("沙箱 {} 暂时不健康，本轮不续期（用户 {}）", sandboxId, entry.getKey());
+                    if (!aioMode) {
+                        userSandboxMap.remove(entry.getKey());
+                        sandboxUserMap.remove(sandboxId);
+                    }
                 }
             } catch (Exception e) {
                 log.warn("续期沙箱失败，用户 {}", entry.getKey(), e);
             }
+        }
+    }
+
+    /**
+     * 连接平台中已有的沙箱，用于应用重启后恢复生命周期控制句柄。
+     *
+     * @param sandboxId 已有沙箱 ID
+     * @return 可执行健康检查、续期和销毁操作的沙箱代理
+     */
+    protected SandboxAgent connectSandboxAgent(String sandboxId) {
+        return SandboxAgent.builder()
+                .domain(config.getSandbox().getDomain())
+                .sandboxId(sandboxId)
+                .readyTimeout(Duration.parse(config.getSandbox().getReadyTimeout()))
+                .build();
+    }
+
+    /**
+     * 解析每次续期使用的时长。
+     *
+     * <p>配置缺失、格式错误或非正数时回退到一天，避免定时任务因错误配置完全停止续期。</p>
+     *
+     * @return 正数续期时长
+     */
+    private Duration getSandboxRenewDuration() {
+        String configured = config.getSandbox().getSandboxTimeout();
+        try {
+            Duration duration = Duration.parse(configured);
+            if (duration.isZero() || duration.isNegative()) {
+                throw new IllegalArgumentException("续期时长必须为正数");
+            }
+            return duration;
+        } catch (Exception e) {
+            log.warn("沙箱续期配置无效，使用默认值 {}: configured={}",
+                    DEFAULT_RENEW_DURATION, configured, e);
+            return DEFAULT_RENEW_DURATION;
         }
     }
 
@@ -234,6 +298,7 @@ public class SandboxServiceImpl implements SandboxService {
 
                 // 创建新沙箱
                 SandboxAgent.Builder builder = SandboxAgent.builder()
+                        .domain(config.getSandbox().getDomain())
                         .image(config.getSandbox().getImage())
                         .timeout(Duration.parse(config.getSandbox().getSandboxTimeout()))
                         .readyTimeout(Duration.parse(config.getSandbox().getReadyTimeout()));
@@ -351,6 +416,14 @@ public class SandboxServiceImpl implements SandboxService {
                 String endpoint = entity.getAioEndpoint();
                 if (endpoint != null && !endpoint.isBlank()) {
                     String resolvedSandboxId = sandboxId != null ? sandboxId : entity.getSandboxId();
+                    if (!isSandboxHealthy(endpoint)) {
+                        log.warn("数据库中的用户沙箱 endpoint 已失效，清理旧绑定: userId={}, sandboxId={}, endpoint={}",
+                                userId, resolvedSandboxId, endpoint);
+                        if (resolvedSandboxId != null && !resolvedSandboxId.isBlank()) {
+                            cleanupUnhealthySandbox(userId, resolvedSandboxId);
+                        }
+                        return null;
+                    }
                     if (resolvedSandboxId != null && !resolvedSandboxId.isBlank()) {
                         userSandboxMap.put(userId, resolvedSandboxId);
                         sandboxUserMap.put(resolvedSandboxId, userId);
